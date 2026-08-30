@@ -108,101 +108,134 @@ export function Flywheel({
 
   const span = 360 / (stages.length || 1);
 
+  const fwc = { ['--fw-c' as string]: `${C}px` } as React.CSSProperties;
+
   return (
     <div className="flex h-full flex-col">
       {/* ── sunburst ── */}
       <div className="shrink-0 border-b border-border bg-bg-inset/40 p-3">
         <svg viewBox={`0 0 ${VB} ${VB}`} className="mx-auto block h-auto w-full max-w-[440px]" style={{ userSelect: 'none' }}>
-          {/* faint concentric rings behind the hub */}
-          {[16, 30, 44].map((d) => (
-            <circle key={d} cx={C} cy={C} r={R_HUB + d} fill="none" stroke="var(--border)" strokeWidth={1} opacity={0.45} />
-          ))}
+          {/* faint concentric rings — slow ambient spin + one breathing pulse */}
+          <g className="fw-rings" style={fwc}>
+            {[16, 30, 44].map((d) => (
+              <circle key={d} cx={C} cy={C} r={R_HUB + d} fill="none" stroke="var(--border)" strokeWidth={1} opacity={0.45} />
+            ))}
+            <line x1={C} y1={C - R_HUB - 46} x2={C} y2={C - R_HUB - 12} stroke="var(--border)" strokeWidth={1} opacity={0.4} />
+          </g>
+          <circle className="fw-pulse" style={fwc} cx={C} cy={C} r={R_HUB + 6} fill="none" stroke="var(--cognac)" strokeWidth={1.5} />
 
-          {stages.map((st, si) => {
-            const s0 = -90 + si * span;
-            const s1 = -90 + (si + 1) * span;
-            const smid = (s0 + s1) / 2;
-            const c = RAMP[si % RAMP.length];
-            const [slx, sly] = pt((R_HUB + R_STAGE) / 2, smid);
-            const sflip = smid > 90 && smid < 270;
+          {/* everything that grows in on mount / project change */}
+          <g className="fw-in" style={fwc} key={wheel.hub.domain}>
+            {stages.map((st, si) => {
+              const s0 = -90 + si * span;
+              const s1 = -90 + (si + 1) * span;
+              const smid = (s0 + s1) / 2;
+              const c = RAMP[si % RAMP.length];
+              const [slx, sly] = pt((R_HUB + R_STAGE) / 2, smid);
+              const sflip = smid > 90 && smid < 270;
+              const stageSel = si === sel.s && sel.t === null;
 
-            const tCount = Math.max(st.themes.length, 1);
-            const tSpan = (s1 - s0) / tCount;
+              const tCount = Math.max(st.themes.length, 1);
+              const tSpan = (s1 - s0) / tCount;
 
-            return (
-              <g key={st.key}>
-                {/* stage wedge */}
-                <path
-                  d={seg(R_HUB + 4, R_STAGE, s0, s1)}
-                  fill={c.fill}
-                  stroke="#fbf9f3"
-                  strokeWidth={2}
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => setSel({ s: si, t: null })}
-                />
-                {(si === sel.s || hover?.startsWith(`${si}:`)) && (
-                  <path d={seg(R_HUB + 4, R_STAGE, s0, s1)} fill="none" stroke="var(--cognac)" strokeWidth={2} pointerEvents="none" />
-                )}
-                <text
-                  x={slx}
-                  y={sly}
-                  fill={c.on}
-                  fontSize={11}
-                  fontWeight={700}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  transform={`rotate(${sflip ? smid + 180 : smid}, ${slx}, ${sly})`}
-                  style={{ letterSpacing: '0.04em', pointerEvents: 'none' }}
-                >
-                  {clip(st.label.replace(' aware', '').toUpperCase(), 12)}
-                </text>
+              return (
+                <g key={st.key} className="fw-stage">
+                  {/* stage wedge */}
+                  <path
+                    d={seg(R_HUB + 4, R_STAGE, s0, s1)}
+                    fill={c.fill}
+                    stroke="#fbf9f3"
+                    strokeWidth={2}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => setSel({ s: si, t: null })}
+                  />
+                  {stageSel && (
+                    <path
+                      key={`sd-${si}`}
+                      className="fw-draw"
+                      d={seg(R_HUB + 4, R_STAGE, s0, s1)}
+                      fill="none"
+                      stroke="var(--cognac)"
+                      strokeWidth={2.5}
+                      pathLength={100}
+                      pointerEvents="none"
+                    />
+                  )}
+                  <text
+                    x={slx}
+                    y={sly}
+                    fill={c.on}
+                    fontSize={11}
+                    fontWeight={700}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    transform={`rotate(${sflip ? smid + 180 : smid}, ${slx}, ${sly})`}
+                    style={{ letterSpacing: '0.04em', pointerEvents: 'none' }}
+                  >
+                    {clip(st.label.replace(' aware', '').toUpperCase(), 12)}
+                  </text>
 
-                {/* theme wedges + radiating labels */}
-                {st.themes.map((th, ti) => {
-                  const t0 = s0 + ti * tSpan;
-                  const t1 = s0 + (ti + 1) * tSpan;
-                  const tmid = (t0 + t1) / 2;
-                  const themeSel = si === sel.s && sel.t === ti;
-                  const isHover = hover === `${si}:${ti}`;
-                  const [lx, ly] = pt(R_LABEL, tmid);
-                  const flip = tmid > 90 && tmid < 270;
-                  return (
-                    <g
-                      key={ti}
-                      onMouseEnter={() => setHover(`${si}:${ti}`)}
-                      onMouseLeave={() => setHover(null)}
-                      onClick={() => setSel({ s: si, t: ti })}
-                      style={{ cursor: 'pointer' }}
-                    >
-                      <path
-                        d={seg(R_STAGE + 1, R_THEME, t0 + 0.6, t1 - 0.6)}
-                        fill={c.fill}
-                        fillOpacity={themeSel ? 1 : isHover ? 0.85 : 0.5}
-                        stroke={themeSel || isHover ? 'var(--cognac)' : '#fbf9f3'}
-                        strokeWidth={themeSel ? 2 : 1.5}
-                      />
-                      <text
-                        x={lx}
-                        y={ly}
-                        fill={themeSel ? 'var(--cognac)' : 'var(--text-dim)'}
-                        fontSize={10}
-                        fontWeight={themeSel ? 700 : 500}
-                        textAnchor={flip ? 'end' : 'start'}
-                        dominantBaseline="middle"
-                        transform={`rotate(${flip ? tmid + 180 : tmid}, ${lx}, ${ly})`}
-                        style={{ pointerEvents: 'none' }}
+                  {/* theme wedges + radiating labels */}
+                  {st.themes.map((th, ti) => {
+                    const t0 = s0 + ti * tSpan;
+                    const t1 = s0 + (ti + 1) * tSpan;
+                    const tmid = (t0 + t1) / 2;
+                    const themeSel = si === sel.s && sel.t === ti;
+                    const isHover = hover === `${si}:${ti}`;
+                    const [lx, ly] = pt(R_LABEL, tmid);
+                    const flip = tmid > 90 && tmid < 270;
+                    const k = themeSel ? 7 : isHover ? 4 : 0; // outward nudge
+                    return (
+                      <g
+                        key={ti}
+                        className="fw-theme"
+                        onMouseEnter={() => setHover(`${si}:${ti}`)}
+                        onMouseLeave={() => setHover(null)}
+                        onClick={() => setSel({ s: si, t: ti })}
+                        style={{ cursor: 'pointer', transform: `translate(${k * Math.cos(rad(tmid))}px, ${k * Math.sin(rad(tmid))}px)` }}
                       >
-                        {clip(shortTheme(th.label), 20)}
-                        <tspan dx={4} fill="var(--text-faint)" fontSize={8}>
-                          {th.queries.length}
-                        </tspan>
-                      </text>
-                    </g>
-                  );
-                })}
-              </g>
-            );
-          })}
+                        <path
+                          d={seg(R_STAGE + 1, R_THEME, t0 + 0.6, t1 - 0.6)}
+                          fill={c.fill}
+                          fillOpacity={themeSel ? 1 : isHover ? 0.85 : 0.5}
+                          stroke={themeSel || isHover ? 'var(--cognac)' : '#fbf9f3'}
+                          strokeWidth={themeSel ? 2 : 1.5}
+                        />
+                        {themeSel && (
+                          <path
+                            key={`td-${si}-${ti}`}
+                            className="fw-draw"
+                            d={seg(R_STAGE + 1, R_THEME, t0 + 0.6, t1 - 0.6)}
+                            fill="none"
+                            stroke="var(--cognac)"
+                            strokeWidth={2}
+                            pathLength={100}
+                            pointerEvents="none"
+                          />
+                        )}
+                        <text
+                          x={lx}
+                          y={ly}
+                          fill={themeSel ? 'var(--cognac)' : 'var(--text-dim)'}
+                          fontSize={10}
+                          fontWeight={themeSel ? 700 : 500}
+                          textAnchor={flip ? 'end' : 'start'}
+                          dominantBaseline="middle"
+                          transform={`rotate(${flip ? tmid + 180 : tmid}, ${lx}, ${ly})`}
+                          style={{ pointerEvents: 'none' }}
+                        >
+                          {clip(shortTheme(th.label), 20)}
+                          <tspan dx={4} fill="var(--text-faint)" fontSize={8}>
+                            {th.queries.length}
+                          </tspan>
+                        </text>
+                      </g>
+                    );
+                  })}
+                </g>
+              );
+            })}
+          </g>
 
           {/* hub */}
           <circle cx={C} cy={C} r={R_HUB} fill="#fbf9f3" stroke="var(--border-strong)" strokeWidth={1.5} />
@@ -235,12 +268,16 @@ export function Flywheel({
             </button>
           )}
         </div>
-        <ul className="space-y-2">
+        <ul key={`${sel.s}:${sel.t}`} className="space-y-2">
           {rows.map((q, i) => (
-            <li key={i} className="rounded-md border border-border bg-bg-raised p-2.5">
-              <button onClick={() => onPick?.(q.text)} className="flex w-full items-start gap-2 text-left" title="Send to Chat">
-                <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: SRC_DOT[q.source] }} />
-                <span className="text-[12px] font-semibold leading-snug text-text hover:text-cognac">{q.text}</span>
+            <li
+              key={i}
+              className="fw-row rounded-md border border-border bg-bg-raised p-2.5 transition-[border-color,transform] duration-200 hover:-translate-y-px hover:border-accent-dim"
+              style={{ animationDelay: `${Math.min(i, 12) * 32}ms` }}
+            >
+              <button onClick={() => onPick?.(q.text)} className="group flex w-full items-start gap-2 text-left" title="Send to Chat">
+                <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full transition-transform duration-200 group-hover:scale-150" style={{ background: SRC_DOT[q.source] }} />
+                <span className="text-[12px] font-semibold leading-snug text-text transition-colors group-hover:text-cognac">{q.text}</span>
               </button>
               <p className="mt-1 pl-3.5 text-[11px] leading-snug text-dim">
                 <span className="text-faint">pain · </span>
