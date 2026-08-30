@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * Login / register page against the backend auth module (JWT, min 10-char
- * password, name required on register).
+ * Login — dark terminal styling. First account bootstraps to admin (backend
+ * `auth.register`); afterwards it logs in.
  *
  * @module app/login/page
  */
@@ -18,8 +18,8 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,9 +27,8 @@ export default function LoginPage() {
     setError(null);
     try {
       const path = mode === 'login' ? '/auth/login' : '/auth/register';
-      const payload =
-        mode === 'login' ? { email, password } : { email, password, name };
-      const res = await apiFetch<AuthResponse>(path, { method: 'POST', json: payload });
+      const body = mode === 'login' ? { email, password } : { email, password, name };
+      const res = await apiFetch<AuthResponse>(path, { method: 'POST', json: body });
       setToken(res.accessToken);
       router.push('/');
     } catch (err) {
@@ -40,76 +39,85 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="mx-auto max-w-sm">
-      <h1 className="mb-1 text-2xl font-semibold">{mode === 'login' ? 'Log in' : 'Create account'}</h1>
-      <p className="mb-6 text-sm text-slate-600">Operator access — every diagnostic endpoint requires a token.</p>
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <div className="w-full max-w-sm">
+        <div className="mb-6 flex items-center gap-2 text-sm">
+          <span className="text-accent">▚</span>
+          <span className="font-semibold tracking-wide">CAILYX</span>
+        </div>
 
-      <form onSubmit={submit} className="space-y-4 rounded-lg border border-slate-200 bg-white p-6">
-        {mode === 'register' && (
-          <Field label="Name">
-            <input
-              className={inputClass}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Operator name"
+        <div className="rounded-lg border border-border bg-bg-raised p-5">
+          <div className="mb-4 flex gap-4 text-xs">
+            <button
+              onClick={() => setMode('login')}
+              className={mode === 'login' ? 'text-accent' : 'text-faint hover:text-dim'}
+            >
+              log in
+            </button>
+            <button
+              onClick={() => setMode('register')}
+              className={mode === 'register' ? 'text-accent' : 'text-faint hover:text-dim'}
+            >
+              register (first user = admin)
+            </button>
+          </div>
+
+          <form onSubmit={submit} className="space-y-3">
+            {mode === 'register' && (
+              <Field label="name" value={name} onChange={setName} required minLength={2} />
+            )}
+            <Field label="email" type="email" value={email} onChange={setEmail} required />
+            <Field
+              label="password"
+              type="password"
+              value={password}
+              onChange={setPassword}
               required
-              minLength={1}
+              minLength={10}
             />
-          </Field>
-        )}
-        <Field label="Email">
-          <input
-            type="email"
-            className={inputClass}
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-            required
-          />
-        </Field>
-        <Field label="Password" hint={mode === 'register' ? 'Minimum 10 characters' : undefined}>
-          <input
-            type="password"
-            className={inputClass}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            minLength={10}
-            required
-          />
-        </Field>
-
-        {error && <p className="text-sm text-red-600">{error}</p>}
-
-        <button
-          type="submit"
-          disabled={busy}
-          className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
-        >
-          {busy ? 'Working…' : mode === 'login' ? 'Log in' : 'Register'}
-        </button>
-      </form>
-
-      <button
-        onClick={() => setMode(mode === 'login' ? 'register' : 'login')}
-        className="mt-4 text-sm text-slate-600 hover:text-slate-900"
-      >
-        {mode === 'login' ? 'Need an account? Register' : 'Have an account? Log in'}
-      </button>
+            {error && <p className="text-xs text-red">{error}</p>}
+            <button
+              disabled={busy}
+              className="w-full rounded-md border border-accent-dim bg-accent-dim/20 px-3 py-2 text-sm text-accent hover:bg-accent-dim/30 disabled:opacity-50"
+            >
+              {busy ? '…' : mode === 'login' ? 'log in →' : 'create account →'}
+            </button>
+          </form>
+        </div>
+        <p className="mt-3 text-center text-xs text-faint">
+          password min 10 chars · token stored in this browser only
+        </p>
+      </div>
     </div>
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({
+  label,
+  value,
+  onChange,
+  type = 'text',
+  required,
+  minLength,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: string;
+  required?: boolean;
+  minLength?: number;
+}) {
   return (
     <label className="block">
-      <span className="mb-1 block text-sm font-medium text-slate-700">
-        {label}
-        {hint && <span className="ml-2 text-xs font-normal text-slate-400">{hint}</span>}
-      </span>
-      {children}
+      <span className="mb-1 block text-xs text-faint">{label}</span>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        required={required}
+        minLength={minLength}
+        className="w-full rounded-md border border-border bg-bg-inset px-3 py-2 text-sm outline-none focus:border-border-strong"
+      />
     </label>
   );
 }
-
-const inputClass =
-  'w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-slate-500 focus:outline-none';

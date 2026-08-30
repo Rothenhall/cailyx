@@ -421,6 +421,116 @@ Each module has its own `API.md` inside its module folder with detailed endpoint
 
 ---
 
+## Swarm layer — synthetic-buyer research agents (added 2026-08-30)
+
+- **Analysis / boundary:** `docs/analysis/swarm-layer.md`. Research & measurement only — never generates traffic/clicks/impressions/rankings as a user.
+- **Shared gate:** `SWARM_ALLOW_LIVE=1` (+ the surface/vendor key) is required before any live AI-surface or paid SERP call; default adapters are deterministic (`mock` / `fixture`). LLM-optional paths 503 without `ANTHROPIC_API_KEY`.
+
+### Persona Module (Agent #1)
+- **API docs:** `backend/src/modules/persona/README.md`
+
+| Method | Path | Description | Rate Limit |
+|---|---|---|---|
+| `GET` / `POST` | `/api/projects/:projectId/personas` | list (?status=) / hand-author one | 30/60s |
+| `POST` | `/api/projects/:projectId/personas/generate` | `{count, roles?, useLlm?}` → deterministic (or LLM-refined) personas; clamped to `PERSONA_MAX_PER_PROJECT` | 30/60s |
+| `GET` | `/api/projects/:projectId/personas/export` | full persona set | — |
+| `GET`/`PATCH`/`DELETE` | `/api/projects/:projectId/personas/:personaId` | detail / patch (draft only → 409) / delete | 60/60s |
+| `POST` | `/api/projects/:projectId/personas/:personaId/activate` \| `/archive` | lifecycle | 60/60s |
+
+### Journey Module (Agent #2)
+- **API docs:** `backend/src/modules/journey/README.md`
+
+| Method | Path | Description | Rate Limit |
+|---|---|---|---|
+| `GET` | `/api/projects/:projectId/journeys` | list (?status=) | — |
+| `POST` | `/api/projects/:projectId/journeys/plan` | `{personaId, surface?, maxDepth?, maxBranches?, useLlm?}` → branching step tree | 30/60s |
+| `GET` | `/api/projects/:projectId/journeys/:journeyId` | detail + step tree | — |
+| `POST` | `/api/projects/:projectId/journeys/:journeyId/execute` | run pending steps; `?maxCostUsd=` cap override; stops → `partial` | 20/60s |
+| `DELETE` | `/api/projects/:projectId/journeys/:journeyId` | — | — |
+| `GET`/`POST` | `/api/projects/:projectId/journey-campaigns` | list / create `{name, journeyTarget, budgetUsd, surface?, personaRoles?, useLlm?, autoRun?}` | 10/60s |
+| `GET` | `/api/projects/:projectId/journey-campaigns/:campaignId` | detail + journeys | — |
+| `POST` | `/api/projects/:projectId/journey-campaigns/:campaignId/execute` | run remaining journeys under remaining budget | 10/60s |
+
+### SERP Intelligence Module (Agent #3 — DataForSEO)
+- **API docs:** `backend/src/modules/serp-intelligence/README.md`
+
+| Method | Path | Description | Rate Limit |
+|---|---|---|---|
+| `GET`/`POST` | `/api/projects/:projectId/serp-trackers` | list / create `{name, keywords[], locationName?, languageCode?, device?, provider?}` | 20/60s |
+| `GET` | `/api/projects/:projectId/serp-trackers/:trackerId` | detail (+ queries + recent snapshots) | — |
+| `POST` | `/api/projects/:projectId/serp-trackers/:trackerId/queries` | add keywords (dedupes; cap 300) | — |
+| `DELETE` | `/api/projects/:projectId/serp-trackers/:trackerId/queries/:queryId` | — | — |
+| `POST` | `/api/projects/:projectId/serp-trackers/:trackerId/capture` | `{provider?}` → snapshot (subject rank, AI-Overview, competitors, topDomains); `SERP_MAX_COST_PER_CAPTURE` governor | 10/60s |
+| `GET` | `/api/projects/:projectId/serp-trackers/:trackerId/snapshots[/:snapshotId]` | list / detail (+ results) | — |
+| `DELETE` | `/api/projects/:projectId/serp-trackers/:trackerId` | — | — |
+
+### Authority Module (Agent #6)
+- **API docs:** `backend/src/modules/authority/README.md`
+
+| Method | Path | Description | Rate Limit |
+|---|---|---|---|
+| `GET`/`POST` | `/api/projects/:projectId/authority-scans` | list / run `{category?, method?, listicleQueries?, useLlm?}` (method ∈ serp\|citations\|llm\|combined) | 12/60s |
+| `GET` | `/api/projects/:projectId/authority-scans/:scanId` | detail + ranked candidates | — |
+| `PATCH` | `/api/projects/:projectId/authority-scans/:scanId/candidates/:candidateId` | `{status: new\|promoted\|dismissed}` | — |
+| `POST` | `/api/projects/:projectId/authority-scans/:scanId/candidates/:candidateId/promote` | → creates a `mention-tracking` MentionTarget | — |
+| `DELETE` | `/api/projects/:projectId/authority-scans/:scanId` | — | — |
+
+### Internal-Link Module (Agent #8)
+- **API docs:** `backend/src/modules/internal-link/README.md`
+
+| Method | Path | Description | Rate Limit |
+|---|---|---|---|
+| `GET`/`POST` | `/api/projects/:projectId/link-graph` | list / crawl the client site `{rootUrl?, maxPages?, maxDepth?, useLlm?}` → graph + orphan/under-linked detection + ranked "add link" recs | 20/60s |
+| `GET` | `/api/projects/:projectId/link-graph/:graphId` | full detail (nodes + edges + recs) | — |
+| `GET` | `/api/projects/:projectId/link-graph/:graphId/recommendations` | ?status=open\|applied\|dismissed | — |
+| `PATCH` | `/api/projects/:projectId/link-graph/:graphId/recommendations/:recId` | `{status}` | — |
+| `DELETE` | `/api/projects/:projectId/link-graph/:graphId` | — | — |
+
+### Council Module (Agent #10)
+- **API docs:** `backend/src/modules/council/README.md`
+
+| Method | Path | Description | Rate Limit |
+|---|---|---|---|
+| `GET`/`POST` | `/api/projects/:projectId/council` | list / run `{question?, rounds?, agentRoles?, useLlm?}` → contributions + ranked interventions (reads existing artefacts only) | 20/60s |
+| `GET` | `/api/projects/:projectId/council/:sessionId` | detail | — |
+| `DELETE` | `/api/projects/:projectId/council/:sessionId` | — | — |
+
+---
+
+## Dashboard aggregation — Okara Terminal (added 2026-08-30)
+
+Backs the operator console frontend (`frontend/` — the dark 4-pane terminal).
+
+### Integrations Module
+- **API docs:** `backend/src/modules/integrations/README.md`
+
+| Method | Path | Description | Rate Limit |
+|---|---|---|---|
+| `GET` | `/api/integrations` | Every external connection Cailyx can use — Google Analytics / Search Console (OAuth, not wired), Anthropic, Perplexity, DataForSEO, PageSpeed, Redis (live ping), Database, Stripe, Plunk, and the `SWARM_ALLOW_LIVE` mode — each with `connected` + `configHint`. **Booleans + metadata only; no secret values returned.** | default |
+
+### Agents Module
+- **API docs:** `backend/src/modules/agents/README.md`
+
+| Method | Path | Description | Rate Limit |
+|---|---|---|---|
+| `GET` | `/api/projects/:projectId/agents` | The Agents Feed: one card per capability (SEO, GEO, Articles, Authority, Journey, Persona, Council, Mentions, SERP, Monitoring) with a live `status` / `headline` / `activity[]` derived from what that module has produced for the project. | default |
+
+### Users Module (operator administration — **admin only**)
+- **API docs:** `backend/src/modules/users/README.md`
+- Login / registration / token rotation stay in `auth`; this is the CRUD behind the dashboard's User Management UI. Never returns password or token hashes. Guard rails: the last `admin` cannot be demoted or deleted, and you cannot delete your own account here.
+
+| Method | Path | Description | Rate Limit |
+|---|---|---|---|
+| `GET` | `/api/users` | list operators (`{ users: SafeUser[] }`) | default |
+| `GET` | `/api/users/roles` | role catalogue for the UI | default |
+| `POST` | `/api/users` | create operator `{ email, password, name, role }` → SafeUser | 20/60s |
+| `GET` | `/api/users/:id` | one operator | default |
+| `PATCH` | `/api/users/:id` | update `{ name?, role? }` (409 demoting last admin) | default |
+| `POST` | `/api/users/:id/password` | reset password `{ password }` → `{ id, sessionsRevoked }` (revokes their sessions) | 20/60s |
+| `DELETE` | `/api/users/:id` | delete operator (400 self, 409 last admin) | default |
+
+---
+
 ## Planned Modules (not yet built)
 
 | Module | Type | Endpoints |

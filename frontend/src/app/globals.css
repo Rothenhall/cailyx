@@ -1,25 +1,92 @@
 /**
- * Global styles for the Cailyx frontend.
- * Imports Tailwind CSS utility classes and defines CSS custom properties.
+ * Cailyx — dark operator console theme.
  */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Terminal palette — near-black with a faint warm cast */
+  --bg: #0b0d0e;
+  --bg-raised: #121517;
+  --bg-inset: #0d1011;
+  --border: #22282b;
+  --border-strong: #2f3639;
+  --text: #d7dee0;
+  --text-dim: #8b969a;
+  --text-faint: #5b6669;
+  --accent: #7dd3a8;        /* terminal green */
+  --accent-dim: #3f6b57;
+  --amber: #e0b45f;         /* warnings */
+  --red: #e06c6c;           /* critical */
+  --blue: #6ea8fe;          /* info / links */
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
 }
 
 body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: system-ui, -apple-system, sans-serif;
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: rgba(125, 211, 168, 0.25);
+}
+
+/* thin dark scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+input,
+textarea,
+button,
+select {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+@keyframes blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.cursor-blink::after {
+  content: "▋";
+  margin-left: 2px;
+  animation: blink 1s steps(1) infinite;
+  color: var(--accent);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+.pulse-dot {
+  animation: pulse-dot 1.8s ease-in-out infinite;
 }

@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
    * Environment variable is used to configure the backend API URL.
    */
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001",
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:3002",
   },
 };
 

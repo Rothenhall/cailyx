@@ -34,6 +34,15 @@ import { DataAssetModule } from './modules/data-asset/data-asset.module';
 import { PipelineMathModule } from './modules/pipeline-math/pipeline-math.module';
 import { ScorecardModule } from './modules/scorecard/scorecard.module';
 import { DeliveryModule } from './modules/delivery/delivery.module';
+import { PersonaModule } from './modules/persona/persona.module';
+import { JourneyModule } from './modules/journey/journey.module';
+import { InternalLinkModule } from './modules/internal-link/internal-link.module';
+import { CouncilModule } from './modules/council/council.module';
+import { SerpIntelligenceModule } from './modules/serp-intelligence/serp-intelligence.module';
+import { AuthorityModule } from './modules/authority/authority.module';
+import { IntegrationsModule } from './modules/integrations/integrations.module';
+import { AgentsModule } from './modules/agents/agents.module';
+import { UsersModule } from './modules/users/users.module';
 
 @Module({
   imports: [
@@ -97,6 +106,21 @@ import { DeliveryModule } from './modules/delivery/delivery.module';
     PipelineMathModule,
     ScorecardModule,
     DeliveryModule,
+
+    // Swarm layer — synthetic-buyer research agents
+    PersonaModule,
+    JourneyModule,
+    InternalLinkModule,
+    CouncilModule,
+    SerpIntelligenceModule,
+    AuthorityModule,
+
+    // Dashboard aggregation — connections + agents feed
+    IntegrationsModule,
+    AgentsModule,
+
+    // Operator administration (admin only)
+    UsersModule,
   ],
   providers: [
     {

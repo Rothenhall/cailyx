@@ -1,31 +1,24 @@
 import type { Metadata } from "next";
-import AppShell from "@/components/AppShell";
 import "./globals.css";
 
 /**
- * Root metadata for the Cailyx operator frontend.
+ * Root metadata for the Cailyx operator console.
  */
 export const metadata: Metadata = {
   title: "Cailyx",
-  description: "AI visibility diagnostics — operator dashboard",
+  description: "Cailyx — AI visibility, GTM, and revenue operations as one engine.",
 };
 
 /**
- * Root layout: every page renders inside the app shell (header nav + main).
- *
- * @param children - The page content to render
- * @returns The root layout JSX element
+ * Root layout. The terminal is its own full-viewport shell, so the layout only
+ * sets the dark ground.
  */
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
-      <body className="antialiased">
-        <AppShell>{children}</AppShell>
-      </body>
+    <html lang="en" data-theme="dark">
+      <body className="min-h-screen bg-bg text-text font-mono antialiased">{children}</body>
     </html>
   );
 }

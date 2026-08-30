@@ -42,9 +42,25 @@
 | `crawler-monitor` | SOP-3, §4.5 | Log ingestion (`hits[]` JSON + CLF `logText`, skip-counted, 400 when nothing parses), static 14-bot registry (longest-substring classification: training/search/citation-engine/unknown), roll-up summary (`byType`/`byVendor`/`topUrls≤20`/`lastSeen`), hit listing with `botType` filter | Hallucinated-404 sweep itself (needs AI-referral URL data — the ledger this module feeds) |
 | `monitoring` | PRD §6.12, FR-12.1–12.4 | Snapshot (score + rates + crawler hits, honest 404 when empty), two-latest delta, threshold alerts (score −10/mention −15, escalate −20/−30) persisted as Alert rows, `monitoring` scheduled handler (re-check + `scheduled-run-failed` alert), cadence endpoints | `PUT/DELETE /schedule` need Redis 6380 running (docker-compose, same as technical-audit); `ScheduleConfig` row is per-project shared with technical-audit cadence |
 
+### 1.2e Built — Swarm layer (synthetic-buyer research agents, added 2026-08-30)
+
+> Analysis + boundary: `docs/analysis/swarm-layer.md`. **No new npm deps.** New external service: DataForSEO (live SERP only, gated + fixture-backed). All 6 modules e2e-verified via `backend/smoke/*.smoke.sh` (**148/148 assertions, zero keys / zero spend**), `tsc` clean, `nest build` green.
+
+| Module | Agent | Built | Gated / deferred |
+|---|---|---|---|
+| `persona` | #1 Search Persona Generator | Deterministic role-catalogue generator (10 roles, seeded PRNG, reproducible), optional constrained LLM refinement, draft→active→archived lifecycle, `PERSONA_MAX_PER_PROJECT` fan-out cap + per-generate LLM cost budget | LLM refine needs `ANTHROPIC_API_KEY` (503) |
+| `journey` | #2 Journey Agent | Branching multi-step journey planner (awareness ladder, kinds: query/refinement/branch/comparison/objection) seeded per persona; executor over the `measurement` SurfaceAdapters; `JourneyCampaign` fan-out; per-journey `maxCostUsd` cap + per-campaign `budgetUsd` governor | live surface needs `SWARM_ALLOW_LIVE=1` + key (503); LLM planner needs key |
+| `serp-intelligence` | #3 SERP Intelligence | SerpTracker/Query/Snapshot/Result; DataForSEO `live/advanced` provider (via FetcherService) + offline `fixture` provider; per-query subject rank, AI-Overview presence/mention, featured snippet, topDomains, competitorsSeen, sourceCount; `SERP_MAX_COST_PER_CAPTURE` governor | live provider needs `SWARM_ALLOW_LIVE=1` + `DATAFORSEO_LOGIN/PASSWORD` (503); fixture needs `SERP_ALLOW_FIXTURE=1` (400) |
+| `authority` | #6 Authority Agent | Discovery via SERP listicles + AI-answer citations (journeys + measurement) + optional LLM; classify (listicle/community/podcast/publication/directory/newsletter) + relevance; excludes client + competitors + junk hosts; **promote → `mention-tracking` MentionTarget** | LLM/`method=llm` needs key (503); live SERP inherits #3's gate; no automated outreach by design |
+| `internal-link` | #8 Internal-Link Agent | BFS crawl of the **client's own** site via FetcherService + sitemap/inventory seed; TF topic keywords; node/edge graph; orphan + under-linked detection; ranked "add link A→B" recs (Jaccard + inbound deficit); optional LLM anchor-copy refinement | LLM refine needs key (503); `fixture://` root needs `INTERNAL_LINK_ALLOW_FIXTURE=1` (400) |
+| `council` | #10 Council Agent | 6 role-agents (technical/content/authority/measurement/narrative/skeptic) × rounds debate over candidate interventions derived from existing artefacts (gap-analysis, link graph, journeys, measurement, technical/entity audits); synthesizer ranks by consensus × expected impact, records dissent; **proposes no new measurement** | LLM debate needs key (503); empty project → 0 rankings (honest) |
+
+Shared infra added: `common/utils/prng.ts`, `common/utils/subject-match.ts` (subject/competitor scoring, parity with the `measurement` moat), `backend/smoke/` harness.
+Leak fix: `scheduling.service.ts` now implements `OnModuleDestroy` (closed the BullMQ Worker + both ioredis connections it leaked on every `--watch` reload).
+
 ### 1.3 Not started (required by PRD / PLAN)
 
-Individual frontend feature UIs beyond the shell (query-set builder, measurement runs, reports with react-pdf, etc.) — each lands with its module's UI work in `PLAN.md` §3.2 order. No backend module from the PRD/PLAN remains unbuilt.
+Individual frontend feature UIs beyond the shell (query-set builder, measurement runs, reports with react-pdf, swarm-layer UIs, etc.) — each lands with its module's UI work in `PLAN.md` §3.2 order. No backend module from the PRD/PLAN remains unbuilt.
 
 ### 1.4 Frontend
 

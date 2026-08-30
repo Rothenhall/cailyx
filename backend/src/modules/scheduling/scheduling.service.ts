@@ -7,7 +7,7 @@
  * @module scheduling.service
  */
 
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Queue, Worker, JobScheduler } from 'bullmq';
 import Redis from 'ioredis';
 import { PrismaService } from '../database/prisma.service';
@@ -15,11 +15,13 @@ import { PrismaService } from '../database/prisma.service';
 export type ScheduledTaskHandler = (projectId: string, targetUrl: string) => Promise<void>;
 
 @Injectable()
-export class SchedulingService implements OnModuleInit {
+export class SchedulingService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SchedulingService.name);
   private queue: Queue;
   private worker: Worker | null = null;
   private redis: Redis;
+  /** The worker's own duplicated connection — tracked so it can be closed. */
+  private workerConnection: Redis | null = null;
 
   private readonly handlers = new Map<string, ScheduledTaskHandler>();
 
@@ -30,6 +32,7 @@ export class SchedulingService implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
+    this.workerConnection = this.redis.duplicate();
     this.worker = new Worker(
       'cailyx-scheduled-tasks',
       async (job) => {
@@ -42,7 +45,7 @@ export class SchedulingService implements OnModuleInit {
           this.logger.warn(`No handler registered for task: ${taskName}`);
         }
       },
-      { connection: this.redis.duplicate() },
+      { connection: this.workerConnection },
     );
 
     this.worker.on('completed', (job) => {
@@ -54,6 +57,23 @@ export class SchedulingService implements OnModuleInit {
     });
 
     this.logger.log('Scheduling service initialized');
+  }
+
+  /**
+   * Release the BullMQ worker + both Redis connections on shutdown/HMR reload.
+   * Without this, every `nest start --watch` reload and every test that boots
+   * the app leaks a Worker and two ioredis sockets that keep retrying forever.
+   */
+  async onModuleDestroy(): Promise<void> {
+    try {
+      await this.worker?.close();
+      await this.queue.close();
+      this.workerConnection?.disconnect();
+      this.redis.disconnect();
+      this.logger.log('Scheduling service connections closed');
+    } catch (err) {
+      this.logger.warn(`Scheduling teardown error: ${(err as Error).message}`);
+    }
   }
 
   registerHandler(taskName: string, handler: ScheduledTaskHandler): void {

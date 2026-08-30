@@ -665,3 +665,423 @@ model Upgrade {
   @@index([projectId])
   @@index([projectId, status])
 }
+
+// ---------------------------------------------------------------------------
+// Swarm layer — persona / journey / council / internal-link / serp-intelligence
+// The synthetic-buyer research layer. Personas are research identities, never
+// used to generate real traffic, clicks, or impressions on any live surface.
+// ---------------------------------------------------------------------------
+
+// A synthetic buyer persona (Agent #1). One research identity — role, context,
+// and what it is trying to find out — that seeds branching search journeys and
+// tags measurement observations. Bounded per project (PERSONA_MAX_PER_PROJECT).
+model Persona {
+  id                String   @id @default(cuid())
+  projectId         String
+  label             String // human-readable, e.g. "Series-A SaaS founder evaluating options"
+  role              String // founder | cmo | head-of-growth | seo-lead | content-lead | demand-gen | saas-operator | product-marketer | agency-owner | rev-ops
+  seniority         String   @default("lead") // ic | lead | director | vp | c-level | founder
+  companyStage      String   @default("growth") // idea | seed | series-a | growth | enterprise
+  awareness         String   @default("problem-aware") // problem-aware | solution-aware | product-aware | most-aware (mirrors QuerySet persona union)
+  primaryGoal       String
+  researchObjective String // the concrete question THIS persona is chasing — drives journey branching
+  painPoints        String   @default("[]") // JSON string[]
+  buyingTriggers    String   @default("[]") // JSON string[]
+  objections        String   @default("[]") // JSON string[]
+  vocabulary        String   @default("[]") // JSON string[] — phrases this persona actually types into a search box
+  status            String   @default("draft") // draft | active | archived
+  source            String   @default("generated") // generated (deterministic) | generated-llm | manual
+  generationModel   String? // model id when source = generated-llm
+  seed              String? // deterministic generator seed (projectId:index) — reproducibility
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  journeys Journey[]
+
+  @@index([projectId])
+  @@index([projectId, status])
+  @@index([role])
+}
+
+// A branching multi-step search journey for one persona (Agent #2). The plan is
+// a tree of JourneySteps; execution walks it against a surface adapter (the
+// deterministic `mock` adapter unless SWARM_ALLOW_LIVE=1). Journeys are API
+// calls to AI surfaces / licensed SERP data only — never a browser driven as a
+// fake human, and never traffic/clicks/impressions on a live surface.
+model Journey {
+  id          String   @id @default(cuid())
+  projectId   String
+  personaId   String
+  campaignId  String?
+  label       String
+  objective   String // copied from persona.researchObjective at plan time
+  surface     String   @default("mock") // mock | claude | perplexity
+  geo         String   @default("US")
+  maxDepth    Int      @default(4)
+  maxBranches Int      @default(2)
+  planSource  String   @default("deterministic") // deterministic | llm
+  planModel   String?
+  status      String   @default("planned") // planned | running | completed | partial | failed
+  stepCount   Int      @default(0)
+  executedSteps Int    @default(0)
+  mentionedSteps Int   @default(0)
+  citedSteps   Int      @default(0)
+  costUsd      Float    @default(0)
+  note         String? // cost-governor stop reason, etc.
+  error        String?
+  plannedAt    DateTime @default(now())
+  startedAt    DateTime?
+  finishedAt   DateTime?
+
+  persona  Persona          @relation(fields: [personaId], references: [id], onDelete: Cascade)
+  campaign JourneyCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  steps    JourneyStep[]
+
+  @@index([projectId])
+  @@index([projectId, status])
+  @@index([personaId])
+  @@index([campaignId])
+}
+
+// One node in a journey tree. parentId = null is the root query; children are
+// the follow-ups a persona would realistically ask next.
+model JourneyStep {
+  id        String   @id @default(cuid())
+  journeyId String
+  parentId  String?
+  depth     Int      @default(0)
+  ordinal   Int      @default(0) // order among siblings
+  kind      String   @default("query") // query | refinement | branch | comparison | objection
+  awareness String   @default("problem-aware")
+  query     String
+  rationale String // why this persona asks this next
+  status    String   @default("pending") // pending | done | failed | skipped
+
+  // execution result (null until executed)
+  answerText     String?
+  citations      String  @default("[]") // JSON string[]
+  mentioned      Boolean @default(false)
+  cited          Boolean @default(false)
+  citedUrl       String?
+  position       Int?
+  competitorsSeen String @default("[]") // JSON string[]
+  costUsd        Float   @default(0)
+  latencyMs      Int?
+  model          String?
+  executedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  journey  Journey       @relation(fields: [journeyId], references: [id], onDelete: Cascade)
+  parent   JourneyStep?  @relation("JourneyStepTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children JourneyStep[] @relation("JourneyStepTree")
+
+  @@index([journeyId])
+  @@index([journeyId, depth])
+  @@index([parentId])
+}
+
+// Fan-out governor: plan + execute N journeys across many personas under ONE
+// USD budget. Execution stops the moment spentUsd >= budgetUsd. This is the
+// single knob that bounds a "50-100 agents -> thousands of journeys" run.
+model JourneyCampaign {
+  id         String   @id @default(cuid())
+  projectId  String
+  name       String
+  surface    String   @default("mock")
+  geo        String    @default("US")
+  planSource String   @default("deterministic") // deterministic | llm
+  journeyTarget Int    @default(10) // how many journeys to plan
+  maxDepth   Int      @default(4)
+  maxBranches Int     @default(2)
+  personaRoles String @default("[]") // JSON string[] filter; empty = any active persona
+  budgetUsd  Float    @default(5.0)
+  spentUsd   Float    @default(0)
+  status     String   @default("planned") // planned | running | completed | partial | failed
+  journeysPlanned  Int @default(0)
+  journeysExecuted Int @default(0)
+  note       String?
+  createdAt  DateTime @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  journeys Journey[]
+
+  @@index([projectId])
+  @@index([projectId, status])
+}
+
+// Internal-Link topical-architecture analysis (Agent #8). One run crawls a
+// bounded set of the client's OWN pages, builds the internal link graph, and
+// emits "add link A -> B" recommendations from topical overlap + inbound
+// deficit. Client-site analysis only — no third-party crawling.
+model LinkGraph {
+  id            String   @id @default(cuid())
+  projectId     String
+  rootUrl       String
+  maxPages      Int      @default(50)
+  maxDepth      Int      @default(3)
+  source        String   @default("http") // http | fixture
+  status        String   @default("crawling") // crawling | analyzing | complete | failed
+  pagesCrawled  Int      @default(0)
+  edgeCount     Int      @default(0)
+  orphanCount   Int      @default(0)
+  recommendationCount Int @default(0)
+  recSource     String   @default("deterministic") // deterministic | llm
+  recModel      String?
+  error         String?
+  createdAt     DateTime @default(now())
+  finishedAt    DateTime?
+
+  nodes           LinkNode[]
+  edges           LinkEdge[]
+  recommendations LinkRecommendation[]
+
+  @@index([projectId])
+  @@index([projectId, status])
+}
+
+model LinkNode {
+  id            String   @id @default(cuid())
+  graphId       String
+  url           String
+  path          String
+  title         String?
+  h1            String?
+  wordCount     Int      @default(0)
+  topicKeywords String   @default("[]") // JSON string[] — top TF terms
+  depth         Int      @default(0) // clicks from root
+  httpStatus    Int      @default(0)
+  inboundCount  Int      @default(0)
+  outboundCount Int      @default(0)
+  isOrphan      Boolean  @default(false)
+  fetchedAt     DateTime?
+
+  graph LinkGraph @relation(fields: [graphId], references: [id], onDelete: Cascade)
+
+  @@unique([graphId, path])
+  @@index([graphId])
+  @@index([graphId, isOrphan])
+}
+
+model LinkEdge {
+  id         String @id @default(cuid())
+  graphId    String
+  fromPath   String
+  toPath     String
+  anchorText String @default("")
+  rel        String?
+  context    String? // ~120 chars around the link
+
+  graph LinkGraph @relation(fields: [graphId], references: [id], onDelete: Cascade)
+
+  @@index([graphId])
+  @@index([graphId, toPath])
+}
+
+model LinkRecommendation {
+  id              String  @id @default(cuid())
+  graphId         String
+  fromPath        String
+  toPath          String
+  suggestedAnchor String
+  reason          String
+  topicOverlap    Float   @default(0)
+  priority        Int     @default(0)
+  status          String  @default("open") // open | applied | dismissed
+
+  graph LinkGraph @relation(fields: [graphId], references: [id], onDelete: Cascade)
+
+  @@index([graphId])
+  @@index([graphId, status])
+  @@index([graphId, priority])
+}
+
+// Council (Agent #10): several role-agents debate which interventions are most
+// likely to improve AI visibility, then a synthesizer ranks them. Reads only
+// what other modules already produced (gap-analysis, measurement, journeys,
+// link graph, technical/entity audits) — it proposes nothing new to measure.
+model CouncilSession {
+  id           String   @id @default(cuid())
+  projectId    String
+  question     String   @default("Which interventions will most improve our AI visibility?")
+  rounds       Int      @default(1)
+  agentRoles   String   @default("[]") // JSON string[] of role slugs that debated
+  source       String   @default("deterministic") // deterministic | llm
+  model        String?
+  status       String   @default("complete") // running | complete | failed
+  evidenceRefs String   @default("{}") // JSON: which artefacts were in scope + their ids
+  error        String?
+  createdAt    DateTime @default(now())
+  finishedAt   DateTime?
+
+  contributions CouncilContribution[]
+  rankings      CouncilRanking[]
+
+  @@index([projectId])
+  @@index([projectId, status])
+}
+
+// One agent's statement in one round: its stance on each candidate intervention.
+model CouncilContribution {
+  id         String   @id @default(cuid())
+  sessionId  String
+  round      Int      @default(1)
+  agentRole  String   // technical | content | authority | measurement | narrative | skeptic | synthesizer
+  summary    String   // the agent's argument this round
+  positions  String   @default("[]") // JSON: [{interventionKey, vote: for|against|conditional, weight, rationale}]
+  createdAt  DateTime @default(now())
+
+  session CouncilSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([sessionId, round])
+}
+
+// The synthesized outcome: candidate interventions ranked by the debate.
+model CouncilRanking {
+  id              String @id @default(cuid())
+  sessionId       String
+  rank            Int
+  interventionKey String
+  title           String
+  rationale       String
+  consensus       Float  @default(0) // 0..1 agreement across agents
+  expectedImpact  Int    @default(0) // 0..100 heuristic
+  effort          String @default("medium") // low | medium | high
+  confidence      String @default("medium") // low | medium | high
+  sourceRefs      String @default("[]") // JSON string[] of artefact refs backing it
+  dissent         String? // recorded minority objection, if any
+
+  session CouncilSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([sessionId, rank])
+}
+
+// SERP Intelligence (Agent #3): tracks Google SERP rankings, competitors, SERP
+// features, and AI-Overview presence for a set of queries over time.
+// Data comes from a LICENSED SERP data API (DataForSEO) — never headless-browser
+// scraping of Google, and never generating queries/clicks/impressions as a user.
+model SerpTracker {
+  id           String   @id @default(cuid())
+  projectId    String
+  name         String
+  locationName String   @default("United States")
+  languageCode String   @default("en")
+  device       String   @default("desktop") // desktop | mobile
+  provider     String   @default("dataforseo") // dataforseo | fixture
+  status       String   @default("active") // active | archived
+  createdAt    DateTime @default(now())
+
+  queries   SerpQuery[]
+  snapshots SerpSnapshot[]
+
+  @@index([projectId])
+  @@index([projectId, status])
+}
+
+model SerpQuery {
+  id        String   @id @default(cuid())
+  trackerId String
+  keyword   String
+  createdAt DateTime @default(now())
+
+  tracker SerpTracker  @relation(fields: [trackerId], references: [id], onDelete: Cascade)
+  results SerpResult[]
+
+  @@unique([trackerId, keyword])
+  @@index([trackerId])
+}
+
+model SerpSnapshot {
+  id         String   @id @default(cuid())
+  trackerId  String
+  provider   String
+  status     String   @default("running") // running | complete | partial | failed
+  queriesRun Int      @default(0)
+  costUsd    Float    @default(0)
+  note       String?
+  error      String?
+  capturedAt DateTime @default(now())
+  finishedAt DateTime?
+
+  tracker SerpTracker  @relation(fields: [trackerId], references: [id], onDelete: Cascade)
+  results SerpResult[]
+
+  @@index([trackerId])
+  @@index([trackerId, capturedAt])
+}
+
+model SerpResult {
+  id          String @id @default(cuid())
+  snapshotId  String
+  queryId     String
+  keyword     String
+  subjectRank Int? // client's best organic rank_absolute, null if not present
+  subjectUrl  String?
+  aiOverviewPresent          Boolean @default(false)
+  aiOverviewMentionsSubject  Boolean @default(false)
+  featuredSnippetDomain      String?
+  topDomains       String @default("[]") // JSON: [{domain, rank}] first page organic
+  competitorsSeen  String @default("[]") // JSON string[] — project competitors in the SERP
+  sourceCount      Int    @default(0) // distinct domains cited across features
+  rawItemCount     Int    @default(0)
+  costUsd          Float  @default(0)
+  capturedAt       DateTime @default(now())
+
+  snapshot SerpSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  query    SerpQuery    @relation(fields: [queryId], references: [id], onDelete: Cascade)
+
+  @@index([snapshotId])
+  @@index([queryId])
+}
+
+// Authority discovery (Agent #6): finds legitimate publications, communities,
+// podcasts, and directories where the client could EARN a mention/link, and
+// promotes chosen ones into the mention-tracking outreach ledger. Discovery +
+// drafting only — no automated outreach, posting, or account creation.
+model AuthorityScan {
+  id             String   @id @default(cuid())
+  projectId      String
+  category       String
+  method         String   @default("combined") // serp | llm | citations | combined
+  status         String   @default("running") // running | complete | partial | failed
+  listicleQueries String  @default("[]") // JSON string[] used for SERP discovery
+  candidateCount Int      @default(0)
+  promotedCount  Int      @default(0)
+  costUsd        Float    @default(0)
+  model          String?
+  note           String?
+  error          String?
+  createdAt      DateTime @default(now())
+  finishedAt     DateTime?
+
+  candidates AuthorityCandidate[]
+
+  @@index([projectId])
+  @@index([projectId, status])
+}
+
+model AuthorityCandidate {
+  id             String  @id @default(cuid())
+  scanId         String
+  projectId      String
+  domain         String
+  url            String
+  title          String
+  type           String  @default("publication") // listicle | community | podcast | publication | directory | newsletter
+  discoveredVia  String  // serp:<keyword> | llm | citation:journey | citation:measurement
+  rank           Int? // SERP rank when discovered via SERP
+  relevance      Float   @default(0) // 0..1 heuristic
+  rationale      String
+  status         String  @default("new") // new | promoted | dismissed
+  promotedTargetId String? // MentionTarget id once promoted
+  createdAt      DateTime @default(now())
+
+  scan AuthorityScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@unique([scanId, domain])
+  @@index([scanId])
+  @@index([scanId, status])
+  @@index([projectId])
+}
