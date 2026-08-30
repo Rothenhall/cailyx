@@ -9,6 +9,43 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-08-31 — Personalised Flywheel + AEO/GEO boosts, all from real data
+
+- **The wheel is now built entirely from the project's own data.**
+  `journey.suggestions.ts` rewritten: `deriveSignals()` pulls the category,
+  competitor names, and the dominant persona role / company stage; the query
+  templates fill those slots, so a stage reads `rothenhall partners vs profound`,
+  `is ai visibility gtm a real problem for a cmo`, `aeo vs seo for ai visibility
+  gtm` — not `{cat}` placeholders. Folded in alongside: real persona
+  **vocabulary**, **objections** (→ most-aware queries) and **buying triggers**,
+  plus the queries real journeys already ran. Denser, too — up to 6 themes /
+  stage, ~70 leaves (was ~30).
+- **New second layer — `boosts`: concrete AEO/GEO actions for the site.** Each
+  `{ id, lane, title, why, action, evidence, effort }` is derived from a real
+  artefact: failed/warned **technical-audit findings** (Technical lane),
+  top **internal-link recommendations** + **orphan pages** (Content),
+  **authority-scan candidates** (Authority), unanswered **persona objections**
+  (Content), and measurement gaps — no completed journey, missing AI-surface /
+  SERP keys (Measurement / GEO). Two clearly-labelled `Best practice` baselines
+  round it out. `error`-status audit findings are reframed as
+  "audit incomplete — check didn't run", never as a site defect, and their raw
+  error blobs are flattened to one readable line.
+- `journey.service.suggestionWheel()` now also loads the latest audit findings,
+  link-graph recommendations + orphans, and authority candidates, and passes
+  three integration-connectivity flags (env-checked, no secret values).
+- **Flywheel card** gained a `buyer queries · AEO / GEO boosts (N)` switch; the
+  boosts view lists each with a lane chip, the why, a click-to-Chat action, and
+  an `evidence · effort` footer.
+- **Fixes:** wheel-scroll over any card now scrolls that card instead of zooming
+  the canvas (`Canvas` mirrors the pan handler's `[data-card]` guard). The
+  Analytics *Issues* list flattens raw error blobs and shows `error` findings as
+  "check couldn't run / no result" (shared `lib/text.ts#cleanFindingText`).
+- `journey.smoke.sh` +5 boost assertions (array shape, count, per-boost fields,
+  deterministic ids, best-practice presence) → **43**. Full harness **8/8 · 204**.
+- Verified in-browser: logout → login restores the session (token + refresh) and
+  every card repaints from cache; the Flywheel shows the personalised sunburst
+  and the 13 Rothenhall-specific boosts.
+
 ## 2026-08-31 — Dashboard data persistence + transparent token refresh
 
 - **Cards no longer go blank on view / preset switches or reload.** Every fetched

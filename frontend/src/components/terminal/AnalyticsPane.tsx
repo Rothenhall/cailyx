@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError } from '@/lib/api';
+import { cleanFindingText } from '@/lib/text';
 import { getAudit, getMeasurementSummary, listAudits, listLinkGraphs, runAudit } from '@/lib/terminal-api';
 import type { Integration, LinkGraph, TechnicalAudit } from '@/types/terminal';
 
@@ -226,7 +227,9 @@ function Issues({
   busy: boolean;
   filter?: (f: TechnicalAudit['findings'][number]) => boolean;
 }) {
-  const findings = (audit?.findings ?? []).filter((f) => f.status !== 'pass').filter((f) => (filter ? filter(f) : true));
+  const all = (audit?.findings ?? []).filter((f) => f.status !== 'pass').filter((f) => (filter ? filter(f) : true));
+  const findings = all.filter((f) => f.status !== 'error');
+  const errored = all.filter((f) => f.status === 'error');
   const crit = findings.filter((f) => f.status === 'fail').length;
   const warn = findings.filter((f) => f.status === 'warn').length;
 
@@ -246,17 +249,26 @@ function Issues({
           )}
         </span>
       </div>
-      {audit && findings.length === 0 && <p className="text-[12px] text-faint">no issues on this tab.</p>}
+      {audit && all.length === 0 && <p className="text-[12px] text-faint">no issues on this tab.</p>}
       <ul className="space-y-1">
         {findings.slice(0, 12).map((f) => (
           <li key={f.id} className="rounded border border-border/60 bg-bg-inset px-2 py-1.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="truncate text-[12px] text-dim">{f.detail || f.type}</span>
+              <span className="truncate text-[12px] text-dim">{cleanFindingText(f.detail) || f.type}</span>
               <span className={`shrink-0 text-[10px] uppercase ${f.status === 'fail' ? 'text-red' : SEV_COLOR[f.severity] ?? 'text-amber'}`}>
                 {f.status === 'fail' ? 'critical' : f.severity}
               </span>
             </div>
-            {f.recommendedFix && <p className="mt-0.5 text-[11px] text-faint">fix: {f.recommendedFix}</p>}
+            {f.recommendedFix && <p className="mt-0.5 text-[11px] text-faint">fix: {cleanFindingText(f.recommendedFix)}</p>}
+          </li>
+        ))}
+        {errored.slice(0, 6).map((f) => (
+          <li key={f.id} className="rounded border border-border/60 bg-bg-inset px-2 py-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-[12px] text-faint">{f.type} check couldn’t run</span>
+              <span className="shrink-0 text-[10px] uppercase text-faint">no result</span>
+            </div>
+            <p className="mt-0.5 text-[11px] text-faint">{cleanFindingText(f.detail, 140)}</p>
           </li>
         ))}
       </ul>

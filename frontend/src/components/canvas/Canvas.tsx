@@ -88,6 +88,8 @@ export function Canvas({
     const stage = stageRef.current;
     if (!stage) return;
     const onWheel = (e: WheelEvent) => {
+      // wheel over a card scrolls the card's own content; only empty canvas zooms
+      if ((e.target as HTMLElement).closest('[data-card]')) return;
       e.preventDefault();
       const rect = stage.getBoundingClientRect();
       const cx = e.clientX - rect.left;

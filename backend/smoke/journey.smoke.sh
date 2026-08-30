@@ -98,8 +98,19 @@ SWT=$(echo "$SW" | jget total)
 [ "$SWT" -ge 12 ] 2>/dev/null && ok "wheel produced $SWT layered suggestions" || bad "total = $SWT"
 echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);const bad=w.stages.some(st=>!st.themes.length||st.themes.some(th=>th.queries.some(q=>!q.text||!q.painPoint||!q.suggestion||!["template","persona","journey"].includes(q.source))));process.exit(bad?1:0)})' && ok "every leaf has text + painPoint + suggestion + source" || bad "malformed suggestion leaf"
 echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);const themed=w.stages.every(st=>st.themes.length>=1);process.exit(themed?0:1)})' && ok "every stage has >=1 theme (layered)" || bad "a stage has no themes"
-SW2T=$(curl -s "$API/projects/$PID/journeys/suggestions" "${AUTH[@]}" | jget total)
+SW2=$(curl -s "$API/projects/$PID/journeys/suggestions" "${AUTH[@]}")
+SW2T=$(echo "$SW2" | jget total)
 [ "$SW2T" = "$SWT" ] && ok "wheel is deterministic ($SW2T)" || bad "wheel re-run differs: $SW2T vs $SWT"
+
+# --- AEO/GEO boosts (second Flywheel layer) -----------------------
+[ "$(echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);process.stdout.write(Array.isArray(w.boosts)?"1":"0")})')" = "1" ] && ok "wheel carries a boosts array" || bad "boosts not an array"
+BC=$(echo "$SW" | jget boostCount)
+[ "$BC" -ge 2 ] 2>/dev/null && ok "wheel produced $BC AEO/GEO boosts" || bad "boostCount = $BC"
+echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);const lanes=["AEO","GEO","Content","Technical","Authority","Measurement"];const bad=w.boosts.some(b=>!b.id||!b.title||!b.why||!b.action||!b.evidence||!lanes.includes(b.lane)||!["quick","project"].includes(b.effort));process.exit(bad?1:0)})' && ok "every boost has id + lane + title + why + action + evidence + effort" || bad "malformed boost"
+BID1=$(echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);process.stdout.write(w.boosts.map(b=>b.id).join(","))})')
+BID2=$(echo "$SW2" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);process.stdout.write(w.boosts.map(b=>b.id).join(","))})')
+[ "$BID1" = "$BID2" ] && ok "boost ids are deterministic" || bad "boost ids differ across runs"
+[ -n "$(echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);process.stdout.write(w.boosts.some(b=>b.evidence==="Best practice")?"y":"")})')" ] && ok "boosts include labelled best-practice baselines" || bad "no best-practice boost"
 
 echo
 echo "== $PASS passed, $FAIL failed =="

@@ -107,24 +107,82 @@ export class JourneyService {
   }
 
   /**
-   * A deterministic suggestion wheel for the project — buyer search queries
-   * grouped by awareness stage, drawn from the planner templates + the
-   * project's personas + queries real journeys already produced. Feeds the
-   * frontend Flywheel card. No LLM, no spend.
+   * A deterministic suggestion wheel for the project. Two layers:
+   *   - `stages` — buyer search queries grouped by awareness stage, built from
+   *     personalised templates + the project's personas (vocabulary /
+   *     objections / triggers) + queries real journeys already produced.
+   *   - `boosts` — concrete AEO/GEO actions derived from the project's own
+   *     latest technical audit, link graph and authority scan.
+   * Feeds the frontend Flywheel card. No LLM, no spend.
    */
   async suggestionWheel(projectId: string) {
     const project = await this.ensureProject(projectId);
-    const [personas, journeySteps] = await Promise.all([
+    const [personas, journeySteps, audit, graph, scan] = await Promise.all([
       this.prisma.persona.findMany({
         where: { projectId },
-        select: { awareness: true, vocabulary: true, objections: true },
+        select: {
+          awareness: true,
+          role: true,
+          seniority: true,
+          companyStage: true,
+          primaryGoal: true,
+          painPoints: true,
+          buyingTriggers: true,
+          objections: true,
+          vocabulary: true,
+        },
       }),
       this.prisma.journeyStep.findMany({
         where: { journey: { projectId } },
-        select: { awareness: true, query: true },
+        select: { awareness: true, query: true, status: true },
         take: 400,
       }),
+      this.prisma.technicalAudit.findFirst({
+        where: { projectId },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          findings: {
+            select: { type: true, status: true, severity: true, detail: true, recommendedFix: true },
+          },
+        },
+      }),
+      this.prisma.linkGraph.findFirst({
+        where: { projectId },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          recommendations: {
+            orderBy: { priority: 'desc' },
+            take: 6,
+            select: { fromPath: true, toPath: true, suggestedAnchor: true, reason: true, priority: true },
+          },
+          nodes: {
+            where: { isOrphan: true },
+            take: 4,
+            select: { path: true, title: true },
+          },
+        },
+      }),
+      this.prisma.authorityScan.findFirst({
+        where: { projectId },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          candidates: {
+            where: { status: { not: 'dismissed' } },
+            orderBy: { relevance: 'desc' },
+            take: 6,
+            select: { domain: true, type: true, rationale: true, relevance: true },
+          },
+        },
+      }),
     ]);
+
+    const cfg = this.config;
+    const integrations = {
+      aiSurface: Boolean(cfg.get<string>('ANTHROPIC_API_KEY') || cfg.get<string>('PERPLEXITY_API_KEY')),
+      serp: Boolean(cfg.get<string>('DATAFORSEO_LOGIN') && cfg.get<string>('DATAFORSEO_PASSWORD')),
+      analytics: Boolean(cfg.get<string>('GA4_PROPERTY_ID') || cfg.get<string>('GSC_SITE_URL')),
+    };
+
     return buildSuggestionWheel({
       project: {
         name: project.name,
@@ -134,6 +192,11 @@ export class JourneyService {
       },
       personas,
       journeySteps,
+      auditFindings: audit?.findings ?? [],
+      linkRecs: graph?.recommendations ?? [],
+      orphanPages: graph?.nodes ?? [],
+      authorityCandidates: scan?.candidates ?? [],
+      integrations,
     });
   }
 

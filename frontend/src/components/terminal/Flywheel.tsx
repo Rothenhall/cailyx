@@ -17,6 +17,17 @@ import { useEffect, useMemo, useState } from 'react';
 export const flywheelMeta = { key: 'flywheel' as const, title: 'Flywheel', icon: '❋' };
 
 export type SuggestionSource = 'template' | 'persona' | 'journey';
+export type BoostLane = 'AEO' | 'GEO' | 'Content' | 'Technical' | 'Authority' | 'Measurement';
+
+export interface SuggestionBoost {
+  id: string;
+  lane: BoostLane;
+  title: string;
+  why: string;
+  action: string;
+  evidence: string;
+  effort: 'quick' | 'project';
+}
 
 export interface SuggestionWheel {
   hub: { label: string; domain: string; category: string };
@@ -28,8 +39,19 @@ export interface SuggestionWheel {
       queries: Array<{ text: string; source: SuggestionSource; painPoint: string; suggestion: string }>;
     }>;
   }>;
+  boosts?: SuggestionBoost[];
   total: number;
+  boostCount?: number;
 }
+
+const LANE_COLOR: Record<BoostLane, string> = {
+  AEO: 'var(--accent)',
+  GEO: 'var(--cognac)',
+  Content: 'var(--amber)',
+  Technical: 'var(--red)',
+  Authority: 'var(--blue)',
+  Measurement: 'var(--accent-dim)',
+};
 
 /* warm ramp per stage: cream → brass → cognac (BRANDING) */
 const RAMP = [
@@ -78,6 +100,7 @@ export function Flywheel({
 }) {
   const [sel, setSel] = useState<{ s: number; t: number | null }>({ s: 0, t: null });
   const [hover, setHover] = useState<string | null>(null);
+  const [view, setView] = useState<'queries' | 'boosts'>('queries');
 
   useEffect(() => setSel({ s: 0, t: null }), [wheel?.hub.domain]);
 
@@ -99,6 +122,7 @@ export function Flywheel({
       </p>
     );
 
+  const boosts = wheel.boosts ?? [];
   const stage = stages[sel.s] ?? null;
   const rows = !stage
     ? []
@@ -257,39 +281,102 @@ export function Flywheel({
 
       {/* ── detail panel (full readable text) ── */}
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        <div className="mb-2 flex items-center gap-2">
-          <p className="text-[11px] uppercase tracking-widest text-faint">
-            {stage?.label}
-            {sel.t !== null && stage?.themes[sel.t] ? ` › ${shortTheme(stage.themes[sel.t].label)}` : ' › all themes'}
-          </p>
-          {sel.t !== null && (
-            <button onClick={() => setSel({ s: sel.s, t: null })} className="text-[10px] text-faint hover:text-dim">
-              (show all)
-            </button>
-          )}
+        {/* view switch: buyer queries  ·  AEO/GEO boosts */}
+        <div className="mb-2.5 flex items-center gap-1 rounded-md border border-border bg-bg-inset p-0.5 text-[11px]">
+          <button
+            onClick={() => setView('queries')}
+            className={`flex-1 rounded px-2 py-1 transition-colors ${view === 'queries' ? 'bg-bg-raised font-semibold text-text' : 'text-faint hover:text-dim'}`}
+          >
+            buyer queries
+          </button>
+          <button
+            onClick={() => setView('boosts')}
+            className={`flex-1 rounded px-2 py-1 transition-colors ${view === 'boosts' ? 'bg-bg-raised font-semibold text-text' : 'text-faint hover:text-dim'}`}
+          >
+            AEO / GEO boosts{boosts.length ? ` (${boosts.length})` : ''}
+          </button>
         </div>
-        <ul key={`${sel.s}:${sel.t}`} className="space-y-2">
-          {rows.map((q, i) => (
-            <li
-              key={i}
-              className="fw-row rounded-md border border-border bg-bg-raised p-2.5 transition-[border-color,transform] duration-200 hover:-translate-y-px hover:border-accent-dim"
-              style={{ animationDelay: `${Math.min(i, 12) * 32}ms` }}
-            >
-              <button onClick={() => onPick?.(q.text)} className="group flex w-full items-start gap-2 text-left" title="Send to Chat">
-                <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full transition-transform duration-200 group-hover:scale-150" style={{ background: SRC_DOT[q.source] }} />
-                <span className="text-[12px] font-semibold leading-snug text-text transition-colors group-hover:text-cognac">{q.text}</span>
-              </button>
-              <p className="mt-1 pl-3.5 text-[11px] leading-snug text-dim">
-                <span className="text-faint">pain · </span>
-                {q.painPoint}
+
+        {view === 'queries' ? (
+          <>
+            <div className="mb-2 flex items-center gap-2">
+              <p className="text-[11px] uppercase tracking-widest text-faint">
+                {stage?.label}
+                {sel.t !== null && stage?.themes[sel.t] ? ` › ${shortTheme(stage.themes[sel.t].label)}` : ' › all themes'}
               </p>
-              <p className="mt-0.5 pl-3.5 text-[11px] leading-snug text-cognac">
-                <span className="text-faint">→ </span>
-                {q.suggestion}
+              {sel.t !== null && (
+                <button onClick={() => setSel({ s: sel.s, t: null })} className="text-[10px] text-faint hover:text-dim">
+                  (show all)
+                </button>
+              )}
+            </div>
+            <ul key={`${sel.s}:${sel.t}`} className="space-y-2">
+              {rows.map((q, i) => (
+                <li
+                  key={i}
+                  className="fw-row rounded-md border border-border bg-bg-raised p-2.5 transition-[border-color,transform] duration-200 hover:-translate-y-px hover:border-accent-dim"
+                  style={{ animationDelay: `${Math.min(i, 12) * 32}ms` }}
+                >
+                  <button onClick={() => onPick?.(q.text)} className="group flex w-full items-start gap-2 text-left" title="Send to Chat">
+                    <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full transition-transform duration-200 group-hover:scale-150" style={{ background: SRC_DOT[q.source] }} />
+                    <span className="text-[12px] font-semibold leading-snug text-text transition-colors group-hover:text-cognac">{q.text}</span>
+                  </button>
+                  <p className="mt-1 pl-3.5 text-[11px] leading-snug text-dim">
+                    <span className="text-faint">pain · </span>
+                    {q.painPoint}
+                  </p>
+                  <p className="mt-0.5 pl-3.5 text-[11px] leading-snug text-cognac">
+                    <span className="text-faint">→ </span>
+                    {q.suggestion}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          <>
+            <p className="mb-2 text-[11px] uppercase tracking-widest text-faint">
+              what to ship for {clip(wheel.hub.label, 22)}
+            </p>
+            {boosts.length === 0 ? (
+              <p className="text-[12px] text-faint">
+                No boosts yet — run a technical audit, a link-graph crawl, or an authority scan and they populate here.
               </p>
-            </li>
-          ))}
-        </ul>
+            ) : (
+              <ul className="space-y-2">
+                {boosts.map((b, i) => (
+                  <li
+                    key={b.id}
+                    className="fw-row rounded-md border border-border bg-bg-raised p-2.5 transition-[border-color,transform] duration-200 hover:-translate-y-px hover:border-accent-dim"
+                    style={{ animationDelay: `${Math.min(i, 12) * 32}ms` }}
+                  >
+                    <div className="flex items-start gap-2">
+                      <span className="mt-[3px] inline-flex shrink-0 items-center rounded px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide" style={{ background: LANE_COLOR[b.lane], color: '#fbf9f3' }}>
+                        {b.lane}
+                      </span>
+                      <span className="text-[12px] font-semibold leading-snug text-text">{b.title}</span>
+                    </div>
+                    <p className="mt-1 pl-1 text-[11px] leading-snug text-dim">
+                      <span className="text-faint">why · </span>
+                      {b.why}
+                    </p>
+                    <button
+                      onClick={() => onPick?.(b.action)}
+                      className="group mt-0.5 flex w-full items-start gap-1 pl-1 text-left text-[11px] leading-snug text-cognac"
+                      title="Send to Chat"
+                    >
+                      <span className="text-faint">→ </span>
+                      <span className="transition-colors group-hover:underline">{b.action}</span>
+                    </button>
+                    <p className="mt-1 pl-1 text-[10px] text-faint">
+                      {b.evidence} · {b.effort === 'quick' ? 'quick win' : 'project'}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
