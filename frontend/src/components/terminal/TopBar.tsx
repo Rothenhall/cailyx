@@ -1,22 +1,16 @@
 'use client';
 
 /**
- * Cailyx top bar: project switcher, product mark, a typewriter status line, the
- * view menu (show/hide cards, reset/fit the canvas), connections, user
- * management (admin), and the operator chip.
+ * Cailyx top bar: project switcher, product mark, the view menu (show/hide
+ * cards, reset/fit the canvas), connections, user management (admin), and the
+ * operator chip.
  *
  * @module components/terminal/TopBar
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import type { User } from '@/types/api';
 import type { ProjectDetail } from '@/types/terminal';
-
-const STATUS_LINES = [
-  'Initializing AI CMO…',
-  'Reading your context…',
-  'Agents standing by — ask me anything.',
-];
 
 export interface CardToggle {
   key: string;
@@ -61,22 +55,6 @@ export function TopBar({
 }) {
   const active = projects.find((p) => p.id === activeId) ?? null;
   const [menu, setMenu] = useState<null | 'project' | 'view'>(null);
-  const [line, setLine] = useState('');
-  const idxRef = useRef(0);
-
-  useEffect(() => {
-    let ch = 0;
-    let raf: ReturnType<typeof setTimeout>;
-    const run = () => {
-      const target = STATUS_LINES[idxRef.current % STATUS_LINES.length];
-      ch += 1;
-      setLine(target.slice(0, ch));
-      if (ch < target.length) raf = setTimeout(run, 24);
-      else raf = setTimeout(() => { idxRef.current += 1; ch = 0; setLine(''); run(); }, 3600);
-    };
-    run();
-    return () => clearTimeout(raf);
-  }, []);
 
   return (
     <div className="flex h-10 shrink-0 items-center gap-3 border-b border-border bg-bg-raised px-3 text-xs">
@@ -114,10 +92,6 @@ export function TopBar({
 
       <span className="text-faint">·</span>
       <span className="font-semibold tracking-wide text-dim">Cailyx</span>
-
-      <span className="ml-3 hidden truncate text-faint sm:inline">
-        <span className="text-accent">&gt;</span> <span className="cursor-blink">{line}</span>
-      </span>
 
       <div className="ml-auto flex items-center gap-2">
         {/* view menu */}
