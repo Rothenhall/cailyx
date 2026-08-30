@@ -9,6 +9,31 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-08-31 — Light theme, layout presets, Flywheel
+
+- **Light theme (correct brand use)** — swapped to the real Rothenhall light
+  palette: warm-paper canvas (`#efe9dc`), paper cards (`#fbf9f3`) with a soft
+  raised-paper shadow, ink text, **brass-deep** as the quiet default accent and
+  **cognac** as the single warm spotlight. The Chat card is a dark "night" card
+  (BRANDING's "dramatic dark band"). Modal scrims are warm ink, not black.
+- **Layout presets** — the top-bar **view** menu now has one-click presets:
+  *Overview* (analytics/context/agents/chat), *Research* (big Flywheel + agents +
+  chat + context), *Diagnostics* (analytics/agents/gates), *Everything*. Each
+  sets card positions + visibility, then frames them.
+- **Flywheel card** (Agent-#2 adjacent) — an answerthepublic-style radial of
+  buyer search queries for the project, grouped into four awareness-stage wedges
+  (problem → solution → product → most aware) in a cream → brass → cognac ramp.
+  Click a spoke to drop that query into the Chat card.
+  - New backend: `GET /api/projects/:id/journeys/suggestions` — deterministic
+    suggestion wheel built from the journey-planner templates + the project's
+    personas + queries real journeys produced. No LLM, no spend.
+    (`journey.suggestions.ts`; planner `FOLLOWUPS`/`OPENERS` now exported.)
+- Verified in-browser: light theme on login + console, presets rearrange +
+  frame, Flywheel renders and click-to-chat works. `tsc` + builds green.
+  `journey.smoke.sh` +5 assertions (**37**), full harness **8/8 · 198**.
+
+---
+
 ## 2026-08-31 — Infinite-canvas console + Gates card + de-browned palette
 
 - **Infinite canvas** — the console is now a pannable / zoomable stage

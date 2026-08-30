@@ -1,38 +1,43 @@
 /**
  * Cailyx — infinite-canvas operator console.
- * Colour: Rothenhall Partners brand (BRANDING.md), adapted for a dark data
- * surface — deep near-black stage, warm charcoal cards, near-white text, and a
- * brass → cognac → amber → red spread for accent + status so it reads with
- * contrast (not a flat brown wash). Typography unchanged (terminal monospace).
+ * Colour: Rothenhall Partners brand (BRANDING.md) — the real light theme.
+ * Warm paper canvas, ink text, brass as the quiet default accent, cognac as the
+ * single warm spotlight. Dark "night" cards for dramatic contrast where it
+ * earns its place. Typography unchanged (terminal monospace).
  */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  /* Surfaces — Night band, de-browned for value contrast */
-  --bg: #100e0b;            /* the infinite stage — deep, faintly warm black */
-  --bg-raised: #1c1a15;     /* card surface — warm charcoal, lifted off the stage */
-  --bg-inset: #14120f;      /* input wells, code blocks */
-  --border: #332f24;        /* hairlines (night-line, made visible) */
-  --border-strong: #4c4535; /* hover / emphasis borders */
+  /* Paper & ink (BRANDING §2) */
+  --bg: #efe9dc;            /* the canvas stage — canvas-2, so paper cards read raised */
+  --bg-raised: #fbf9f3;     /* card surface — paper (lightest) */
+  --bg-inset: #f2ecdf;      /* input wells, between canvas and canvas-2 */
+  --border: #ddd5c4;        /* --color-line — hairlines */
+  --border-strong: #cbc0a9; /* --color-line-strong — ghost-button outline, hover */
 
-  /* Text — canvas tones, brightened for dark */
-  --text: #f0ece0;          /* near-white warm — primary */
-  --text-dim: #c0b7a1;      /* secondary */
-  --text-faint: #8a8067;    /* captions, footnotes (~ ink-45) */
+  --text: #1a1712;          /* --color-ink */
+  --text-dim: #5c5648;      /* --color-ink-60 — secondary */
+  --text-faint: #857d6c;    /* --color-ink-45 — captions, footnotes */
 
-  /* Brass — the quiet default accent (ready dots, active tab, badges, cursor) */
-  --accent: #c2a068;        /* brass, for dark surfaces */
-  --accent-dim: #806239;    /* brass-deep — fills + borders */
+  /* Brass — the quiet default accent (eyebrows, labels, active tab, ready dots) */
+  --accent: #7c6238;        /* --color-brass-deep */
+  --accent-dim: #b79a6b;    /* --color-brass-soft — fill washes + soft borders */
 
-  /* Cognac — the warm spotlight (links, primary CTA, "you") */
-  --cognac: #d98552;        /* cognac-soft, brightened */
+  /* Cognac — the single warm spotlight (primary CTA, links, headline accents) */
+  --cognac: #a85c30;        /* --color-cognac */
 
-  /* Status — deliberately spread across the warm range so they separate */
-  --amber: #e0b44a;         /* caution — yellow-gold, distinct from brass */
-  --red: #d15b3c;           /* critical — a real alarming warm red */
-  --blue: #d98552;          /* links / "you" — cognac (brand has no blue) */
+  /* Status */
+  --amber: #b8863b;         /* caution */
+  --red: #8a4a26;           /* --color-cognac-deep — error text on paper */
+  --blue: #a85c30;          /* links — cognac (brand has no blue) */
+
+  /* Night band — for the dark contrast cards (BRANDING §2) */
+  --night: #14120d;
+  --night-2: #201c15;
+  --night-line: #35301f;
+  --night-text: #efe9dc;
 
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
 }
@@ -108,8 +113,20 @@ select {
   animation: pulse-dot 1.8s ease-in-out infinite;
 }
 
-/* infinite-canvas dotted grid — sits on the stage, scales with zoom via the
- * --grid CSS var set by <Canvas> */
+/* soft raised-paper shadow for canvas cards (BRANDING .convex-light) */
+.card-shadow {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.7) inset,
+    0 10px 30px -12px rgba(26, 23, 18, 0.28),
+    0 2px 8px -4px rgba(26, 23, 18, 0.14);
+}
+.card-shadow-dark {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.05) inset,
+    0 16px 40px -14px rgba(0, 0, 0, 0.6);
+}
+
+/* infinite-canvas dotted grid — scales with zoom via the --grid vars on <Canvas> */
 .canvas-grid {
   background-image: radial-gradient(var(--border) 1px, transparent 1px);
   background-size: var(--grid, 28px) var(--grid, 28px);

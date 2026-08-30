@@ -78,15 +78,17 @@ export function CanvasCard({
     <div
       data-card
       onPointerDown={() => onFocus?.()}
-      className={`absolute flex flex-col overflow-hidden rounded-lg border shadow-2xl ${
-        dark ? 'border-[#26221b] bg-[#0c0a07] text-[#f0ece0]' : 'border-border bg-bg-raised'
+      className={`absolute flex flex-col overflow-hidden rounded-lg border ${
+        dark
+          ? 'card-shadow-dark border-night-line bg-night text-night-text'
+          : 'card-shadow border-border bg-bg-raised'
       }`}
       style={{ left: box.x, top: box.y, width: box.w, height: box.h }}
     >
       <header
         onPointerDown={(e) => startDrag(e, 'move')}
         className={`flex h-9 shrink-0 cursor-grab items-center gap-2 border-b px-3 active:cursor-grabbing ${
-          dark ? 'border-[#26221b]' : 'border-border'
+          dark ? 'border-night-line' : 'border-border'
         }`}
       >
         <span className="text-faint">{icon}</span>

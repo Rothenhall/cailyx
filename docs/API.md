@@ -443,6 +443,7 @@ Each module has its own `API.md` inside its module folder with detailed endpoint
 | Method | Path | Description | Rate Limit |
 |---|---|---|---|
 | `GET` | `/api/projects/:projectId/journeys` | list (?status=) | — |
+| `GET` | `/api/projects/:projectId/journeys/suggestions` | deterministic buyer-query **suggestion wheel** (`{hub, spokes[]}` by awareness stage) — feeds the Flywheel card; no LLM, no spend | — |
 | `POST` | `/api/projects/:projectId/journeys/plan` | `{personaId, surface?, maxDepth?, maxBranches?, useLlm?}` → branching step tree | 30/60s |
 | `GET` | `/api/projects/:projectId/journeys/:journeyId` | detail + step tree | — |
 | `POST` | `/api/projects/:projectId/journeys/:journeyId/execute` | run pending steps; `?maxCostUsd=` cap override; stops → `partial` | 20/60s |

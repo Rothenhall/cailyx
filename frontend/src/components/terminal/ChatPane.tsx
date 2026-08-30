@@ -36,11 +36,16 @@ export function ChatPane({
   agents,
   integrations,
   onOpenConnections,
+  seed,
+  onSeedConsumed,
 }: {
   project: ProjectDetail | null;
   agents: AgentsResponse | null;
   integrations: Integration[];
   onOpenConnections: () => void;
+  /** a query dropped in from another card (e.g. the Flywheel) */
+  seed?: string | null;
+  onSeedConsumed?: () => void;
 }) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
@@ -75,11 +80,28 @@ export function ChatPane({
     setMsgs((m) => [...m, { role: 'cailyx', text: answer }]);
   };
 
+  // a query dropped in from the Flywheel
+  useEffect(() => {
+    if (!seed) return;
+    setMsgs((m) => [
+      ...m,
+      { role: 'you', text: seed },
+      {
+        role: 'cailyx',
+        text:
+          `Suggested buyer query: "${seed}".\n` +
+          'Add it to a query set, or plan a journey from it — the Journey Agent will branch it into a full search path.',
+      },
+    ]);
+    onSeedConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed]);
+
   return (
     <div className="flex h-full flex-col">
       {/* CMO banner */}
-      <div className="flex items-center gap-2 border-b border-[#26221b] bg-[#0c0a07] px-3 py-2">
-        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-[#26221b] text-dim">▚</span>
+      <div className="flex items-center gap-2 border-b border-night-line bg-night-2 px-3 py-2">
+        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-night-line text-dim">▚</span>
         <div className="min-w-0 flex-1 leading-tight">
           <div className="text-[12px] font-semibold text-dim">Hire your full-time CMO</div>
           <div className="truncate text-[10px] text-faint">AI-powered marketing — fixed-fee sprints &amp; monthly retainers</div>
@@ -116,9 +138,9 @@ export function ChatPane({
           e.preventDefault();
           send(input);
         }}
-        className="shrink-0 border-t border-[#26221b] p-2"
+        className="shrink-0 border-t border-night-line p-2"
       >
-        <div className="flex items-center gap-2 rounded-md border border-[#26221b] bg-[#0c0a07] px-2">
+        <div className="flex items-center gap-2 rounded-md border border-night-line bg-night-2 px-2">
           <span className="text-faint">$</span>
           <input
             value={input}
@@ -130,7 +152,7 @@ export function ChatPane({
               }
             }}
             placeholder="ask me anything…  (try: status)"
-            className="flex-1 bg-transparent py-2 text-[12px] text-[#f0ece0] outline-none"
+            className="flex-1 bg-transparent py-2 text-[12px] text-night-text outline-none"
           />
           <button type="submit" className="text-faint hover:text-accent" aria-label="send">
             ↩

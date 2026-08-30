@@ -34,6 +34,7 @@ import { PerplexitySurfaceAdapter } from '../measurement/adapters/perplexity.ada
 import { MockSurfaceAdapter } from '../measurement/adapters/mock.adapter';
 import { scoreAnswerForSubject, parseCompetitors } from '../../common/utils/subject-match';
 import { planJourney } from './journey.planner';
+import { buildSuggestionWheel } from './journey.suggestions';
 import { JOURNEY_LIMITS } from './journey.types';
 import type { PlannerContext, PlannerPersona } from './journey.planner';
 import type { SurfaceAdapter } from '../measurement/measurement.types';
@@ -103,6 +104,37 @@ export class JourneyService {
       : planJourney(plannerPersona, ctx, { maxDepth, maxBranches });
 
     return this.persistPlan(projectId, persona.id, null, { surface, geo, maxDepth, maxBranches }, plan);
+  }
+
+  /**
+   * A deterministic suggestion wheel for the project — buyer search queries
+   * grouped by awareness stage, drawn from the planner templates + the
+   * project's personas + queries real journeys already produced. Feeds the
+   * frontend Flywheel card. No LLM, no spend.
+   */
+  async suggestionWheel(projectId: string) {
+    const project = await this.ensureProject(projectId);
+    const [personas, journeySteps] = await Promise.all([
+      this.prisma.persona.findMany({
+        where: { projectId },
+        select: { awareness: true, vocabulary: true, objections: true },
+      }),
+      this.prisma.journeyStep.findMany({
+        where: { journey: { projectId } },
+        select: { awareness: true, query: true },
+        take: 400,
+      }),
+    ]);
+    return buildSuggestionWheel({
+      project: {
+        name: project.name,
+        domain: project.domain,
+        category: project.category,
+        competitors: project.competitors,
+      },
+      personas,
+      journeySteps,
+    });
   }
 
   /** List journeys for a project (newest first), without step bodies. */

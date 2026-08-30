@@ -38,6 +38,8 @@ export function TopBar({
   onToggleCard,
   onResetView,
   onFitView,
+  presets,
+  onApplyPreset,
   zoom,
 }: {
   user: User | null;
@@ -53,6 +55,8 @@ export function TopBar({
   onToggleCard: (key: string) => void;
   onResetView: () => void;
   onFitView: () => void;
+  presets: Array<{ id: string; label: string }>;
+  onApplyPreset: (id: string) => void;
   zoom: number;
 }) {
   const active = projects.find((p) => p.id === activeId) ?? null;
@@ -125,8 +129,20 @@ export function TopBar({
             view <span className="text-faint">{Math.round(zoom * 100)}%</span>
           </button>
           {menu === 'view' && (
-            <div className="absolute right-0 top-9 z-30 w-52 rounded-md border border-border bg-bg-raised p-1 shadow-xl">
-              <p className="px-2 py-1 text-[10px] uppercase tracking-widest text-faint">cards</p>
+            <div className="absolute right-0 top-9 z-30 w-56 rounded-md border border-border bg-bg-raised p-1 shadow-xl">
+              <p className="px-2 py-1 text-[10px] uppercase tracking-widest text-faint">layout presets</p>
+              <div className="grid grid-cols-2 gap-1 px-1 pb-1">
+                {presets.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => { onApplyPreset(p.id); setMenu(null); }}
+                    className="rounded border border-border px-2 py-1.5 text-left text-[11px] text-dim hover:border-accent-dim hover:text-accent"
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <p className="border-t border-border px-2 py-1 pt-1.5 text-[10px] uppercase tracking-widest text-faint">cards</p>
               {cards.map((c) => (
                 <button
                   key={c.key}

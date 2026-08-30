@@ -53,6 +53,20 @@ export class JourneyController {
     return this.journeyService.listJourneys(projectId, status);
   }
 
+  @Get('journeys/suggestions')
+  @ApiOperation({
+    summary: 'Buyer-query suggestion wheel',
+    description:
+      'A deterministic set of buyer search queries grouped by awareness stage (problem → solution → ' +
+      'product → most aware), built from planner templates + the project\'s personas + queries real ' +
+      'journeys produced. Feeds the Flywheel card. No LLM, no spend.',
+  })
+  @ApiResponse({ status: 200, description: '{ hub, spokes[], total }' })
+  @ApiResponse({ status: 404, description: 'Project not found' })
+  async suggestions(@Param('projectId') projectId: string) {
+    return this.journeyService.suggestionWheel(projectId);
+  }
+
   @Post('journeys/plan')
   @HttpCode(HttpStatus.CREATED)
   @Throttle({ default: { ttl: 60000, limit: 30 } })

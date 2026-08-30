@@ -1,9 +1,9 @@
 import type { Config } from "tailwindcss";
 
 /**
- * Tailwind config — Cailyx dark console. Colours are driven by the CSS custom
- * properties in `src/app/globals.css` (Rothenhall Partners brand palette) so
- * components use `bg-bg`, `text-dim`, `border-border`, `text-accent`, etc.
+ * Tailwind config — Cailyx console (Rothenhall Partners light theme). Colours
+ * are driven by the CSS custom properties in `src/app/globals.css` so components
+ * use `bg-bg`, `text-dim`, `border-border`, `text-accent`, `bg-night`, etc.
  */
 const config: Config = {
   content: [
@@ -28,6 +28,10 @@ const config: Config = {
         amber: "var(--amber)",
         red: "var(--red)",
         blue: "var(--blue)",
+        night: "var(--night)",
+        "night-2": "var(--night-2)",
+        "night-line": "var(--night-line)",
+        "night-text": "var(--night-text)",
       },
       fontFamily: {
         mono: "var(--mono)",

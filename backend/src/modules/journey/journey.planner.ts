@@ -19,7 +19,7 @@ import type { JourneyPlan, JourneyStepKind, PlannedStep } from './journey.types'
 import type { PersonaAwareness } from '../persona/persona.types';
 
 /** Awareness ladder — a follow-up may advance one rung or hold. */
-const AWARENESS_LADDER: readonly PersonaAwareness[] = [
+export const AWARENESS_LADDER: readonly PersonaAwareness[] = [
   'problem-aware',
   'solution-aware',
   'product-aware',
@@ -56,7 +56,7 @@ interface QueryFrame {
 
 /** Candidate follow-ups for a given awareness rung. The planner picks up to
  * `maxBranches` of these per node, seeded. `{cat}/{brand}/{comp}/{goal}` fill. */
-const FOLLOWUPS: Record<PersonaAwareness, QueryFrame[]> = {
+export const FOLLOWUPS: Record<PersonaAwareness, QueryFrame[]> = {
   'problem-aware': [
     { kind: 'refinement', advance: 0, query: 'is {cat} actually a problem worth solving for a company like mine', rationale: 'Pressure-tests whether the problem is real before spending time.' },
     { kind: 'branch', advance: 0, query: 'what happens if we ignore {cat} for another year', rationale: 'Explores the cost of doing nothing.' },
@@ -83,7 +83,7 @@ const FOLLOWUPS: Record<PersonaAwareness, QueryFrame[]> = {
   ],
 };
 
-const OPENERS: Record<PersonaAwareness, string[]> = {
+export const OPENERS: Record<PersonaAwareness, string[]> = {
   'problem-aware': ['{vocab}', 'why is {cat} hard', 'what is {cat}'],
   'solution-aware': ['{vocab}', 'how to solve {cat}', 'approaches to {cat}'],
   'product-aware': ['{vocab}', 'best {cat} tools', '{brand} review'],

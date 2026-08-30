@@ -70,3 +70,9 @@ export const resetUserPassword = (id: string, password: string) =>
   apiFetch<{ id: string; sessionsRevoked: number }>(`/users/${id}/password`, { method: 'POST', json: { password } });
 export const deleteUser = (id: string) =>
   apiFetch<{ removed: string }>(`/users/${id}`, { method: 'DELETE' });
+
+/* ── flywheel / suggestions ───────────────────────────────────── */
+export const getSuggestions = (projectId: string) =>
+  apiFetch<import('@/components/terminal/Flywheel').SuggestionWheel>(
+    `/projects/${projectId}/journeys/suggestions`,
+  );

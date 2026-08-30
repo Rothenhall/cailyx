@@ -92,7 +92,7 @@ export function UsersModal({ currentUserId, onClose }: { currentUserId: string |
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-6" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-[#1a1712]/45 p-6" onClick={onClose}>
       <div className="mt-8 w-full max-w-2xl rounded-lg border border-border bg-bg-raised shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <header className="flex items-center justify-between border-b border-border px-4 py-3">
           <div>

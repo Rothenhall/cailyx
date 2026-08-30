@@ -90,6 +90,17 @@ CDONE=$(echo "$CAMP" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("en
 # no active personas of a role → 409
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/journey-campaigns" "${AUTH[@]}" -H 'content-type: application/json' -d '{"name":"Empty","journeyTarget":2,"budgetUsd":1,"personaRoles":["rev-ops"]}')" = "409" ] && ok "campaign with no matching active personas → 409" || bad "empty-campaign not 409"
 
+# --- suggestion wheel (Flywheel data) --------------------------------
+SW=$(curl -s "$API/projects/$PID/journeys/suggestions" "${AUTH[@]}")
+[ "$(echo "$SW" | jlen spokes)" = "4" ] && ok "suggestion wheel has 4 awareness spokes" || bad "spokes = $(echo "$SW" | jlen spokes)"
+[ "$(echo "$SW" | jget hub.label)" = "Journey Smoke Co" ] && ok "wheel hub = project name" || bad "hub = $(echo "$SW" | jget hub.label)"
+SWT=$(echo "$SW" | jget total)
+[ "$SWT" -ge 8 ] 2>/dev/null && ok "wheel produced $SWT query suggestions" || bad "total = $SWT"
+echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);const bad=w.spokes.some(sp=>sp.queries.some(q=>!q.text||!["template","persona","journey"].includes(q.source)));process.exit(bad?1:0)})' && ok "every suggestion is well-formed (text + source)" || bad "malformed suggestion"
+# re-run is deterministic
+SW2T=$(curl -s "$API/projects/$PID/journeys/suggestions" "${AUTH[@]}" | jget total)
+[ "$SW2T" = "$SWT" ] && ok "suggestion wheel is deterministic ($SW2T)" || bad "wheel re-run differs: $SW2T vs $SWT"
+
 echo
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" = "0" ]

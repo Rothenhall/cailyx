@@ -17,6 +17,7 @@ import {
   getIntegrations,
   getProject,
   getMe,
+  getSuggestions,
   listProjects,
 } from '@/lib/terminal-api';
 import type { User } from '@/types/api';
@@ -29,17 +30,19 @@ import { ContextPane, contextMeta } from '@/components/terminal/ContextPane';
 import { AgentsFeed, agentsMeta } from '@/components/terminal/AgentsFeed';
 import { ChatPane, chatMeta } from '@/components/terminal/ChatPane';
 import { GatesCard, gatesMeta } from '@/components/terminal/GatesCard';
+import { Flywheel, flywheelMeta, type SuggestionWheel } from '@/components/terminal/Flywheel';
 import { ConnectionsModal } from '@/components/terminal/ConnectionsModal';
 import { UsersModal } from '@/components/terminal/UsersModal';
 
-type CardKey = 'analytics' | 'context' | 'agents' | 'chat' | 'gates';
-const CARD_ORDER: CardKey[] = ['analytics', 'context', 'agents', 'chat', 'gates'];
+type CardKey = 'analytics' | 'context' | 'agents' | 'chat' | 'gates' | 'flywheel';
+const CARD_ORDER: CardKey[] = ['analytics', 'context', 'agents', 'chat', 'gates', 'flywheel'];
 const CARD_META: Record<CardKey, { title: string; icon: string }> = {
   analytics: { title: analyticsMeta.title, icon: analyticsMeta.icon },
   context: { title: contextMeta.title, icon: contextMeta.icon },
   agents: { title: agentsMeta.title, icon: agentsMeta.icon },
   chat: { title: chatMeta.title, icon: chatMeta.icon },
   gates: { title: gatesMeta.title, icon: gatesMeta.icon },
+  flywheel: { title: flywheelMeta.title, icon: flywheelMeta.icon },
 };
 
 interface CanvasLayout {
@@ -50,14 +53,61 @@ interface CanvasLayout {
 const DEFAULT_LAYOUT: CanvasLayout = {
   viewport: { x: 24, y: 20, z: 1 },
   nodes: {
-    // a compact 3 + 2 cluster so "fit" frames it nicely on any screen
     analytics: { x: 0, y: 0, w: 340, h: 600 },
     context: { x: 360, y: 0, w: 360, h: 600 },
     agents: { x: 740, y: 0, w: 340, h: 600 },
     chat: { x: 0, y: 632, w: 420, h: 520 },
     gates: { x: 440, y: 632, w: 380, h: 520 },
+    flywheel: { x: 1100, y: 0, w: 560, h: 620 },
   },
-  hidden: [],
+  hidden: ['flywheel'],
+};
+
+/** Named layout presets — positions + which cards are shown. */
+const PRESETS: Record<string, { label: string; hidden: CardKey[]; nodes: Partial<Record<CardKey, Box>> }> = {
+  overview: {
+    label: 'Overview',
+    hidden: ['gates', 'flywheel'],
+    nodes: {
+      analytics: { x: 0, y: 0, w: 340, h: 620 },
+      context: { x: 360, y: 0, w: 380, h: 620 },
+      agents: { x: 760, y: 0, w: 340, h: 620 },
+      chat: { x: 1120, y: 0, w: 400, h: 620 },
+    },
+  },
+  research: {
+    label: 'Research',
+    hidden: ['gates'],
+    nodes: {
+      flywheel: { x: 0, y: 0, w: 620, h: 660 },
+      agents: { x: 640, y: 0, w: 340, h: 660 },
+      chat: { x: 1000, y: 0, w: 400, h: 320 },
+      context: { x: 1000, y: 340, w: 400, h: 320 },
+      analytics: { x: 0, y: 680, w: 340, h: 400 },
+    },
+  },
+  diagnostics: {
+    label: 'Diagnostics',
+    hidden: ['flywheel', 'chat'],
+    nodes: {
+      analytics: { x: 0, y: 0, w: 420, h: 660 },
+      agents: { x: 440, y: 0, w: 360, h: 660 },
+      gates: { x: 820, y: 0, w: 420, h: 660 },
+      context: { x: 0, y: 692, w: 420, h: 380 },
+    },
+  },
+  everything: {
+    label: 'Everything',
+    hidden: [],
+    nodes: {
+      analytics: { x: 0, y: 0, w: 340, h: 560 },
+      context: { x: 360, y: 0, w: 360, h: 560 },
+      agents: { x: 740, y: 0, w: 340, h: 560 },
+      flywheel: { x: 1100, y: 0, w: 560, h: 560 },
+      chat: { x: 0, y: 592, w: 420, h: 480 },
+      gates: { x: 440, y: 592, w: 400, h: 480 },
+    },
+  },
 };
 const KEY = 'cailyx.canvas';
 const LAST_KEY = 'cailyx.lastProject';
@@ -91,6 +141,9 @@ export default function CanvasConsole() {
   const [layout, setLayout] = useState<CanvasLayout>(DEFAULT_LAYOUT);
   const [hydrated, setHydrated] = useState(false);
   const [focused, setFocused] = useState<CardKey | null>(null);
+  const [wheel, setWheel] = useState<SuggestionWheel | null>(null);
+  const [wheelLoading, setWheelLoading] = useState(false);
+  const [chatSeed, setChatSeed] = useState<string | null>(null);
   const canvasApi = useRef<CanvasHandle | null>(null);
 
   useEffect(() => {
@@ -179,6 +232,16 @@ export default function CanvasConsole() {
     return () => clearInterval(t);
   }, [activeId]);
 
+  // suggestion wheel — refetch when the project changes or its flywheel card is shown
+  useEffect(() => {
+    if (!activeId || layout.hidden.includes('flywheel')) return;
+    setWheelLoading(true);
+    getSuggestions(activeId)
+      .then(setWheel)
+      .catch(() => setWheel(null))
+      .finally(() => setWheelLoading(false));
+  }, [activeId, layout.hidden]);
+
   const refreshAgents = () => {
     if (!activeId) return;
     setAgentsLoading(true);
@@ -203,6 +266,17 @@ export default function CanvasConsole() {
   const visible = useMemo(() => CARD_ORDER.filter((k) => !layout.hidden.includes(k)), [layout.hidden]);
   const resetView = () => canvasApi.current?.reset();
   const fitView = () => canvasApi.current?.fit(visible.map((k) => layout.nodes[k]));
+
+  const applyPreset = (id: string) => {
+    const p = PRESETS[id];
+    if (!p) return;
+    const nodes = { ...layout.nodes, ...p.nodes };
+    persist({ ...layout, nodes, hidden: [...p.hidden] });
+    // frame the newly-visible cards
+    setTimeout(() => {
+      canvasApi.current?.fit(CARD_ORDER.filter((k) => !p.hidden.includes(k)).map((k) => nodes[k]));
+    }, 40);
+  };
 
   if (fatal) {
     return (
@@ -245,10 +319,24 @@ export default function CanvasConsole() {
             agents={agents}
             integrations={integ?.integrations ?? []}
             onOpenConnections={() => setModal('connections')}
+            seed={chatSeed}
+            onSeedConsumed={() => setChatSeed(null)}
           />
         );
       case 'gates':
         return <GatesCard integrations={integ?.integrations ?? []} />;
+      case 'flywheel':
+        return (
+          <Flywheel
+            wheel={wheel}
+            loading={wheelLoading}
+            onPick={(q) => {
+              setChatSeed(q);
+              if (layout.hidden.includes('chat')) toggleCard('chat');
+              setFocused('chat');
+            }}
+          />
+        );
     }
   };
 
@@ -268,6 +356,8 @@ export default function CanvasConsole() {
         onToggleCard={toggleCard}
         onResetView={resetView}
         onFitView={fitView}
+        presets={Object.entries(PRESETS).map(([id, p]) => ({ id, label: p.label }))}
+        onApplyPreset={applyPreset}
         zoom={layout.viewport.z}
       />
 
@@ -365,7 +455,7 @@ function NewProjectModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-6" onClick={onClose}>
+    <div className="fixed inset-0 z-50 grid place-items-center bg-[#1a1712]/45 p-6" onClick={onClose}>
       <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-lg border border-border bg-bg-raised p-5">
         <h2 className="mb-3 text-[12px] font-semibold uppercase tracking-widest text-dim">New project</h2>
         <div className="space-y-3">
