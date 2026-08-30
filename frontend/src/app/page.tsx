@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getToken, setToken, ApiError } from '@/lib/api';
+import { getToken, setSession, cacheGet, cacheSet, ApiError } from '@/lib/api';
 import {
   createProject,
   getAgents,
@@ -166,28 +166,41 @@ export default function CanvasConsole() {
       router.replace('/login');
       return;
     }
+    // paint from cache immediately, then refresh
+    const cachedUser = cacheGet<User>('me');
+    const cachedProjects = cacheGet<ProjectDetail[]>('projects');
+    const cachedInteg = cacheGet<IntegrationsResponse>('integrations');
+    if (cachedUser) setUser(cachedUser);
+    if (cachedProjects) setProjects(cachedProjects);
+    if (cachedInteg) setInteg(cachedInteg);
+    const last = (() => {
+      try {
+        return window.localStorage.getItem(LAST_KEY);
+      } catch {
+        return null;
+      }
+    })();
+    if (cachedProjects?.length) setActiveId(cachedProjects.find((p) => p.id === last)?.id ?? cachedProjects[0].id);
+
     void (async () => {
       try {
         const [me, ps, ig] = await Promise.all([getMe(), listProjects(), getIntegrations()]);
         setUser(me);
         setProjects(ps);
         setInteg(ig);
-        const last = (() => {
-          try {
-            return window.localStorage.getItem(LAST_KEY);
-          } catch {
-            return null;
-          }
-        })();
-        setActiveId(ps.find((p) => p.id === last)?.id ?? ps[0]?.id ?? null);
+        cacheSet('me', me);
+        cacheSet('projects', ps);
+        cacheSet('integrations', ig);
+        setActiveId((cur) => cur ?? ps.find((p) => p.id === last)?.id ?? ps[0]?.id ?? null);
         if (ps.length === 0) setModal('new');
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
-          setToken(null);
+          setSession(null);
           router.replace('/login');
           return;
         }
-        setFatal(err instanceof Error ? err.message : 'Failed to reach the backend');
+        // keep whatever the cache painted; only hard-fail with nothing to show
+        if (!cachedProjects) setFatal(err instanceof Error ? err.message : 'Failed to reach the backend');
       }
     })();
   }, [router]);
@@ -199,12 +212,15 @@ export default function CanvasConsole() {
         const [p, a] = await Promise.all([getProject(id), getAgents(id)]);
         setProject(p);
         setAgents(a);
+        cacheSet(`project.${id}`, p);
+        cacheSet(`agents.${id}`, a);
         setProjects((prev) => prev.map((x) => (x.id === id ? { ...x, ...p } : x)));
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
-          setToken(null);
+          setSession(null);
           router.replace('/login');
         }
+        // otherwise keep the cache-painted values
       } finally {
         setAgentsLoading(false);
       }
@@ -219,37 +235,43 @@ export default function CanvasConsole() {
     } catch {
       /* ignore */
     }
-    setProject(null);
-    setAgents(null);
+    // paint the last-known project + agents instantly, then refresh
+    setProject(cacheGet<ProjectDetail>(`project.${activeId}`));
+    setAgents(cacheGet<AgentsResponse>(`agents.${activeId}`));
     void loadProject(activeId);
   }, [activeId, loadProject]);
 
   useEffect(() => {
     if (!activeId) return;
     const t = setInterval(() => {
-      getAgents(activeId).then(setAgents).catch(() => {});
+      getAgents(activeId).then((a) => { setAgents(a); cacheSet(`agents.${activeId}`, a); }).catch(() => {});
     }, 25000);
     return () => clearInterval(t);
   }, [activeId]);
 
-  // suggestion wheel — refetch when the project changes or its flywheel card is shown
+  // suggestion wheel — one fetch per project (regardless of card visibility);
+  // seeded from cache so it never blanks out when switching views.
   useEffect(() => {
-    if (!activeId || layout.hidden.includes('flywheel')) return;
+    if (!activeId) return;
+    setWheel(cacheGet<SuggestionWheel>(`wheel.${activeId}`));
     setWheelLoading(true);
     getSuggestions(activeId)
-      .then(setWheel)
-      .catch(() => setWheel(null))
+      .then((w) => { setWheel(w); cacheSet(`wheel.${activeId}`, w); })
+      .catch(() => {})
       .finally(() => setWheelLoading(false));
-  }, [activeId, layout.hidden]);
+  }, [activeId]);
 
   const refreshAgents = () => {
     if (!activeId) return;
     setAgentsLoading(true);
-    getAgents(activeId).then(setAgents).finally(() => setAgentsLoading(false));
+    getAgents(activeId)
+      .then((a) => { setAgents(a); cacheSet(`agents.${activeId}`, a); })
+      .catch(() => {})
+      .finally(() => setAgentsLoading(false));
   };
 
   const logout = () => {
-    setToken(null);
+    setSession(null);
     router.replace('/login');
   };
 

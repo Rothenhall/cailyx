@@ -90,8 +90,8 @@ export function Flywheel({
     [wheel],
   );
 
-  if (loading && !wheel) return <p className="p-4 text-faint">building suggestions…</p>;
-  if (!wheel || !Array.isArray(wheel.stages)) return <p className="p-4 text-faint">select a project</p>;
+  if (!wheel || !Array.isArray(wheel.stages))
+    return <p className="p-4 text-faint">{loading ? 'building suggestions…' : 'no suggestions loaded yet'}</p>;
   if (wheel.total === 0)
     return (
       <p className="p-4 text-[12px] text-faint">

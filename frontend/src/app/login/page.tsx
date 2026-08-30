@@ -9,7 +9,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { apiFetch, setToken } from '@/lib/api';
+import { apiFetch, setSession } from '@/lib/api';
 import type { AuthResponse } from '@/types/api';
 
 export default function LoginPage() {
@@ -29,7 +29,7 @@ export default function LoginPage() {
       const path = mode === 'login' ? '/auth/login' : '/auth/register';
       const body = mode === 'login' ? { email, password } : { email, password, name };
       const res = await apiFetch<AuthResponse>(path, { method: 'POST', json: body });
-      setToken(res.accessToken);
+      setSession({ accessToken: res.accessToken, refreshToken: res.refreshToken });
       router.push('/');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed');

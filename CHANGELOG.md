@@ -9,6 +9,28 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-08-31 — Dashboard data persistence + transparent token refresh
+
+- **Cards no longer go blank on view / preset switches or reload.** Every fetched
+  payload (`me`, `projects`, `integrations`, `project.<id>`, `agents.<id>`,
+  `wheel.<id>`) is now mirrored to `localStorage['cailyx.cache.*']` on success and
+  re-hydrated instantly on mount, so the UI paints last-known-good data first and
+  swaps in the fresh copy when it arrives.
+- **Flywheel disappearing bug fixed.** Its fetch effect depended on
+  `layout.hidden`, so every preset/view change re-ran it and any transient error
+  nulled the wheel (the "select a project" flash). Effect now keys on `activeId`
+  only, seeds from cache, and `.catch` leaves the last wheel in place instead of
+  clearing it. Empty-state copy is `building suggestions… / no suggestions loaded
+  yet` (no more misleading "select a project").
+- **Transparent refresh-token rotation.** `lib/api.ts` split into `raw` / `apiFetch`;
+  a 401 on any non-`/auth/` call triggers one `POST /api/auth/refresh`
+  (singleton in-flight guard) and a single retry, so a session survives well past
+  the 15-min access-token TTL. New `setSession` / `getRefreshToken` helpers;
+  login now stores the refresh token; `AuthResponse.refreshToken?` typed.
+- Verified in-browser: Overview→Everything preset cycle keeps the Flywheel's
+  layered sunburst populated; full page reload paints all cards (incl. Flywheel)
+  from cache with no blank frame. `npm run build` green.
+
 ## 2026-08-31 — Layered Flywheel (pain point + suggestion per query)
 
 - The Flywheel is now a **layered** sunburst: hub → awareness stage → **theme**
