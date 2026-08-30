@@ -1,9 +1,9 @@
 import type { Config } from "tailwindcss";
 
 /**
- * Tailwind config — Okara Terminal dark theme. Colours are driven by the CSS
- * custom properties defined in `src/app/globals.css` so components can use
- * `bg-bg`, `text-dim`, `border-border`, `text-accent`, etc.
+ * Tailwind config — Cailyx dark console. Colours are driven by the CSS custom
+ * properties in `src/app/globals.css` (Rothenhall Partners brand palette) so
+ * components use `bg-bg`, `text-dim`, `border-border`, `text-accent`, etc.
  */
 const config: Config = {
   content: [
@@ -24,6 +24,7 @@ const config: Config = {
         faint: "var(--text-faint)",
         accent: "var(--accent)",
         "accent-dim": "var(--accent-dim)",
+        cognac: "var(--cognac)",
         amber: "var(--amber)",
         red: "var(--red)",
         blue: "var(--blue)",

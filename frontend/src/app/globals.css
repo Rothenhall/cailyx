@@ -1,25 +1,38 @@
 /**
  * Cailyx — dark operator console theme.
+ * Colour palette: Rothenhall Partners brand (BRANDING.md) — the Night band for
+ * dark surfaces, brass as the quiet default accent, cognac as the warm spotlight.
+ * Typography is unchanged (terminal monospace).
  */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  /* Terminal palette — near-black with a faint warm cast */
-  --bg: #0b0d0e;
-  --bg-raised: #121517;
-  --bg-inset: #0d1011;
-  --border: #22282b;
-  --border-strong: #2f3639;
-  --text: #d7dee0;
-  --text-dim: #8b969a;
-  --text-faint: #5b6669;
-  --accent: #7dd3a8;        /* terminal green */
-  --accent-dim: #3f6b57;
-  --amber: #e0b45f;         /* warnings */
-  --red: #e06c6c;           /* critical */
-  --blue: #6ea8fe;          /* info / links */
+  /* Night band — dark surfaces (BRANDING §2) */
+  --bg: #14120d;            /* --color-night */
+  --bg-raised: #201c15;     /* --color-night-2 — panels, headers, cards */
+  --bg-inset: #100d09;      /* below night — input wells, code blocks */
+  --border: #35301f;        /* --color-night-line */
+  --border-strong: #4a4230; /* night-line, lifted for hover / emphasis */
+
+  /* Text — canvas tones on dark */
+  --text: #ebe6d8;          /* ~ --color-canvas on dark */
+  --text-dim: #b4ab97;      /* secondary text */
+  --text-faint: #867c66;    /* ~ --color-ink-45 — captions, footnotes */
+
+  /* Brass — the quiet default accent (BRANDING: brass-soft on dark) */
+  --accent: #b79a6b;        /* --color-brass-soft — ready dots, active tab, cursor */
+  --accent-dim: #7c6238;    /* --color-brass-deep — accent fills + borders */
+
+  /* Cognac — the warm spotlight (BRANDING: cognac-soft on dark) */
+  --cognac: #c67c48;        /* --color-cognac-soft */
+
+  /* Status */
+  --amber: #d9a441;         /* caution — brighter warm gold, distinct from brass */
+  --red: #bf5b3d;           /* critical — --color-cognac-deep lifted for dark contrast */
+  --blue: #c67c48;          /* links / "you" — cognac-soft (brand has no blue) */
+
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
 }
 
@@ -43,7 +56,9 @@ body {
 }
 
 ::selection {
-  background: rgba(125, 211, 168, 0.25);
+  /* BRANDING: brass background, paper text */
+  background: #9a7a4a;
+  color: #fbf9f3;
 }
 
 /* thin dark scrollbars */
