@@ -31,6 +31,7 @@ import { AgentsFeed, agentsMeta } from '@/components/terminal/AgentsFeed';
 import { ChatPane, chatMeta } from '@/components/terminal/ChatPane';
 import { GatesCard, gatesMeta } from '@/components/terminal/GatesCard';
 import { Flywheel, flywheelMeta, type SuggestionWheel } from '@/components/terminal/Flywheel';
+import { CardSkeleton } from '@/components/terminal/CardSkeleton';
 import { ConnectionsModal } from '@/components/terminal/ConnectionsModal';
 import { UsersModal } from '@/components/terminal/UsersModal';
 
@@ -135,6 +136,8 @@ export default function CanvasConsole() {
   const [project, setProject] = useState<ProjectDetail | null>(null);
   const [agents, setAgents] = useState<AgentsResponse | null>(null);
   const [agentsLoading, setAgentsLoading] = useState(false);
+  // true while a project with no cached copy is loading — drives the skeletons
+  const [projectPending, setProjectPending] = useState(false);
   const [integ, setInteg] = useState<IntegrationsResponse | null>(null);
   const [modal, setModal] = useState<null | 'connections' | 'users' | 'new'>(null);
   const [fatal, setFatal] = useState<string | null>(null);
@@ -145,6 +148,8 @@ export default function CanvasConsole() {
   const [wheelLoading, setWheelLoading] = useState(false);
   const [chatSeed, setChatSeed] = useState<string | null>(null);
   const canvasApi = useRef<CanvasHandle | null>(null);
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
 
   useEffect(() => {
     setLayout(loadLayout());
@@ -210,10 +215,13 @@ export default function CanvasConsole() {
       setAgentsLoading(true);
       try {
         const [p, a] = await Promise.all([getProject(id), getAgents(id)]);
-        setProject(p);
-        setAgents(a);
         cacheSet(`project.${id}`, p);
         cacheSet(`agents.${id}`, a);
+        // ignore a response that arrived after the user already switched away
+        if (activeIdRef.current === id) {
+          setProject(p);
+          setAgents(a);
+        }
         setProjects((prev) => prev.map((x) => (x.id === id ? { ...x, ...p } : x)));
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
@@ -223,6 +231,7 @@ export default function CanvasConsole() {
         // otherwise keep the cache-painted values
       } finally {
         setAgentsLoading(false);
+        if (activeIdRef.current === id) setProjectPending(false);
       }
     },
     [router],
@@ -235,9 +244,13 @@ export default function CanvasConsole() {
     } catch {
       /* ignore */
     }
-    // paint the last-known project + agents instantly, then refresh
-    setProject(cacheGet<ProjectDetail>(`project.${activeId}`));
-    setAgents(cacheGet<AgentsResponse>(`agents.${activeId}`));
+    // paint the last-known project + agents instantly; if we have nothing
+    // cached for this project, show skeletons instead of blank/stale cards
+    const cachedP = cacheGet<ProjectDetail>(`project.${activeId}`);
+    const cachedA = cacheGet<AgentsResponse>(`agents.${activeId}`);
+    setProject(cachedP);
+    setAgents(cachedA);
+    setProjectPending(!cachedP);
     void loadProject(activeId);
   }, [activeId, loadProject]);
 
@@ -253,12 +266,18 @@ export default function CanvasConsole() {
   // seeded from cache so it never blanks out when switching views.
   useEffect(() => {
     if (!activeId) return;
-    setWheel(cacheGet<SuggestionWheel>(`wheel.${activeId}`));
+    const forId = activeId;
+    setWheel(cacheGet<SuggestionWheel>(`wheel.${forId}`));
     setWheelLoading(true);
-    getSuggestions(activeId)
-      .then((w) => { setWheel(w); cacheSet(`wheel.${activeId}`, w); })
+    getSuggestions(forId)
+      .then((w) => {
+        cacheSet(`wheel.${forId}`, w);
+        if (activeIdRef.current === forId) setWheel(w);
+      })
       .catch(() => {})
-      .finally(() => setWheelLoading(false));
+      .finally(() => {
+        if (activeIdRef.current === forId) setWheelLoading(false);
+      });
   }, [activeId]);
 
   const refreshAgents = () => {
@@ -320,8 +339,18 @@ export default function CanvasConsole() {
   const renderBody = (k: CardKey) => {
     switch (k) {
       case 'analytics':
-        return <AnalyticsPane projectId={activeId} domain={project?.domain ?? null} integrations={integ?.integrations ?? []} />;
+        if (projectPending) return <CardSkeleton shape="list" label="analytics" />;
+        // key on the project so a switch remounts it clean — no stale audit flash
+        return (
+          <AnalyticsPane
+            key={activeId ?? 'none'}
+            projectId={activeId}
+            domain={project?.domain ?? null}
+            integrations={integ?.integrations ?? []}
+          />
+        );
       case 'context':
+        if (projectPending || !project) return <CardSkeleton shape="profile" label="context" />;
         return (
           <ContextPane
             project={project}
@@ -333,6 +362,7 @@ export default function CanvasConsole() {
           />
         );
       case 'agents':
+        if (projectPending || !agents) return <CardSkeleton shape="feed" label="agents" />;
         return <AgentsFeed data={agents} loading={agentsLoading} />;
       case 'chat':
         return (
@@ -348,6 +378,7 @@ export default function CanvasConsole() {
       case 'gates':
         return <GatesCard integrations={integ?.integrations ?? []} />;
       case 'flywheel':
+        if ((projectPending || wheelLoading) && !wheel) return <CardSkeleton shape="chart" label="flywheel" />;
         return (
           <Flywheel
             wheel={wheel}
@@ -438,7 +469,11 @@ export default function CanvasConsole() {
         <NewProjectModal
           onClose={() => setModal(null)}
           onCreated={(p) => {
+            // seed cache + state so the just-typed values paint immediately,
+            // then the project-switch effect fills in stats / agents / wheel
+            cacheSet(`project.${p.id}`, p);
             setProjects((prev) => [p, ...prev]);
+            setProject(p);
             setActiveId(p.id);
             setModal(null);
           }}

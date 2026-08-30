@@ -17,6 +17,8 @@ export interface ProjectDto {
   clientName: string | null;
   status: EngagementStatus;
   notes: string | null;
+  /** Named competitors — JSON string of `{name, domain, source?}[]`, seeded by intake. */
+  competitors: string | null;
   /** Owning operator (null for rows created before auth / laminar intake). */
   userId: string | null;
   createdAt: string;

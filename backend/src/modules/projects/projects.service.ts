@@ -167,6 +167,7 @@ export class ProjectsService {
   private toDto(p: {
     id: string; name: string; domain: string; category: string | null;
     clientName: string | null; status: string; notes: string | null;
+    competitors?: string | null;
     userId?: string | null; createdAt: Date; updatedAt: Date;
   }): ProjectDto {
     return {
@@ -177,6 +178,7 @@ export class ProjectsService {
       clientName: p.clientName,
       status: p.status as EngagementStatus,
       notes: p.notes,
+      competitors: p.competitors ?? null,
       userId: p.userId ?? null,
       createdAt: p.createdAt.toISOString(),
       updatedAt: p.updatedAt.toISOString(),

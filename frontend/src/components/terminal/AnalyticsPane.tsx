@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError } from '@/lib/api';
 import { cleanFindingText } from '@/lib/text';
+import { CardSkeleton } from './CardSkeleton';
 import { getAudit, getMeasurementSummary, listAudits, listLinkGraphs, runAudit } from '@/lib/terminal-api';
 import type { Integration, LinkGraph, TechnicalAudit } from '@/types/terminal';
 
@@ -50,10 +51,12 @@ export function AnalyticsPane({
   const [summary, setSummary] = useState<Summary | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     if (!projectId) return;
     setNote(null);
+    setLoading(true);
     try {
       const audits = await listAudits(projectId);
       if (audits[0]) setAudit(await getAudit(projectId, audits[0].id));
@@ -72,6 +75,7 @@ export function AnalyticsPane({
       setSummary(null);
       if (err instanceof ApiError && err.status !== 404) setNote(err.message);
     }
+    setLoading(false);
   }, [projectId]);
 
   useEffect(() => {
@@ -98,6 +102,8 @@ export function AnalyticsPane({
   const ga = integrations.find((i) => i.key === 'google-analytics');
   const gsc = integrations.find((i) => i.key === 'google-search-console');
   const h1s = countH1(audit?.pageMetadata?.headings ?? null);
+
+  if (loading && !audit && !graphs && !summary) return <CardSkeleton shape="list" label="analytics" />;
 
   return (
     <>

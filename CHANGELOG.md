@@ -9,6 +9,24 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-08-31 — Project switching: skeletons, no stale flash, competitors show
+
+- **Cards no longer blank (or show stale data) when you switch project or add a
+  new one.** New `CardSkeleton` (shimmer, `prefers-reduced-motion` aware) fills
+  Analytics / Context / Agents / Flywheel while a project with no cached copy
+  loads. Cards with a cached copy still paint it instantly, then refresh.
+- **`GET /projects/:id` was silently dropping `competitors`** — `toDto()` never
+  copied the field, so the Context card always read "none set" even when intake
+  had found competitors. Added it to `ProjectDto` + `toDto()`; Rothenhall now
+  shows Profound / Peec AI, day1tech shows DayOneX.
+- **Stale-response guard** — `activeIdRef` means a slow `getProject` /
+  `getSuggestions` that resolves after you've switched away no longer paints the
+  wrong project's data. AnalyticsPane is also keyed on the project id so a
+  switch remounts it clean instead of flashing the previous audit.
+- **New project** seeds its cache + state on create, so the name / domain /
+  category you just typed render immediately while stats and agents load in.
+- Full smoke harness 8/8 · 204. Both builds green.
+
 ## 2026-08-31 — Live-fire pipeline check (day1tech.com) + intake / link-graph fixes
 
 Ran the full pipeline against a real domain through the public API (intake →
