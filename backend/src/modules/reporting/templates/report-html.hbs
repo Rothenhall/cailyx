@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {{#if_eq report.visibility "private"}}<meta name="robots" content="noindex, nofollow">{{/if_eq}}
+  <title>{{report.title}} — AI Visibility Diagnostic</title>
+  <style>
+    :root{
+      --canvas:#f7f3ea; --paper:#fbf9f3; --ink:#1a1712;
+      --ink-60:#5c5648; --line:#ddd5c4;
+      --accent:#a85c30; --accent-deep:#8a4a26;
+      --good:#5f6a42; --warn:#b79a6b; --bad:#c0392b;
+      --font: "Inter", ui-sans-serif, system-ui, sans-serif;
+    }
+    *{box-sizing:border-box}
+    body{margin:0; background:var(--canvas); color:#1a1712; font-family:var(--font); line-height:1.6; -webkit-print-color-adjust:exact}
+    .wrap{max-width:860px; margin:0 auto; padding:40px 24px}
+    header{border-bottom:2px solid var(--accent); padding-bottom:16px; margin-bottom:32px}
+    .eyebrow{font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent-deep); margin:0 0 6px}
+    h1{font-size:28px; margin:0 0 4px; font-weight:500}
+    .url{color:var(--ink-60); font-size:14px}
+    .brand{float:right; text-align:right; font-size:13px; color:var(--ink-60)}
+    .band{display:inline-block; padding:2px 12px; border-radius:12px; font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; margin-left:8px}
+    .band-recommended{background:#e5ecdb; color:var(--good)}
+    .band-present{background:#f4ecd8; color:#8a6d1f}
+    .band-faint{background:#f7e4cb; color:var(--accent-deep)}
+    .band-invisible{background:#f5d5d1; color:var(--bad)}
+    .score-hero{display:flex; gap:24px; align-items:center; background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:24px; margin-bottom:28px}
+    .dial{width:120px; height:120px; border-radius:50%; display:flex; flex-direction:column; align-items:center; justify-content:center; flex-shrink:0}
+    .dial-num{font-size:36px; font-weight:700; line-height:1}
+    .dial-cap{font-size:11px; color:var(--ink-60); text-transform:uppercase; letter-spacing:.1em}
+    .summary{white-space:pre-line; font-size:15px}
+    h2{font-size:18px; border-bottom:1px solid var(--line); padding-bottom:6px; margin:32px 0 12px}
+    .sub-scores{display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:8px}
+    .sub{background:var(--paper); border:1px solid var(--line); border-radius:6px; padding:12px}
+    .sub .dim{font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-60)}
+    .sub .val{font-size:22px; font-weight:700; margin:4px 0}
+    .sub .bar{height:5px; background:var(--line); border-radius:3px; overflow:hidden; margin-top:6px}
+    .sub .bar span{display:block; height:100%; background:var(--accent)}
+    .sub .ev{font-size:11px; color:var(--ink-60); margin-top:6px; white-space:pre-line}
+    table{width:100%; border-collapse:collapse; font-size:14px; margin-bottom:12px}
+    th,td{text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top}
+    th{font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-60)}
+    .status-pass{color:var(--good); font-weight:600}
+    .status-fail{color:var(--bad); font-weight:600}
+    .status-error{color:var(--accent-deep); font-weight:600}
+    .sev-high{color:var(--bad)}
+    .sev-medium{color:var(--accent-deep)}
+    .sev-low{color:var(--ink-60)}
+    .fix{font-size:13px; color:var(--ink-60)}
+    pre.repro{background:#201c15; color:#e8dfc8; padding:12px; border-radius:6px; font-size:12px; overflow-x:auto}
+    details{margin-bottom:8px}
+    summary{cursor:pointer; font-size:13px; color:var(--accent-deep)}
+    footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); font-size:12px; color:var(--ink-60)}
+    @media print{
+      .wrap{padding:0}
+      .score-hero{break-inside:avoid}
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">{{branding.orgName}} — AI Visibility Diagnostic</p>
+    <h1>{{report.title}}
+      <span class="band band-{{report.scoreBand}}">{{report.scoreBand}}</span>
+    </h1>
+    <div class="url">{{report.targetUrl}}</div>
+  </header>
+
+  <div class="score-hero">
+    <div class="dial">
+      <div class="dial-num">{{report.scoreTotal}}</div>
+      <div class="dial-cap">of 100</div>
+    </div>
+    <div class="summary">{{report.executiveSummary}}</div>
+  </div>
+
+  <h2>Score breakdown</h2>
+  <div class="sub-scores">
+    {{#each report.subScores}}
+    <div class="sub">
+      <div class="dim">{{dimension}} · {{weight}} pts</div>
+      <div class="val">{{value}}</div>
+      <div class="bar"><span style="width:{{value}}%"></span></div>
+      <div class="ev">{{#each evidence}}- {{this}}
+{{/each}}</div>
+    </div>
+    {{/each}}
+  </div>
+
+  {{#if_eq view "detailed"}}
+  <h2>Findings</h2>
+  <table>
+    <thead><tr><th>Check</th><th>Status</th><th>Severity</th><th>Confidence</th></tr></thead>
+    <tbody>
+    {{#each report.findings}}
+      <tr>
+        <td><strong>{{type}}</strong><div class="fix">{{recommendedFix}}</div>
+          {{#if reproductionCommands}}
+          <details><summary>Reproduce</summary>
+            {{#each reproductionCommands}}
+            <pre class="repro">{{this.command}}  # {{this.expectedResult}}</pre>
+            {{/each}}
+          </details>
+          {{/if}}
+        </td>
+        <td class="status-{{status}}">{{status}}</td>
+        <td class="sev-{{severity}}">{{severity}}</td>
+        <td>{{confidence}}</td>
+      </tr>
+    {{/each}}
+    </tbody>
+  </table>
+
+  <h2>Roadmap</h2>
+  <table>
+    <thead><tr><th>Action</th><th>Dimension</th><th>Item</th><th>Priority</th><th>Status</th></tr></thead>
+    <tbody>
+    {{#each report.roadmap}}
+      <tr>
+        <td>{{action}}</td>
+        <td>{{dimension}}</td>
+        <td><strong>{{title}}</strong><div class="fix">{{description}}</div></td>
+        <td>{{#if priorityScore}}{{priorityScore}}{{else}}<span class="sev-low">set inputs</span>{{/if}}</td>
+        <td>{{status}}</td>
+      </tr>
+    {{/each}}
+    {{#unless report.roadmap}}
+      <tr><td colspan="5" class="sev-low">No roadmap items — run gap-analysis sync and technical audit first.</td></tr>
+    {{/unless}}
+    </tbody>
+  </table>
+  {{/if_eq}}
+
+  {{#if_eq view "executive"}}
+    <p><a href="?view=detailed">View detailed report</a></p>
+  {{else}}
+    <p><a href="?view=executive">Back to executive view</a></p>
+  {{/if_eq}}
+
+  <footer>
+    Generated {{createdAt}} · Report slug: {{report.slug}} · {{branding.tagline}}
+    <br>Reproduction commands included per PRD FR-2.6. noindex applied for private reports (FR-10.5).
+  </footer>
+</div>
+</body>
+</html>

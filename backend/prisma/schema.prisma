@@ -1,0 +1,667 @@
+// Cailyx Prisma Schema
+// Database: SQLite (file-based, no Docker needed for dev)
+// For production, switch datasource to postgresql and migrate Json fields back
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// ─── Technical Audit ───────────────────────────────────────────
+
+model TechnicalAudit {
+  id           String   @id
+  projectId    String
+  targetUrl    String
+  triggeredBy  String   @default("manual")
+  createdAt    DateTime @default(now())
+
+  findings     AuditFinding[]
+  pageMetadata PageMetadata?
+
+  @@index([projectId])
+  @@index([createdAt])
+}
+
+model AuditFinding {
+  id                   String  @id @default(cuid())
+  auditId              String
+  type                 String
+  status               String
+  severity             String
+  confidence           String
+  detail               String
+  recommendedFix       String
+  reproductionCommands String?
+
+  audit TechnicalAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@index([auditId])
+  @@index([type])
+  @@index([status])
+}
+
+model ScheduleConfig {
+  id        String    @id @default(cuid())
+  projectId String    @unique
+  cadence   String    @default("manual-only")
+  nextRunAt DateTime?
+  active    Boolean   @default(false)
+
+  @@index([projectId])
+}
+
+model PageMetadata {
+  id              String   @id @default(cuid())
+  auditId         String   @unique
+  title           String?
+  metaDescription String?
+  headings        String?
+  positioningCopy String?
+  capturedAt      DateTime @default(now())
+
+  audit TechnicalAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@index([auditId])
+}
+
+model FetchLog {
+  id         String   @id @default(cuid())
+  runId      String?
+  calledBy   String
+  method     String
+  url        String
+  userAgent  String?
+  httpStatus Int
+  latencyMs  Int
+  cost       Float    @default(0)
+  cached     Boolean  @default(false)
+  retryCount Int      @default(0)
+  timestamp  DateTime @default(now())
+
+  @@index([runId])
+  @@index([calledBy])
+  @@index([timestamp])
+}
+
+// ─── Entity Audit ──────────────────────────────────────────────
+
+model EntityAudit {
+  id        String   @id @default(cuid())
+  projectId String
+  createdAt DateTime @default(now())
+  entities  Entity[]
+
+  @@index([projectId])
+}
+
+model Entity {
+  id            String   @id @default(cuid())
+  entityAuditId String
+  name          String
+  descriptor    String?
+  type          String   @default("brand")
+  createdAt     DateTime @default(now())
+
+  entityAudit     EntityAudit      @relation(fields: [entityAuditId], references: [id], onDelete: Cascade)
+  schemaChecks    SchemaCheck[]
+  platformRecords PlatformRecord[]
+  modelDiffs      ModelDiff[]
+
+  @@index([entityAuditId])
+}
+
+model SchemaCheck {
+  id                 String   @id @default(cuid())
+  entityId           String
+  schemaType         String?
+  fieldsPresent      String?
+  fieldsMissing      String?
+  sameAsCount        Int      @default(0)
+  sameAsUrls         String?
+  sameAsVerification String?
+  checkedAt          DateTime @default(now())
+  status             String   @default("pass")
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@index([entityId])
+}
+
+model PlatformRecord {
+  id                 String   @id @default(cuid())
+  entityId           String
+  platform           String
+  recordedName       String?
+  recordedDescriptor String?
+  sourceUrl          String?
+  consistencyStatus  String   @default("not-checked")
+  createdAt          DateTime @default(now())
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@index([entityId])
+}
+
+model ModelDiff {
+  id         String    @id @default(cuid())
+  entityId   String
+  prompt     String
+  provider   String
+  model      String?
+  rawAnswer  String?
+  citations  String?
+  divergence String?
+  status     String    @default("not-run")
+  costUsd    Float     @default(0)
+  latencyMs  Int       @default(0)
+  createdAt  DateTime  @default(now())
+  checkedAt  DateTime  @default(now())
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@index([entityId])
+  @@index([provider])
+  @@index([status])
+}
+
+// ─── Gap Analysis (SOP-5) ─────────────────────────────────────
+
+model GapAnalysis {
+  id        String   @id @default(cuid())
+  projectId String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  gaps      Gap[]
+
+  @@index([projectId])
+}
+
+model Gap {
+  id                    String   @id @default(cuid())
+  gapAnalysisId         String
+  sourceType            String
+  sourceId              String
+  dimension             String
+  dimensionAutoAssigned Boolean  @default(true)
+  action                String
+  actionAutoAssigned    Boolean  @default(true)
+  demandPotential       Int?
+  credibilityImpact     Int?
+  citationLikelihood    Int?
+  priorityScore         Int?
+  status                String   @default("open")
+  title                 String
+  description           String
+  severity              String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  gapAnalysis GapAnalysis @relation(fields: [gapAnalysisId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceType, sourceId])
+  @@index([gapAnalysisId])
+  @@index([dimension])
+  @@index([action])
+  @@index([status])
+  @@index([priorityScore])
+}
+
+
+// ─── Projects (backbone entity) ───────────────────────────────
+
+model Project {
+  id          String    @id @default(cuid())
+  name        String
+  domain      String
+  category    String?
+  clientName  String?
+  status      String    @default("diagnostic") // scorecard | diagnostic | sprint | retainer | archived
+  notes       String?
+  userId      String? // owning operator (nullable: pre-auth rows);
+  competitors String? // JSON array of {name, domain} — seeded by intake, used by share-of-voice
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([domain])
+  @@index([status])
+}
+// ─── Reporting ────────────────────────────────────────────────
+
+model Report {
+  id              String   @id @default(cuid())
+  projectId       String
+  slug            String   @unique
+  title           String
+  targetUrl       String
+  visibility      String   @default("private") // private | public
+  executiveSummary String
+  scoreTotal      Int
+  scoreBand       String
+  subScores       String
+  findingsSnapshot String
+  roadmapSnapshot String
+  branding        String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([slug])
+  @@index([visibility])
+}
+
+// ─── Query Set (SOP-1, PRD FR-5) ──────────────────────────────
+
+model QuerySet {
+  id          String    @id @default(cuid())
+  projectId   String
+  version     Int       @default(1)
+  persona     String    // problem-aware | solution-aware | product-aware | most-aware
+  label       String?
+  status      String    @default("draft") // draft | active | archived
+  source      String    @default("manual") // manual | sales-questions | support-tickets
+  createdAt   DateTime  @default(now())
+  activatedAt DateTime?
+  items       QuerySetItem[]
+
+  @@unique([projectId, version, persona])
+  @@index([projectId])
+  @@index([status])
+}
+
+model QuerySetItem {
+  id         String   @id @default(cuid())
+  querySetId String
+  prompt     String
+  funnelStage String  // problem-aware | solution-aware | product-aware | most-aware
+  createdAt  DateTime @default(now())
+
+  querySet QuerySet @relation(fields: [querySetId], references: [id], onDelete: Cascade)
+
+  @@index([querySetId])
+  @@index([funnelStage])
+}
+
+// ─── Auth (Wave 0) ────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  // admin | delivery-lead | content | technical | outreach | sales
+  role         String   @default("technical")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  refreshTokens RefreshToken[]
+
+  @@index([role])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique // sha-256 of the refresh token — raw token never stored
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ─── Measurement (Wave 1, PRD §6.6-6.7, SOP-2) ────────────────
+
+model MeasurementRun {
+  id        String    @id @default(cuid())
+  projectId String
+  querySetId String
+  surface   String // claude | perplexity | mock
+  geo       String    @default("US")
+  runCount  Int       @default(5) // n>=5 enforced in code — never lower
+  status    String    @default("pending") // pending | running | completed | failed
+  totalRequests     Int     @default(0)
+  completedRequests Int     @default(0)
+  failedRequests    Int     @default(0)
+  costTotal Float     @default(0)
+  error     String?
+  startedAt DateTime?
+  finishedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  observations Observation[]
+
+  @@index([projectId])
+  @@index([querySetId])
+  @@index([status])
+}
+
+model Observation {
+  id             String   @id @default(cuid())
+  runId          String
+  itemId         String
+  runNumber      Int // 1..n of the repeat this observation is
+  prompt         String // copied at execution time (query-set immutability keeps this stable)
+  mentioned      Boolean  @default(false)
+  cited          Boolean  @default(false)
+  citedUrl       String?
+  position       Int? // rank of the subject's citation among cited URLs, 1-based
+  competitors    String   @default("[]") // JSON array of competitor names seen alongside
+  characterization String? // v1: "present" | "absent" (judge-diff later)
+  rawAnswer      String
+  costUsd        Float    @default(0)
+  latencyMs      Int?
+  model          String?
+  createdAt      DateTime @default(now())
+
+  run MeasurementRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([itemId])
+}
+
+// ─── Wave 2: scoring, claims, findings ───────────────────────────
+
+// Versioned scoring rubric (PRD §8). Weights sum to 100; bands map totals.
+// Active row is what scoring uses; all rows immutable once a run references them.
+model ScoreRubric {
+  id          String   @id @default(cuid())
+  version     Int      @unique
+  weights     String // JSON: {machineAccess, entityClarity, shortlistPresence, extractability, authority}
+  bands       String // JSON: [{max, band}] ascending, fallback last
+  active      Boolean  @default(false)
+  note        String?
+  createdAt   DateTime @default(now())
+
+  scoreRuns   ScoreRun[]
+}
+
+// One scoring pass over a project (FR-8.1-8.4). Sub-scores carry evidence;
+// missing evidence sources mark the dimension partial, never silently zero.
+model ScoreRun {
+  id            String   @id @default(cuid())
+  projectId     String
+  rubricVersion Int
+  total         Int
+  band          String
+  status        String   @default("complete") // complete | partial
+  subScores     String // JSON: [{dimension, weight, value, contribution, evidence[], partial, partialReason?}]
+  createdAt     DateTime @default(now())
+
+  rubric        ScoreRubric @relation(fields: [rubricVersion], references: [version])
+
+  @@index([projectId])
+  @@index([projectId, createdAt])
+}
+
+// A factual statement tracked through claims discipline (FR-9.4): provenance,
+// A/B/C grade, and banned-phrase check status — blocked at approval, never
+// silently let through.
+model Claim {
+  id          String   @id @default(cuid())
+  projectId   String
+  statement   String
+  sourceUrl   String?
+  sourceName  String?
+  grade       String? // A (own n>=5 measurement) | B (>=2 independent sources) | C (single source)
+  gradeReason String?
+  checkResult String   @default("pending") // pending | passed | banned-phrase | ungraded-number | single-run-rate
+  checkJson   String   @default("{}") // JSON detail of the last discipline check
+  status      String   @default("draft") // draft | approved | blocked
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([status])
+}
+
+// A finding with generated what/why/fix copy in two registers (FR-9.3),
+// claims-discipline filtered. thinRun flags honest thin evidence (FR-9.1).
+model Finding {
+  id           String   @id @default(cuid())
+  projectId    String
+  gapId        String? // source gap-analysis row
+  title        String
+  whatExecutive String?
+  whatTechnical String?
+  whyExecutive String?
+  whyTechnical String?
+  fixExecutive String?
+  fixTechnical String?
+  thinRun      Boolean  @default(false)
+  disclosedGap String? // when thinRun, what the copy says about missing evidence
+  createdAt    DateTime @default(now())
+
+  @@index([projectId])
+}
+// ─── Wave 3: crawler-monitor, monitoring ─────────────────────────
+
+// One AI-crawler hit from ingested server logs (SOP-3/4.5).
+// Bot classification happens at ingest from a static registry (userAgent-based).
+model CrawlerHit {
+  id        String   @id @default(cuid())
+  projectId String
+  hitAt     DateTime
+  url       String
+  userAgent String
+  ipAddress String?
+  botVendor String // anthropic | openai | perplexity | google | bing | other
+  botName   String // canonical bot name (GPTBot, Claudebot, ...)
+  botType   String // training | search | citation-engine | unknown
+  createdAt DateTime @default(now())
+
+  @@index([projectId])
+  @@index([projectId, hitAt])
+}
+
+// A monitoring alert raised by a delta/regression check (FR-12.3).
+model Alert {
+  id        String   @id @default(cuid())
+  projectId String
+  kind      String // score-drop | mention-drop | scheduled-run-failed
+  severity  String   @default("warning") // info | warning | critical
+  message   String
+  payload   String   @default("{}") // JSON: before/after values, run ids
+  createdAt DateTime @default(now())
+
+  @@index([projectId])
+  @@index([projectId, createdAt])
+}
+
+// ─── Wave 4: page-analysis, mention-tracking, sleeper-refresh, data-asset ───
+
+// One SOP-6 analysis of a URL's copy structure for answer-engine extractability.
+// Scores come only from the deterministic pipeline (reproducible); LLM notes,
+// when requested, are stored separately and never feed the score.
+model PageAnalysis {
+  id        String   @id @default(cuid())
+  projectId String
+  url       String
+  title     String?
+  wordCount Int      @default(0)
+  blufScore     Int      @default(0) // 0-30: answer in the first 40-60 words
+  questionH2Score Int    @default(0) // 0-25: share of question-shaped H2s
+  formatScore   Int      @default(0) // 0-25: tables / numbered steps / definition blocks
+  claimsScore   Int      @default(0) // 0-20: extractable "number + noun + time + source" claims
+  structureScore Int     @default(0) // sum of the four subscores (0-100)
+  blufText      String? // first paragraph copy when BLUF is present
+  headingStructure String @default("[]") // JSON: [{level, text, questionShaped, standalone, standaloneReason}]
+  extractableClaims String @default("[]") // JSON: [{text, hasNumber, hasTimeframe, hasSource}]
+  formatFindings String   @default("{}") // JSON: {tables, orderedLists, definitionBlocks}
+  llmNotes      String? // optional Claude refinement (standalone verdicts, BLUF rewrite) — never part of structureScore
+  fetchedAt     DateTime?
+  status        String   @default("complete") // complete | fetch-failed
+  createdAt DateTime @default(now())
+
+
+  @@index([projectId])
+  @@index([projectId, structureScore])
+}
+
+// Per-mention check history for a tracked target (drives decay, SOP-7).
+model MentionCheck {
+  id        String   @id @default(cuid())
+  targetId  String
+  checkedAt DateTime @default(now())
+  mentioned Boolean
+  evidence  String? // matched excerpt on the page
+  fetchedTitle String?
+  httpStatus Int?
+
+  target MentionTarget @relation(fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@index([targetId])
+  @@index([targetId, checkedAt])
+}
+
+// A tracked external mention target (SOP-7): listicle candidate, community
+// thread, or review platform — manual entry + semi-auto single-fetch checks.
+model MentionTarget {
+  id        String   @id @default(cuid())
+  projectId String
+  url       String
+  type      String   @default("listicle") // listicle | community | review | other
+  label     String? // "Top 10 AI visibility tools" etc.
+  status    String   @default("new") // new | contacted | replied | placed | rejected
+  notes     String?
+  createdAt DateTime @default(now())
+
+  campaign MentionCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  campaignId String?
+  checks MentionCheck[]
+
+  @@index([projectId])
+  @@index([projectId, status])
+}
+
+// Optional grouping of targets into an outreach campaign (SOP-7).
+model MentionCampaign {
+  id        String   @id @default(cuid())
+  projectId String
+  name      String
+  listicleQuery String? // the "best X" query this campaign hunts with
+  createdAt DateTime @default(now())
+
+  targets MentionTarget[]
+
+  @@index([projectId])
+}
+
+// A sleeper page (SOP-10): declining traffic + intact backlinks → refresh candidate.
+// Traffic evidence comes from manual entry or pasted GSC CSV export (OAuth deferred).
+model SleeperPage {
+  id        String   @id @default(cuid())
+  projectId String
+  url       String
+  label     String?
+  trafficDeclinePct Float? // from GSC export or manual entry
+  referringDomains  Int?
+  status    String   @default("flagged") // flagged | brief-sent | in-progress | refreshed | abandoned
+  dateModifiedBefore String? // visible dateModified on the shipped page
+  dateModifiedAfter  String?
+  refreshedAt DateTime?
+  notes     String?
+  createdAt DateTime @default(now())
+
+  @@index([projectId])
+  @@index([projectId, status])
+}
+
+// An original-data asset (SOP-8, P3) that earns citations by being named
+// after the client brand and citing sourceable numbers.
+model DataAsset {
+  id        String   @id @default(cuid())
+  projectId String
+  title     String
+  brandAlignment String @default("brand-named") // brand-named | subject-matter
+  methodologyNote String?
+  surveySize Int?
+  status    String   @default("planned") // planned | fielding | published
+  publishedAt DateTime?
+  assetUrl  String?
+  createdAt DateTime @default(now())
+
+  @@index([projectId])
+}
+
+// ---------------------------------------------------------------------------
+// Wave 5 — sales & qualification tools (PLAN Phase 4, PRD 6.11/13/17)
+// ---------------------------------------------------------------------------
+
+// Rung 0 free diagnostic (PRD 13 Free tier): one persisted run of the real
+// pipeline at low depth. Findings are the top-3 named problems; nonObvious is
+// the SOP guarantee (the prospect could not know this without us).
+model ScorecardRun {
+  id         String   @id @default(cuid())
+  projectId  String
+  score      Float
+  band       String   // invisible | faint | present | recommended
+  topFindings String  @default("[]") // JSON: [{title, why, fix, severity}]
+  nonObvious Boolean  @default(false)
+  depth      String   @default("free") // free (n>=3, subset) | operator
+  publicToken String  @unique @default(cuid()) // shares the branded report without auth
+  createdAt  DateTime @default(now())
+
+  @@index([projectId])
+}
+
+// GTM qualification arithmetic (GTM Playbook). One row per project; PUT
+// recomputes; every intermediate stage is stored, not just the verdict.
+model PipelineMath {
+  id           String   @id @default(cuid())
+  projectId    String   @unique
+  revenueTarget Float
+  acv          Float
+  winRate      Float    // fraction 0..1
+  meetingToSql Float    // fraction of meetings that become SQLs
+  leadToMeeting Float   // fraction of leads that book meetings
+  visitorToLead Float   // fraction of visitors that become leads
+  marketSize   Float?   // addressable market (visitors/period)
+  stages       String   @default("{}") // JSON: {deals, sqls, meetings, leads, visitors}
+  verdict      String   @default("feasible") // feasible | fiction
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+// A funnel lead (PRD 6.11 FR-11.2) with CTA click event log (FR-11.3).
+model Lead {
+  id        String   @id @default(cuid())
+  projectId String
+  email     String
+  name      String?
+  source    String   @default("form") // bulk | api | form | scorecard
+  status    String   @default("new") // new | reached | booked | won | lost
+  scorecardRunId String? // lead generated by a Rung-0 run
+  ctaEvents String   @default("[]") // JSON: [{type, at, meta}]
+  createdAt DateTime @default(now())
+
+  @@index([projectId])
+  @@index([projectId, status])
+}
+
+// Stripe Checkout upgrade ledger (FR-11.4). Option A from docs/analysis/wave-5.md:
+// links come from env-configured Checkout URLs; clicks + webhook flip status.
+model Upgrade {
+  id         String   @id @default(cuid())
+  projectId  String
+  leadId     String?
+  tier       String   // full | monitoring
+  status     String   @default("created") // created | clicked | completed | abandoned
+  checkoutUrl String?
+  stripeSessionId String?
+  createdAt  DateTime @default(now())
+  completedAt DateTime?
+
+  @@index([projectId])
+  @@index([projectId, status])
+}

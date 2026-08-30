@@ -1,0 +1,17 @@
+# dependencies
+/node_modules
+
+# build
+/dist
+
+# env files
+.env
+
+# database (sqlite)
+prisma/dev.db
+*.db
+*.db-journal
+
+# misc
+.DS_Store
+*.log

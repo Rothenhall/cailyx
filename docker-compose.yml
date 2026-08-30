@@ -1,0 +1,35 @@
+# Cailyx infrastructure — shared across the team
+# Usage: docker compose up -d
+# Starts Redis (cache + job queue) and PostgreSQL (database).
+#
+# Redis runs on port 6380 to avoid conflicts with other projects.
+# PostgreSQL runs on port 5436 to avoid conflicts with other projects.
+# The backend reads connection URLs from .env (REDIS_URL + DATABASE_URL).
+
+services:
+  cailyx-redis:
+    image: redis:alpine
+    container_name: cailyx-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - cailyx-redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+  cailyx-postgres:
+    image: postgres:17-alpine
+    container_name: cailyx-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cailyx
+      POSTGRES_PASSWORD: cailyx_dev
+      POSTGRES_DB: cailyx
+    ports:
+      - "5436:5432"
+    volumes:
+      - cailyx-pgdata:/var/lib/postgresql/data
+
+volumes:
+  cailyx-redis-data:
+  cailyx-pgdata:
