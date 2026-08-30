@@ -2,8 +2,8 @@
 
 /**
  * Cailyx top bar: project switcher, product mark, a typewriter status line, the
- * layout menu (show/hide/reset panes), user management (admin), and the
- * operator chip.
+ * view menu (show/hide cards, reset/fit the canvas), connections, user
+ * management (admin), and the operator chip.
  *
  * @module components/terminal/TopBar
  */
@@ -18,7 +18,7 @@ const STATUS_LINES = [
   'Agents standing by — ask me anything.',
 ];
 
-export interface PaneToggle {
+export interface CardToggle {
   key: string;
   title: string;
   visible: boolean;
@@ -34,9 +34,11 @@ export function TopBar({
   onOpenConnections,
   onOpenUsers,
   connectedCount,
-  panes,
-  onTogglePane,
-  onResetLayout,
+  cards,
+  onToggleCard,
+  onResetView,
+  onFitView,
+  zoom,
 }: {
   user: User | null;
   projects: ProjectDetail[];
@@ -47,12 +49,14 @@ export function TopBar({
   onOpenConnections: () => void;
   onOpenUsers: () => void;
   connectedCount: number | null;
-  panes: PaneToggle[];
-  onTogglePane: (key: string) => void;
-  onResetLayout: () => void;
+  cards: CardToggle[];
+  onToggleCard: (key: string) => void;
+  onResetView: () => void;
+  onFitView: () => void;
+  zoom: number;
 }) {
   const active = projects.find((p) => p.id === activeId) ?? null;
-  const [menu, setMenu] = useState<null | 'project' | 'layout'>(null);
+  const [menu, setMenu] = useState<null | 'project' | 'view'>(null);
   const [line, setLine] = useState('');
   const idxRef = useRef(0);
 
@@ -112,33 +116,35 @@ export function TopBar({
       </span>
 
       <div className="ml-auto flex items-center gap-2">
-        {/* layout menu */}
+        {/* view menu */}
         <div className="relative">
           <button
-            onClick={() => setMenu((m) => (m === 'layout' ? null : 'layout'))}
-            className="rounded-md border border-border bg-bg-inset px-2 py-1 text-dim hover:border-border-strong"
+            onClick={() => setMenu((m) => (m === 'view' ? null : 'view'))}
+            className="flex items-center gap-1.5 rounded-md border border-border bg-bg-inset px-2 py-1 text-dim hover:border-border-strong"
           >
-            layout
+            view <span className="text-faint">{Math.round(zoom * 100)}%</span>
           </button>
-          {menu === 'layout' && (
+          {menu === 'view' && (
             <div className="absolute right-0 top-9 z-30 w-52 rounded-md border border-border bg-bg-raised p-1 shadow-xl">
-              <p className="px-2 py-1 text-[10px] uppercase tracking-widest text-faint">panes</p>
-              {panes.map((p) => (
+              <p className="px-2 py-1 text-[10px] uppercase tracking-widest text-faint">cards</p>
+              {cards.map((c) => (
                 <button
-                  key={p.key}
-                  onClick={() => onTogglePane(p.key)}
+                  key={c.key}
+                  onClick={() => onToggleCard(c.key)}
                   className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-dim hover:bg-bg-inset"
                 >
-                  <span className={p.visible ? 'text-accent' : 'text-faint'}>{p.visible ? '☑' : '☐'}</span>
-                  {p.title}
+                  <span className={c.visible ? 'text-accent' : 'text-faint'}>{c.visible ? '☑' : '☐'}</span>
+                  {c.title}
                 </button>
               ))}
-              <button
-                onClick={() => { onResetLayout(); setMenu(null); }}
-                className="mt-1 block w-full rounded border-t border-border px-2 py-1.5 text-left text-faint hover:bg-bg-inset hover:text-dim"
-              >
-                reset layout
-              </button>
+              <div className="mt-1 border-t border-border pt-1">
+                <button onClick={() => { onFitView(); setMenu(null); }} className="block w-full rounded px-2 py-1.5 text-left text-faint hover:bg-bg-inset hover:text-dim">
+                  fit all cards
+                </button>
+                <button onClick={() => { onResetView(); setMenu(null); }} className="block w-full rounded px-2 py-1.5 text-left text-faint hover:bg-bg-inset hover:text-dim">
+                  reset view
+                </button>
+              </div>
             </div>
           )}
         </div>

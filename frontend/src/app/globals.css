@@ -1,37 +1,38 @@
 /**
- * Cailyx — dark operator console theme.
- * Colour palette: Rothenhall Partners brand (BRANDING.md) — the Night band for
- * dark surfaces, brass as the quiet default accent, cognac as the warm spotlight.
- * Typography is unchanged (terminal monospace).
+ * Cailyx — infinite-canvas operator console.
+ * Colour: Rothenhall Partners brand (BRANDING.md), adapted for a dark data
+ * surface — deep near-black stage, warm charcoal cards, near-white text, and a
+ * brass → cognac → amber → red spread for accent + status so it reads with
+ * contrast (not a flat brown wash). Typography unchanged (terminal monospace).
  */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  /* Night band — dark surfaces (BRANDING §2) */
-  --bg: #14120d;            /* --color-night */
-  --bg-raised: #201c15;     /* --color-night-2 — panels, headers, cards */
-  --bg-inset: #100d09;      /* below night — input wells, code blocks */
-  --border: #35301f;        /* --color-night-line */
-  --border-strong: #4a4230; /* night-line, lifted for hover / emphasis */
+  /* Surfaces — Night band, de-browned for value contrast */
+  --bg: #100e0b;            /* the infinite stage — deep, faintly warm black */
+  --bg-raised: #1c1a15;     /* card surface — warm charcoal, lifted off the stage */
+  --bg-inset: #14120f;      /* input wells, code blocks */
+  --border: #332f24;        /* hairlines (night-line, made visible) */
+  --border-strong: #4c4535; /* hover / emphasis borders */
 
-  /* Text — canvas tones on dark */
-  --text: #ebe6d8;          /* ~ --color-canvas on dark */
-  --text-dim: #b4ab97;      /* secondary text */
-  --text-faint: #867c66;    /* ~ --color-ink-45 — captions, footnotes */
+  /* Text — canvas tones, brightened for dark */
+  --text: #f0ece0;          /* near-white warm — primary */
+  --text-dim: #c0b7a1;      /* secondary */
+  --text-faint: #8a8067;    /* captions, footnotes (~ ink-45) */
 
-  /* Brass — the quiet default accent (BRANDING: brass-soft on dark) */
-  --accent: #b79a6b;        /* --color-brass-soft — ready dots, active tab, cursor */
-  --accent-dim: #7c6238;    /* --color-brass-deep — accent fills + borders */
+  /* Brass — the quiet default accent (ready dots, active tab, badges, cursor) */
+  --accent: #c2a068;        /* brass, for dark surfaces */
+  --accent-dim: #806239;    /* brass-deep — fills + borders */
 
-  /* Cognac — the warm spotlight (BRANDING: cognac-soft on dark) */
-  --cognac: #c67c48;        /* --color-cognac-soft */
+  /* Cognac — the warm spotlight (links, primary CTA, "you") */
+  --cognac: #d98552;        /* cognac-soft, brightened */
 
-  /* Status */
-  --amber: #d9a441;         /* caution — brighter warm gold, distinct from brass */
-  --red: #bf5b3d;           /* critical — --color-cognac-deep lifted for dark contrast */
-  --blue: #c67c48;          /* links / "you" — cognac-soft (brand has no blue) */
+  /* Status — deliberately spread across the warm range so they separate */
+  --amber: #e0b44a;         /* caution — yellow-gold, distinct from brass */
+  --red: #d15b3c;           /* critical — a real alarming warm red */
+  --blue: #d98552;          /* links / "you" — cognac (brand has no blue) */
 
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
 }
@@ -53,6 +54,7 @@ body {
   font-size: 13px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
 }
 
 ::selection {
@@ -61,7 +63,7 @@ body {
   color: #fbf9f3;
 }
 
-/* thin dark scrollbars */
+/* thin scrollbars */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
@@ -104,4 +106,12 @@ select {
 }
 .pulse-dot {
   animation: pulse-dot 1.8s ease-in-out infinite;
+}
+
+/* infinite-canvas dotted grid — sits on the stage, scales with zoom via the
+ * --grid CSS var set by <Canvas> */
+.canvas-grid {
+  background-image: radial-gradient(var(--border) 1px, transparent 1px);
+  background-size: var(--grid, 28px) var(--grid, 28px);
+  background-position: var(--grid-x, 0) var(--grid-y, 0);
 }

@@ -1,16 +1,15 @@
 'use client';
 
 /**
- * Chat pane — a terminal assistant that answers questions about the project
- * from data the dashboard already has (agents feed, connections, context).
- * Deterministic command router; no LLM required. Participates in the movable /
- * resizable workspace layout.
+ * Chat card body — a terminal assistant that answers questions about the
+ * project from data the dashboard already has (agents feed, connections,
+ * context). Deterministic command router; no LLM required. Rendered inside a
+ * <CanvasCard> which provides the frame.
  *
  * @module components/terminal/ChatPane
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { PANE_MAX, PANE_MIN } from './Pane';
+import { useEffect, useRef, useState } from 'react';
 import type { AgentsResponse, Integration, ProjectDetail } from '@/types/terminal';
 
 export const chatMeta = { key: 'chat' as const, title: 'Chat', icon: '◧' };
@@ -26,6 +25,7 @@ const HELP = [
   '  issues               — top on-page problems',
   '  visibility / geo      — AI mention & citation rates',
   '  connections           — integration status',
+  '  gates                 — what still needs configuring',
   '  attention             — only what needs you',
   '  context               — the company profile',
   '  help                  — this list',
@@ -36,31 +36,15 @@ export function ChatPane({
   agents,
   integrations,
   onOpenConnections,
-  width,
-  onResize,
-  onMoveLeft,
-  onMoveRight,
-  onHide,
-  canMoveLeft,
-  canMoveRight,
 }: {
   project: ProjectDetail | null;
   agents: AgentsResponse | null;
   integrations: Integration[];
   onOpenConnections: () => void;
-  width: number;
-  onResize: (w: number) => void;
-  onMoveLeft: () => void;
-  onMoveRight: () => void;
-  onHide: () => void;
-  canMoveLeft: boolean;
-  canMoveRight: boolean;
 }) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const scroller = useRef<HTMLDivElement>(null);
-  const startX = useRef(0);
-  const startW = useRef(0);
 
   useEffect(() => {
     setMsgs([
@@ -91,34 +75,11 @@ export function ChatPane({
     setMsgs((m) => [...m, { role: 'cailyx', text: answer }]);
   };
 
-  const onDragStart = useCallback(
-    (e: React.PointerEvent) => {
-      e.preventDefault();
-      startX.current = e.clientX;
-      startW.current = width;
-      const move = (ev: PointerEvent) => {
-        const next = Math.min(PANE_MAX, Math.max(PANE_MIN, startW.current + (ev.clientX - startX.current)));
-        onResize(next);
-      };
-      const up = () => {
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', up);
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-      };
-      window.addEventListener('pointermove', move);
-      window.addEventListener('pointerup', up);
-      document.body.style.cursor = 'col-resize';
-      document.body.style.userSelect = 'none';
-    },
-    [width, onResize],
-  );
-
   return (
-    <section className="relative flex shrink-0 flex-col border-r border-border bg-bg-raised" style={{ width }}>
+    <div className="flex h-full flex-col">
       {/* CMO banner */}
-      <div className="flex items-center gap-2 border-b border-border bg-bg-inset px-3 py-2">
-        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border text-dim">▚</span>
+      <div className="flex items-center gap-2 border-b border-[#26221b] bg-[#0c0a07] px-3 py-2">
+        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-[#26221b] text-dim">▚</span>
         <div className="min-w-0 flex-1 leading-tight">
           <div className="text-[12px] font-semibold text-dim">Hire your full-time CMO</div>
           <div className="truncate text-[10px] text-faint">AI-powered marketing — fixed-fee sprints &amp; monthly retainers</div>
@@ -141,16 +102,6 @@ export function ChatPane({
         </button>
       </div>
 
-      <header className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
-        <span className="text-faint">◧</span>
-        <h2 className="text-[11px] font-semibold uppercase tracking-widest text-dim">Chat</h2>
-        <div className="ml-auto flex items-center gap-0.5">
-          <button onClick={onMoveLeft} disabled={!canMoveLeft} title="Move pane left" className="rounded p-1 text-faint hover:bg-bg-inset hover:text-dim disabled:opacity-20">◄</button>
-          <button onClick={onMoveRight} disabled={!canMoveRight} title="Move pane right" className="rounded p-1 text-faint hover:bg-bg-inset hover:text-dim disabled:opacity-20">►</button>
-          <button onClick={onHide} title="Hide pane" className="rounded p-1 text-faint hover:bg-bg-inset hover:text-dim">✕</button>
-        </div>
-      </header>
-
       <div ref={scroller} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 text-[12px]">
         {msgs.map((m, i) => (
           <div key={i}>
@@ -165,9 +116,9 @@ export function ChatPane({
           e.preventDefault();
           send(input);
         }}
-        className="shrink-0 border-t border-border p-2"
+        className="shrink-0 border-t border-[#26221b] p-2"
       >
-        <div className="flex items-center gap-2 rounded-md border border-border bg-bg-inset px-2">
+        <div className="flex items-center gap-2 rounded-md border border-[#26221b] bg-[#0c0a07] px-2">
           <span className="text-faint">$</span>
           <input
             value={input}
@@ -179,20 +130,14 @@ export function ChatPane({
               }
             }}
             placeholder="ask me anything…  (try: status)"
-            className="flex-1 bg-transparent py-2 text-[12px] outline-none"
+            className="flex-1 bg-transparent py-2 text-[12px] text-[#f0ece0] outline-none"
           />
           <button type="submit" className="text-faint hover:text-accent" aria-label="send">
             ↩
           </button>
         </div>
       </form>
-
-      <div
-        onPointerDown={onDragStart}
-        title="Drag to resize"
-        className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-accent-dim/40"
-      />
-    </section>
+    </div>
   );
 }
 
@@ -207,11 +152,18 @@ function respond(
   if (q === 'help' || q === '?') return HELP;
   if (q.includes('connection') || q.includes('integration')) return '__CONNECTIONS__';
 
+  if (q === 'gates' || q.includes('blocked') || q.includes('pending')) {
+    const blocked = integrations.filter((i) => i.category !== 'mode' && !i.connected);
+    return blocked.length === 0
+      ? 'No integration gates open. Code-level gaps: GA/GSC OAuth, deployment artifacts — see the Gates card.'
+      : 'Needs a key: ' + blocked.map((i) => `${i.name} (${i.configHint})`).join('; ') + '. See the Gates card for the full list.';
+  }
+
   if (q === 'context' || q.includes('profile') || q.includes('company')) {
     return [
       `${project.name} — ${project.domain}`,
       project.category ? `category: ${project.category}` : null,
-      project.notes ? `\n${project.notes}` : '(no description yet — add one in the Context pane)',
+      project.notes ? `\n${project.notes}` : '(no description yet — add one in the Context card)',
     ]
       .filter(Boolean)
       .join('\n');
@@ -250,7 +202,7 @@ function respond(
   const connected = integrations.filter((i) => i.connected).map((i) => i.name);
   return [
     `I answer from what the dashboard already knows about ${project.domain}.`,
-    `Try: status · issues · visibility · attention · connections · help`,
+    `Try: status · issues · visibility · attention · connections · gates · help`,
     connected.length ? `Connected: ${connected.join(', ')}` : 'No integrations connected yet — type `connections`.',
   ].join('\n');
 }

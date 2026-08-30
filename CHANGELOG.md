@@ -9,6 +9,29 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-08-31 — Infinite-canvas console + Gates card + de-browned palette
+
+- **Infinite canvas** — the console is now a pannable / zoomable stage
+  (`components/canvas/Canvas.tsx`, `CanvasCard.tsx`; no external library). Cards
+  (Analytics · Context · Agents · Chat · Gates) drag by their header, resize
+  from the SE corner, hide via ✕ or the top-bar **view** menu. Pan by dragging
+  empty space; wheel to zoom toward the cursor; **fit** / **reset view** /
+  zoom ± controls. Viewport + card boxes persist in `localStorage['cailyx.canvas']`.
+  The old fixed row layout + `Pane.tsx` are gone.
+- **Gates card** — a live view of `docs/PRODUCTION-READINESS.md`: "needs a key
+  or credential" (from `GET /api/integrations`), "not wired — needs code"
+  (GA/GSC OAuth, Redis-backed throttler, deployment artifacts), and "modes"
+  (swarm-live, dev flags to disable). `chat` gains a `gates` command.
+- **Palette de-browned** — the all-warm dark theme read as a flat brown wash.
+  Kept the Rothenhall brass/cognac identity but deepened the stage to a near-black
+  `#100e0b`, lifted cards to a warm charcoal `#1c1a15`, brightened text to
+  `#f0ece0`, and spread status across brass → cognac → amber → red so states
+  separate. The Chat card is a darker "night" variant for contrast.
+- Verified in-browser: pan, zoom, fit, card move/resize/hide, all five cards
+  render, Gates lists the 7 unconnected integrations. `tsc` + `next build` green.
+
+---
+
 ## 2026-08-31 — Brand palette + production-readiness docs
 
 - **`docs/PRODUCTION-READINESS.md`** — the go-live checklist: every secret / API

@@ -1,14 +1,14 @@
 'use client';
 
 /**
- * Cailyx — the operator console. Top bar + a movable / resizable / hideable set
- * of panes (Analytics · Context · Agents Feed · Chat) for the active project.
- * Layout is persisted per browser.
+ * Cailyx — the operator console as an infinite canvas. Top bar + a pannable /
+ * zoomable stage of draggable, resizable cards (Analytics · Context · Agents ·
+ * Chat · Gates). Card boxes + viewport persist per browser.
  *
  * @module app/page
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getToken, setToken, ApiError } from '@/lib/api';
 import {
@@ -22,54 +22,62 @@ import {
 import type { User } from '@/types/api';
 import type { AgentsResponse, IntegrationsResponse, ProjectDetail } from '@/types/terminal';
 import { TopBar } from '@/components/terminal/TopBar';
-import { Pane } from '@/components/terminal/Pane';
+import { Canvas, type Box, type CanvasHandle, type Viewport } from '@/components/canvas/Canvas';
+import { CanvasCard } from '@/components/canvas/CanvasCard';
 import { AnalyticsPane, analyticsMeta } from '@/components/terminal/AnalyticsPane';
 import { ContextPane, contextMeta } from '@/components/terminal/ContextPane';
 import { AgentsFeed, agentsMeta } from '@/components/terminal/AgentsFeed';
 import { ChatPane, chatMeta } from '@/components/terminal/ChatPane';
+import { GatesCard, gatesMeta } from '@/components/terminal/GatesCard';
 import { ConnectionsModal } from '@/components/terminal/ConnectionsModal';
 import { UsersModal } from '@/components/terminal/UsersModal';
 
-type PaneKey = 'analytics' | 'context' | 'agents' | 'chat';
-const PANE_META: Record<PaneKey, { title: string; icon: string }> = {
+type CardKey = 'analytics' | 'context' | 'agents' | 'chat' | 'gates';
+const CARD_ORDER: CardKey[] = ['analytics', 'context', 'agents', 'chat', 'gates'];
+const CARD_META: Record<CardKey, { title: string; icon: string }> = {
   analytics: { title: analyticsMeta.title, icon: analyticsMeta.icon },
   context: { title: contextMeta.title, icon: contextMeta.icon },
   agents: { title: agentsMeta.title, icon: agentsMeta.icon },
   chat: { title: chatMeta.title, icon: chatMeta.icon },
+  gates: { title: gatesMeta.title, icon: gatesMeta.icon },
 };
 
-interface Layout {
-  order: PaneKey[];
-  widths: Record<PaneKey, number>;
-  hidden: PaneKey[];
+interface CanvasLayout {
+  viewport: Viewport;
+  nodes: Record<CardKey, Box>;
+  hidden: CardKey[];
 }
-const DEFAULT_LAYOUT: Layout = {
-  order: ['analytics', 'context', 'agents', 'chat'],
-  widths: { analytics: 300, context: 320, agents: 300, chat: 380 },
+const DEFAULT_LAYOUT: CanvasLayout = {
+  viewport: { x: 24, y: 20, z: 1 },
+  nodes: {
+    // a compact 3 + 2 cluster so "fit" frames it nicely on any screen
+    analytics: { x: 0, y: 0, w: 340, h: 600 },
+    context: { x: 360, y: 0, w: 360, h: 600 },
+    agents: { x: 740, y: 0, w: 340, h: 600 },
+    chat: { x: 0, y: 632, w: 420, h: 520 },
+    gates: { x: 440, y: 632, w: 380, h: 520 },
+  },
   hidden: [],
 };
-const LAYOUT_KEY = 'cailyx.layout';
+const KEY = 'cailyx.canvas';
 const LAST_KEY = 'cailyx.lastProject';
 
-function loadLayout(): Layout {
+function loadLayout(): CanvasLayout {
   try {
-    const raw = window.localStorage.getItem(LAYOUT_KEY);
+    const raw = window.localStorage.getItem(KEY);
     if (!raw) return DEFAULT_LAYOUT;
-    const p = JSON.parse(raw) as Partial<Layout>;
-    const keys: PaneKey[] = ['analytics', 'context', 'agents', 'chat'];
-    const order = (p.order ?? []).filter((k): k is PaneKey => keys.includes(k as PaneKey));
-    for (const k of keys) if (!order.includes(k)) order.push(k);
+    const p = JSON.parse(raw) as Partial<CanvasLayout>;
     return {
-      order,
-      widths: { ...DEFAULT_LAYOUT.widths, ...(p.widths ?? {}) },
-      hidden: (p.hidden ?? []).filter((k): k is PaneKey => keys.includes(k as PaneKey)),
+      viewport: { ...DEFAULT_LAYOUT.viewport, ...(p.viewport ?? {}) },
+      nodes: { ...DEFAULT_LAYOUT.nodes, ...(p.nodes ?? {}) },
+      hidden: (p.hidden ?? []).filter((k): k is CardKey => CARD_ORDER.includes(k as CardKey)),
     };
   } catch {
     return DEFAULT_LAYOUT;
   }
 }
 
-export default function TerminalPage() {
+export default function CanvasConsole() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [projects, setProjects] = useState<ProjectDetail[]>([]);
@@ -80,24 +88,26 @@ export default function TerminalPage() {
   const [integ, setInteg] = useState<IntegrationsResponse | null>(null);
   const [modal, setModal] = useState<null | 'connections' | 'users' | 'new'>(null);
   const [fatal, setFatal] = useState<string | null>(null);
-  const [layout, setLayout] = useState<Layout>(DEFAULT_LAYOUT);
+  const [layout, setLayout] = useState<CanvasLayout>(DEFAULT_LAYOUT);
   const [hydrated, setHydrated] = useState(false);
+  const [focused, setFocused] = useState<CardKey | null>(null);
+  const canvasApi = useRef<CanvasHandle | null>(null);
 
   useEffect(() => {
     setLayout(loadLayout());
     setHydrated(true);
   }, []);
 
-  const persistLayout = useCallback((next: Layout) => {
+  const persist = useCallback((next: CanvasLayout) => {
     setLayout(next);
     try {
-      window.localStorage.setItem(LAYOUT_KEY, JSON.stringify(next));
+      window.localStorage.setItem(KEY, JSON.stringify(next));
     } catch {
       /* ignore */
     }
   }, []);
 
-  /* auth gate + bootstrap */
+  /* auth + bootstrap */
   useEffect(() => {
     if (typeof window !== 'undefined' && getToken() === null) {
       router.replace('/login');
@@ -180,36 +190,19 @@ export default function TerminalPage() {
     router.replace('/login');
   };
 
-  /* ── layout ops ─────────────────────────────────────────── */
-  const visibleOrder = useMemo(
-    () => layout.order.filter((k) => !layout.hidden.includes(k)),
-    [layout.order, layout.hidden],
-  );
-
-  const movePane = (key: PaneKey, dir: -1 | 1) => {
-    const vis = visibleOrder;
-    const vi = vis.indexOf(key);
-    const target = vis[vi + dir];
-    if (!target) return;
-    const order = [...layout.order];
-    const a = order.indexOf(key);
-    const b = order.indexOf(target);
-    [order[a], order[b]] = [order[b], order[a]];
-    persistLayout({ ...layout, order });
+  /* ── canvas ops ─────────────────────────────────────────── */
+  const setNode = (k: CardKey, b: Box) => persist({ ...layout, nodes: { ...layout.nodes, [k]: b } });
+  const setViewport = (v: Viewport) => persist({ ...layout, viewport: v });
+  const toggleCard = (key: string) => {
+    const k = key as CardKey;
+    persist({
+      ...layout,
+      hidden: layout.hidden.includes(k) ? layout.hidden.filter((x) => x !== k) : [...layout.hidden, k],
+    });
   };
-
-  const setWidth = (key: PaneKey, w: number) =>
-    persistLayout({ ...layout, widths: { ...layout.widths, [key]: Math.round(w) } });
-
-  const togglePane = (key: string) => {
-    const k = key as PaneKey;
-    const hidden = layout.hidden.includes(k)
-      ? layout.hidden.filter((x) => x !== k)
-      : [...layout.hidden, k];
-    persistLayout({ ...layout, hidden });
-  };
-
-  const resetLayout = () => persistLayout(DEFAULT_LAYOUT);
+  const visible = useMemo(() => CARD_ORDER.filter((k) => !layout.hidden.includes(k)), [layout.hidden]);
+  const resetView = () => canvasApi.current?.reset();
+  const fitView = () => canvasApi.current?.fit(visible.map((k) => layout.nodes[k]));
 
   if (fatal) {
     return (
@@ -222,81 +215,41 @@ export default function TerminalPage() {
     );
   }
 
-  const paneToggles = layout.order.map((k) => ({
+  const cardToggles = CARD_ORDER.map((k) => ({
     key: k,
-    title: PANE_META[k].title,
+    title: CARD_META[k].title,
     visible: !layout.hidden.includes(k),
   }));
 
-  const renderPane = (key: PaneKey, i: number) => {
-    const width = layout.widths[key];
-    const canLeft = i > 0;
-    const canRight = i < visibleOrder.length - 1;
-    const move = (dir: -1 | 1) => () => movePane(key, dir);
-
-    if (key === 'chat') {
-      return (
-        <ChatPane
-          key="chat"
-          project={project}
-          agents={agents}
-          integrations={integ?.integrations ?? []}
-          onOpenConnections={() => setModal('connections')}
-          width={width}
-          onResize={(w) => setWidth('chat', w)}
-          onMoveLeft={move(-1)}
-          onMoveRight={move(1)}
-          onHide={() => togglePane('chat')}
-          canMoveLeft={canLeft}
-          canMoveRight={canRight}
-        />
-      );
+  const renderBody = (k: CardKey) => {
+    switch (k) {
+      case 'analytics':
+        return <AnalyticsPane projectId={activeId} domain={project?.domain ?? null} integrations={integ?.integrations ?? []} />;
+      case 'context':
+        return (
+          <ContextPane
+            project={project}
+            agents={agents}
+            onProjectChanged={(p) => {
+              setProject(p);
+              setProjects((prev) => prev.map((x) => (x.id === p.id ? { ...x, ...p } : x)));
+            }}
+          />
+        );
+      case 'agents':
+        return <AgentsFeed data={agents} loading={agentsLoading} />;
+      case 'chat':
+        return (
+          <ChatPane
+            project={project}
+            agents={agents}
+            integrations={integ?.integrations ?? []}
+            onOpenConnections={() => setModal('connections')}
+          />
+        );
+      case 'gates':
+        return <GatesCard integrations={integ?.integrations ?? []} />;
     }
-
-    const meta = PANE_META[key];
-    const body =
-      key === 'analytics' ? (
-        <AnalyticsPane
-          projectId={activeId}
-          domain={project?.domain ?? null}
-          integrations={integ?.integrations ?? []}
-        />
-      ) : key === 'context' ? (
-        <ContextPane
-          project={project}
-          agents={agents}
-          onProjectChanged={(p) => {
-            setProject(p);
-            setProjects((prev) => prev.map((x) => (x.id === p.id ? { ...x, ...p } : x)));
-          }}
-        />
-      ) : (
-        <AgentsFeed data={agents} loading={agentsLoading} />
-      );
-
-    return (
-      <Pane
-        key={key}
-        title={meta.title}
-        icon={<span className={key === 'agents' ? 'pulse-dot text-accent' : undefined}>{meta.icon}</span>}
-        width={width}
-        onResize={(w) => setWidth(key, w)}
-        onMoveLeft={move(-1)}
-        onMoveRight={move(1)}
-        onHide={() => togglePane(key)}
-        canMoveLeft={canLeft}
-        canMoveRight={canRight}
-        headerRight={
-          key === 'agents' ? (
-            <button onClick={refreshAgents} title="Refresh" className="rounded p-1 text-faint hover:bg-bg-inset hover:text-dim">
-              ↻
-            </button>
-          ) : undefined
-        }
-      >
-        {body}
-      </Pane>
-    );
   };
 
   return (
@@ -311,16 +264,58 @@ export default function TerminalPage() {
         onOpenConnections={() => setModal('connections')}
         onOpenUsers={() => setModal('users')}
         connectedCount={integ?.summary.connected ?? null}
-        panes={paneToggles}
-        onTogglePane={togglePane}
-        onResetLayout={resetLayout}
+        cards={cardToggles}
+        onToggleCard={toggleCard}
+        onResetView={resetView}
+        onFitView={fitView}
+        zoom={layout.viewport.z}
       />
 
-      <div className="flex min-h-0 flex-1 overflow-x-auto">
-        {hydrated && visibleOrder.map((k, i) => renderPane(k, i))}
-        {hydrated && visibleOrder.length === 0 && (
-          <p className="p-6 text-faint">all panes hidden — use the layout menu to bring one back.</p>
+      <div className="relative min-h-0 flex-1">
+        {hydrated && (
+          <Canvas
+            viewport={layout.viewport}
+            onViewport={setViewport}
+            onBackgroundClick={() => setFocused(null)}
+            apiRef={canvasApi}
+          >
+            {visible.map((k) => (
+              <div key={k} style={{ position: 'absolute', zIndex: focused === k ? 20 : 1 }}>
+                <CanvasCard
+                  box={layout.nodes[k]}
+                  zoom={layout.viewport.z}
+                  title={CARD_META[k].title}
+                  icon={<span className={k === 'agents' ? 'pulse-dot text-accent' : undefined}>{CARD_META[k].icon}</span>}
+                  variant={k === 'chat' ? 'dark' : 'default'}
+                  onChange={(b) => setNode(k, b)}
+                  onHide={() => toggleCard(k)}
+                  onFocus={() => setFocused(k)}
+                  headerRight={
+                    k === 'agents' ? (
+                      <button onClick={refreshAgents} title="Refresh" className="rounded p-1 text-faint hover:bg-bg-inset hover:text-dim">
+                        ↻
+                      </button>
+                    ) : undefined
+                  }
+                >
+                  {renderBody(k)}
+                </CanvasCard>
+              </div>
+            ))}
+          </Canvas>
         )}
+
+        {/* zoom controls */}
+        <div className="absolute bottom-4 left-4 z-30 flex items-center gap-1 rounded-md border border-border bg-bg-raised/90 px-1 py-0.5 text-xs backdrop-blur">
+          <button onClick={() => canvasApi.current?.zoomBy(1 / 1.2)} className="rounded px-2 py-1 text-faint hover:bg-bg-inset hover:text-dim">−</button>
+          <span className="w-10 text-center text-faint">{Math.round(layout.viewport.z * 100)}%</span>
+          <button onClick={() => canvasApi.current?.zoomBy(1.2)} className="rounded px-2 py-1 text-faint hover:bg-bg-inset hover:text-dim">+</button>
+          <span className="mx-1 h-4 w-px bg-border" />
+          <button onClick={fitView} className="rounded px-2 py-1 text-faint hover:bg-bg-inset hover:text-dim">fit</button>
+        </div>
+        <p className="absolute bottom-4 right-4 z-30 rounded bg-bg-raised/80 px-2 py-1 text-[10px] text-faint backdrop-blur">
+          drag empty space to pan · scroll to zoom · drag a card header to move it
+        </p>
       </div>
 
       {modal === 'connections' && integ && (
