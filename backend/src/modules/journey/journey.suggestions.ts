@@ -216,42 +216,20 @@ export function buildSuggestionWheel(input: SuggestionInputs): SuggestionWheel {
   };
 
   const stages: SuggestionStage[] = STAGES.map((stageKey) => {
-    // group the library entries for this stage by theme
     const byTheme = new Map<string, SuggestionLeaf[]>();
+    const order: string[] = [];
     const seen = new Set<string>();
     const add = (theme: string, leaf: SuggestionLeaf) => {
       if (!leaf.text || leaf.text.length < 3 || seen.has(norm(leaf.text))) return;
       seen.add(norm(leaf.text));
-      const arr = byTheme.get(theme) ?? [];
-      arr.push(leaf);
-      byTheme.set(theme, arr);
+      if (!byTheme.has(theme)) {
+        byTheme.set(theme, []);
+        order.push(theme);
+      }
+      byTheme.get(theme)!.push(leaf);
     };
 
-    // real journey queries first (highest signal) — attach to a "From your journeys" theme
-    for (const s of input.journeySteps) {
-      if (bucketStage(s.query) !== stageKey && (s.awareness as PersonaAwareness) !== stageKey) continue;
-      add('From your journeys', {
-        text: s.query.trim(),
-        source: 'journey',
-        painPoint: 'A real buyer search your simulated journeys already ran.',
-        suggestion: 'Check whether you are mentioned / cited for it, then plan a branch from it.',
-      });
-    }
-
-    // persona vocabulary
-    for (const p of input.personas) {
-      if ((p.awareness as PersonaAwareness) !== stageKey) continue;
-      for (const v of parseStrList(p.vocabulary).slice(0, 4)) {
-        add('From your personas', {
-          text: v,
-          source: 'persona',
-          painPoint: 'A phrase a target persona types into a search box.',
-          suggestion: 'Make sure a page answers it in the first 40–60 words (BLUF).',
-        });
-      }
-    }
-
-    // the library
+    // 1) the library first — these carry the real pain points + suggestions
     for (const e of LIBRARY[stageKey]) {
       add(e.theme, {
         text: fill(e.query, ctx),
@@ -261,9 +239,41 @@ export function buildSuggestionWheel(input: SuggestionInputs): SuggestionWheel {
       });
     }
 
-    const themes: SuggestionTheme[] = [...byTheme.entries()]
-      .map(([label, queries]) => ({ label, queries: queries.slice(0, 6) }))
-      .filter((t) => t.queries.length > 0);
+    // 2) one small "Your journeys" theme — real buyer searches, capped
+    let jn = 0;
+    for (const s of input.journeySteps) {
+      if (jn >= 4) break;
+      if (bucketStage(s.query) !== stageKey && (s.awareness as PersonaAwareness) !== stageKey) continue;
+      add('Your journeys', {
+        text: s.query.trim(),
+        source: 'journey',
+        painPoint: 'A real buyer search your simulated journeys already ran.',
+        suggestion: 'Check whether you are mentioned / cited for it, then branch a journey from it.',
+      });
+      jn++;
+    }
+
+    // 3) one small "Your personas" theme — persona vocabulary, capped
+    let pn = 0;
+    for (const p of input.personas) {
+      if (pn >= 3) break;
+      if ((p.awareness as PersonaAwareness) !== stageKey) continue;
+      for (const v of parseStrList(p.vocabulary).slice(0, 2)) {
+        if (pn >= 3) break;
+        add('Your personas', {
+          text: v,
+          source: 'persona',
+          painPoint: 'A phrase a target persona types into a search box.',
+          suggestion: 'Make sure a page answers it in the first 40–60 words (BLUF).',
+        });
+        pn++;
+      }
+    }
+
+    const themes: SuggestionTheme[] = order
+      .map((label) => ({ label, queries: (byTheme.get(label) ?? []).slice(0, 6) }))
+      .filter((t) => t.queries.length > 0)
+      .slice(0, 5); // keep wedges wide enough to read
 
     return { key: stageKey, label: STAGE_LABEL[stageKey], themes };
   });
