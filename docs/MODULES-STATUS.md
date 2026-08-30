@@ -4,6 +4,7 @@
 > **Date:** 2026-08-29
 > **Sources:** `docs/PRD.md` (AI Visibility Diagnostic, working name Beacon), `docs/PLAN.md`, `docs/cailyx-audit-modules-spec.md`, module READMEs in `backend/src/modules/`
 > **Rule reminder:** One module at a time. Analysis doc (`docs/analysis/<module>.md`) with 2-3 tool options per dependency, user approval, then code. See `AGENTS.md`.
+> **Going live:** see [`docs/PRODUCTION-READINESS.md`](PRODUCTION-READINESS.md) for every secret / API key / infra / hardening step. Build history: [`CHANGELOG.md`](../CHANGELOG.md).
 
 ---
 

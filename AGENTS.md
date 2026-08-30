@@ -154,11 +154,19 @@ backend/src/modules/<module-name>/
 The docs/ folder at the project root is for project-level docs only:
 ` 
 docs/
-  PRD.md             # Product Requirements Document
-  PLAN.md            # Build plan and phases
-  API.md             # REST API documentation with setup instructions
-  aeo-research-*.md  # Research findings
+  PRD.md                    # Product Requirements Document
+  PLAN.md                   # Build plan and phases
+  API.md                    # REST API documentation with setup instructions
+  MODULES-STATUS.md         # Module-by-module state (living)
+  PRODUCTION-READINESS.md   # Everything needed to go live: secrets, infra, hardening
+  aeo-research-*.md         # Research findings
 ` 
+
+**Also maintain (project root):**
+- `CHANGELOG.md` — a running record of what shipped, how it was verified, and
+  what it left for later. Add an entry on every meaningful change.
+- `docs/PRODUCTION-READINESS.md` — keep the secrets / infra / hardening checklist
+  current whenever a new integration, env var, or external dependency is added.
 
 ### 2. API Documentation
 Update `docs/API.md` with:
