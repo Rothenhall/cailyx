@@ -9,6 +9,23 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-08-31 — Layered Flywheel (pain point + suggestion per query)
+
+- The Flywheel is now a **layered** sunburst: hub → awareness stage → **theme**
+  → query, with outer tick marks showing query density per theme (coloured by
+  source: library / persona / journey).
+- **Every query carries the buyer PAIN POINT it maps to and the SUGGESTION
+  Cailyx would make.** These render in full, unrotated, readable text in a
+  detail panel below the wheel — click a stage or theme wedge to filter it,
+  click a query row to send it to Chat.
+- Backend `journey.suggestions.ts` rewritten around a `LIBRARY` of
+  `{theme, query, painPoint, suggestion}` entries per stage (AI-visibility /
+  GTM specific), folded together with persona vocabulary and real journey
+  queries. Response shape: `{ hub, stages:[{ themes:[{ queries:[{ text,
+  source, painPoint, suggestion }] }] }] }`. Still deterministic, no LLM.
+- `journey.smoke.sh` suggestion assertions updated for the layered shape +
+  pain/suggestion presence (**38**). Full harness **8/8 · 199**.
+
 ## 2026-08-31 — Light theme, layout presets, Flywheel
 
 - **Light theme (correct brand use)** — swapped to the real Rothenhall light

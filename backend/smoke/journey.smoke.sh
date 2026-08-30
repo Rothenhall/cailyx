@@ -90,16 +90,16 @@ CDONE=$(echo "$CAMP" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("en
 # no active personas of a role → 409
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/journey-campaigns" "${AUTH[@]}" -H 'content-type: application/json' -d '{"name":"Empty","journeyTarget":2,"budgetUsd":1,"personaRoles":["rev-ops"]}')" = "409" ] && ok "campaign with no matching active personas → 409" || bad "empty-campaign not 409"
 
-# --- suggestion wheel (Flywheel data) --------------------------------
+# --- layered suggestion wheel (Flywheel data) ----------------------
 SW=$(curl -s "$API/projects/$PID/journeys/suggestions" "${AUTH[@]}")
-[ "$(echo "$SW" | jlen spokes)" = "4" ] && ok "suggestion wheel has 4 awareness spokes" || bad "spokes = $(echo "$SW" | jlen spokes)"
+[ "$(echo "$SW" | jlen stages)" = "4" ] && ok "wheel has 4 awareness stages" || bad "stages = $(echo "$SW" | jlen stages)"
 [ "$(echo "$SW" | jget hub.label)" = "Journey Smoke Co" ] && ok "wheel hub = project name" || bad "hub = $(echo "$SW" | jget hub.label)"
 SWT=$(echo "$SW" | jget total)
-[ "$SWT" -ge 8 ] 2>/dev/null && ok "wheel produced $SWT query suggestions" || bad "total = $SWT"
-echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);const bad=w.spokes.some(sp=>sp.queries.some(q=>!q.text||!["template","persona","journey"].includes(q.source)));process.exit(bad?1:0)})' && ok "every suggestion is well-formed (text + source)" || bad "malformed suggestion"
-# re-run is deterministic
+[ "$SWT" -ge 12 ] 2>/dev/null && ok "wheel produced $SWT layered suggestions" || bad "total = $SWT"
+echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);const bad=w.stages.some(st=>!st.themes.length||st.themes.some(th=>th.queries.some(q=>!q.text||!q.painPoint||!q.suggestion||!["template","persona","journey"].includes(q.source))));process.exit(bad?1:0)})' && ok "every leaf has text + painPoint + suggestion + source" || bad "malformed suggestion leaf"
+echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);const themed=w.stages.every(st=>st.themes.length>=1);process.exit(themed?0:1)})' && ok "every stage has >=1 theme (layered)" || bad "a stage has no themes"
 SW2T=$(curl -s "$API/projects/$PID/journeys/suggestions" "${AUTH[@]}" | jget total)
-[ "$SW2T" = "$SWT" ] && ok "suggestion wheel is deterministic ($SW2T)" || bad "wheel re-run differs: $SW2T vs $SWT"
+[ "$SW2T" = "$SWT" ] && ok "wheel is deterministic ($SW2T)" || bad "wheel re-run differs: $SW2T vs $SWT"
 
 echo
 echo "== $PASS passed, $FAIL failed =="

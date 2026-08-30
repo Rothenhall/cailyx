@@ -1,62 +1,69 @@
 'use client';
 
 /**
- * Flywheel — an answerthepublic-style radial of buyer search-query suggestions
- * for the project, grouped by awareness stage. Hub = the brand; four wedges
- * (problem → solution → product → most aware) in a warm cream → cognac ramp;
- * each wedge fans out its suggested queries as labelled spokes.
+ * Flywheel — an answerthepublic-style LAYERED radial of buyer search queries:
+ * hub → awareness stage → theme → query. Each query carries the buyer pain
+ * point it maps to and the suggestion Cailyx would make; those show, in full
+ * readable text, in the detail panel below the wheel. Click a query to drop it
+ * into the Chat card.
  *
  * Data: GET /api/projects/:id/journeys/suggestions (deterministic, no LLM).
- * Click a query to drop it into the Chat card.
  *
  * @module components/terminal/Flywheel
  */
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 export const flywheelMeta = { key: 'flywheel' as const, title: 'Flywheel', icon: '❋' };
 
+export type SuggestionSource = 'template' | 'persona' | 'journey';
+
 export interface SuggestionWheel {
   hub: { label: string; domain: string; category: string };
-  spokes: Array<{
+  stages: Array<{
     key: string;
     label: string;
-    queries: Array<{ text: string; source: 'template' | 'persona' | 'journey' }>;
+    themes: Array<{
+      label: string;
+      queries: Array<{ text: string; source: SuggestionSource; painPoint: string; suggestion: string }>;
+    }>;
   }>;
   total: number;
 }
 
-/** warm ramp: canvas → brass → cognac (BRANDING) */
-const WEDGE = [
-  { fill: '#efe9dc', line: '#d8cdb4', text: '#5c5648' },
-  { fill: '#e2c9a1', line: '#c9ab77', text: '#4a4436' },
-  { fill: '#cf9560', line: '#b87c46', text: '#3a2b1c' },
-  { fill: '#a85c30', line: '#8a4a26', text: '#fbf3ea' },
+/* warm ramp per stage: cream → brass → cognac (BRANDING) */
+const RAMP = [
+  { fill: '#efe6d3', stroke: '#dcccae', text: '#5c5648' },
+  { fill: '#e3caa2', stroke: '#cbab77', text: '#4a4436' },
+  { fill: '#cf9560', stroke: '#b87c46', text: '#3a2b1c' },
+  { fill: '#a85c30', stroke: '#8a4a26', text: '#fbf3ea' },
 ];
+const SRC_DOT: Record<SuggestionSource, string> = {
+  template: 'var(--accent)',
+  journey: 'var(--cognac)',
+  persona: 'var(--amber)',
+};
 
-const CX = 400;
-const CY = 400;
-const R_HUB = 66;
-const R_WEDGE = 150;
-const R_SPOKE_IN = 156;
-const R_SPOKE_OUT = 196;
-const R_LABEL = 206;
+const SIZE = 360;
+const C = SIZE / 2;
+const R_HUB = 46;
+const R_STAGE = 98;
+const R_THEME = 152;
+const R_TICK_IN = 156;
+const R_TICK_OUT = 168;
 
-const rad = (deg: number) => (deg * Math.PI) / 180;
-const pt = (r: number, deg: number) => [CX + r * Math.cos(rad(deg)), CY + r * Math.sin(rad(deg))] as const;
+const rad = (d: number) => (d * Math.PI) / 180;
+const pt = (r: number, d: number) => [C + r * Math.cos(rad(d)), C + r * Math.sin(rad(d))] as const;
 
-function wedgePath(r0: number, r1: number, a0: number, a1: number): string {
+function arc(r0: number, r1: number, a0: number, a1: number): string {
   const [x0, y0] = pt(r0, a0);
   const [x1, y1] = pt(r1, a0);
   const [x2, y2] = pt(r1, a1);
   const [x3, y3] = pt(r0, a1);
-  const large = a1 - a0 > 180 ? 1 : 0;
-  return `M${x0},${y0} L${x1},${y1} A${r1},${r1} 0 ${large} 1 ${x2},${y2} L${x3},${y3} A${r0},${r0} 0 ${large} 0 ${x0},${y0} Z`;
+  const big = a1 - a0 > 180 ? 1 : 0;
+  return `M${x0},${y0} L${x1},${y1} A${r1},${r1} 0 ${big} 1 ${x2},${y2} L${x3},${y3} A${r0},${r0} 0 ${big} 0 ${x0},${y0} Z`;
 }
-
-function truncate(s: string, n: number) {
-  return s.length > n ? s.slice(0, n - 1) + '…' : s;
-}
+const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
 export function Flywheel({
   wheel,
@@ -67,10 +74,24 @@ export function Flywheel({
   loading: boolean;
   onPick?: (q: string) => void;
 }) {
+  const [selStage, setSelStage] = useState(0);
+  const [selTheme, setSelTheme] = useState<number | null>(0);
   const [hover, setHover] = useState<string | null>(null);
 
+  useEffect(() => {
+    setSelStage(0);
+    setSelTheme(0);
+  }, [wheel?.hub.domain]);
+
+  const stages = wheel?.stages ?? [];
+  const stage = stages[selStage] ?? null;
+  const themesToShow = useMemo(() => {
+    if (!stage) return [];
+    return selTheme === null ? stage.themes : stage.themes[selTheme] ? [stage.themes[selTheme]] : stage.themes;
+  }, [stage, selTheme]);
+
   if (loading && !wheel) return <p className="p-4 text-faint">building suggestions…</p>;
-  if (!wheel) return <p className="p-4 text-faint">select a project</p>;
+  if (!wheel || !Array.isArray(wheel.stages)) return <p className="p-4 text-faint">select a project</p>;
   if (wheel.total === 0)
     return (
       <p className="p-4 text-[12px] text-faint">
@@ -78,95 +99,153 @@ export function Flywheel({
       </p>
     );
 
-  const n = wheel.spokes.length || 1;
-  const span = 360 / n;
+  const span = 360 / (wheel.stages.length || 1);
 
   return (
-    <div className="h-full w-full overflow-auto p-2">
-      <svg viewBox="0 0 800 800" className="mx-auto block h-auto w-full max-w-[560px]" style={{ userSelect: 'none' }}>
-        {/* faint concentric rings behind the hub */}
-        {[24, 40, 56].map((r) => (
-          <circle key={r} cx={CX} cy={CY} r={R_HUB + r} fill="none" stroke="var(--border)" strokeWidth={1} opacity={0.5} />
-        ))}
+    <div className="flex h-full flex-col">
+      {/* ── sunburst ── */}
+      <div className="shrink-0 border-b border-border p-2">
+        <svg viewBox={`0 0 ${SIZE} ${SIZE}`} className="mx-auto block h-auto w-full max-w-[420px]" style={{ userSelect: 'none' }}>
+          {wheel.stages.map((st, si) => {
+            const s0 = -90 + si * span;
+            const s1 = -90 + (si + 1) * span;
+            const smid = (s0 + s1) / 2;
+            const c = RAMP[si % RAMP.length];
+            const [slx, sly] = pt((R_HUB + R_STAGE) / 2, smid);
+            const sflip = smid > 90 && smid < 270;
+            const stageSel = si === selStage;
 
-        {wheel.spokes.map((sp, i) => {
-          const a0 = -90 + i * span + 2;
-          const a1 = -90 + (i + 1) * span - 2;
-          const mid = (a0 + a1) / 2;
-          const c = WEDGE[i % WEDGE.length];
-          const [lx, ly] = pt((R_HUB + R_WEDGE) / 2, mid);
-          const flipLabel = mid > 90 && mid < 270;
+            // themes subdivide the stage wedge equally
+            const tCount = st.themes.length || 1;
+            const tSpan = (s1 - s0) / tCount;
 
-          return (
-            <g key={sp.key}>
-              {/* stage wedge */}
-              <path d={wedgePath(R_HUB + 4, R_WEDGE, a0, a1)} fill={c.fill} stroke="#fbf9f3" strokeWidth={2} />
-              <text
-                x={lx}
-                y={ly}
-                fill={c.text}
-                fontSize={13}
-                fontWeight={600}
-                textAnchor="middle"
-                dominantBaseline="middle"
-                transform={`rotate(${flipLabel ? mid + 180 : mid}, ${lx}, ${ly})`}
-                style={{ letterSpacing: '0.06em' }}
+            return (
+              <g key={st.key}>
+                {/* stage wedge */}
+                <path
+                  d={arc(R_HUB + 3, R_STAGE, s0 + 1, s1 - 1)}
+                  fill={c.fill}
+                  stroke={stageSel ? 'var(--cognac)' : '#fbf9f3'}
+                  strokeWidth={stageSel ? 2.5 : 1.5}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => { setSelStage(si); setSelTheme(null); }}
+                />
+                <text
+                  x={slx}
+                  y={sly}
+                  fill={c.text}
+                  fontSize={11}
+                  fontWeight={700}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  transform={`rotate(${sflip ? smid + 180 : smid}, ${slx}, ${sly})`}
+                  style={{ letterSpacing: '0.05em', pointerEvents: 'none' }}
+                >
+                  {st.label.toUpperCase()}
+                </text>
+
+                {/* theme wedges + query ticks */}
+                {st.themes.map((th, ti) => {
+                  const t0 = s0 + ti * tSpan + 0.6;
+                  const t1 = s0 + (ti + 1) * tSpan - 0.6;
+                  const tmid = (t0 + t1) / 2;
+                  const themeSel = stageSel && selTheme === ti;
+                  const [tlx, tly] = pt((R_STAGE + R_THEME) / 2, tmid);
+                  const tflip = tmid > 90 && tmid < 270;
+                  const wide = t1 - t0 > 16;
+                  return (
+                    <g key={ti}>
+                      <path
+                        d={arc(R_STAGE, R_THEME, t0, t1)}
+                        fill={c.fill}
+                        fillOpacity={themeSel ? 1 : 0.55}
+                        stroke={themeSel || hover === `${si}:${ti}` ? 'var(--cognac)' : c.stroke}
+                        strokeWidth={themeSel ? 2 : 1}
+                        style={{ cursor: 'pointer' }}
+                        onMouseEnter={() => setHover(`${si}:${ti}`)}
+                        onMouseLeave={() => setHover(null)}
+                        onClick={() => { setSelStage(si); setSelTheme(ti); }}
+                      />
+                      {wide && (
+                        <text
+                          x={tlx}
+                          y={tly}
+                          fill={c.text}
+                          fontSize={8.5}
+                          fontWeight={themeSel ? 700 : 500}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          transform={`rotate(${tflip ? tmid + 180 : tmid}, ${tlx}, ${tly})`}
+                          style={{ pointerEvents: 'none' }}
+                        >
+                          {clip(th.label, 16)}
+                        </text>
+                      )}
+                      {/* one tick per query */}
+                      {th.queries.map((q, qi) => {
+                        const qa = t0 + 2 + (th.queries.length > 1 ? (qi / (th.queries.length - 1)) * (t1 - t0 - 4) : (t1 - t0) / 2);
+                        const [a0x, a0y] = pt(R_TICK_IN, qa);
+                        const [a1x, a1y] = pt(R_TICK_OUT, qa);
+                        return <line key={qi} x1={a0x} y1={a0y} x2={a1x} y2={a1y} stroke={SRC_DOT[q.source]} strokeWidth={1.5} />;
+                      })}
+                    </g>
+                  );
+                })}
+              </g>
+            );
+          })}
+
+          {/* hub */}
+          <circle cx={C} cy={C} r={R_HUB} fill="#fbf9f3" stroke="var(--border-strong)" strokeWidth={1.5} />
+          <text x={C} y={C - 4} textAnchor="middle" fontSize={12} fontWeight={700} fill="var(--text)">
+            {clip(wheel.hub.label, 12)}
+          </text>
+          <text x={C} y={C + 11} textAnchor="middle" fontSize={7.5} fill="var(--text-faint)">
+            {clip(wheel.hub.category, 20)}
+          </text>
+        </svg>
+
+        <div className="mt-1 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 text-[10px] text-faint">
+          <span><span style={{ color: SRC_DOT.template }}>│</span> library</span>
+          <span><span style={{ color: SRC_DOT.journey }}>│</span> from a journey</span>
+          <span><span style={{ color: SRC_DOT.persona }}>│</span> from a persona</span>
+          <span>· {wheel.total} suggestions</span>
+        </div>
+      </div>
+
+      {/* ── detail panel (fully readable text) ── */}
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <p className="mb-2 text-[11px] uppercase tracking-widest text-faint">
+          {stage?.label}
+          {selTheme !== null && stage?.themes[selTheme] ? ` › ${stage.themes[selTheme].label}` : ' › all themes'}
+        </p>
+        <ul className="space-y-2.5">
+          {themesToShow.flatMap((th, tIdx) =>
+            th.queries.map((q, qIdx) => (
+              <li
+                key={`${tIdx}:${qIdx}`}
+                className="rounded-md border border-border bg-bg-inset p-2.5"
               >
-                {sp.label.toUpperCase()}
-              </text>
-
-              {/* query spokes */}
-              {sp.queries.map((q, j) => {
-                const t = sp.queries.length > 1 ? j / (sp.queries.length - 1) : 0.5;
-                const qa = a0 + 6 + t * (a1 - a0 - 12);
-                const [sx, sy] = pt(R_SPOKE_IN, qa);
-                const [ex, ey] = pt(R_SPOKE_OUT, qa);
-                const [tx, ty] = pt(R_LABEL, qa);
-                const flip = qa > 90 && qa < 270;
-                const active = hover === `${i}:${j}`;
-                return (
-                  <g
-                    key={j}
-                    onMouseEnter={() => setHover(`${i}:${j}`)}
-                    onMouseLeave={() => setHover(null)}
-                    onClick={() => onPick?.(q.text)}
-                    style={{ cursor: onPick ? 'pointer' : 'default' }}
-                  >
-                    <line x1={sx} y1={sy} x2={ex} y2={ey} stroke={active ? 'var(--cognac)' : c.line} strokeWidth={active ? 2 : 1} />
-                    <circle cx={ex} cy={ey} r={active ? 3 : 2} fill={active ? 'var(--cognac)' : c.line} />
-                    <text
-                      x={tx}
-                      y={ty}
-                      fill={active ? 'var(--cognac)' : 'var(--text-dim)'}
-                      fontSize={11}
-                      fontWeight={active ? 600 : 400}
-                      textAnchor={flip ? 'end' : 'start'}
-                      dominantBaseline="middle"
-                      transform={`rotate(${flip ? qa + 180 : qa}, ${tx}, ${ty})`}
-                    >
-                      {truncate(q.text, 34)}
-                      {q.source === 'journey' && <tspan fill="var(--accent)"> ●</tspan>}
-                    </text>
-                  </g>
-                );
-              })}
-            </g>
-          );
-        })}
-
-        {/* hub */}
-        <circle cx={CX} cy={CY} r={R_HUB} fill="#fbf9f3" stroke="var(--border-strong)" strokeWidth={1.5} />
-        <text x={CX} y={CY - 6} textAnchor="middle" fontSize={15} fontWeight={600} fill="var(--text)">
-          {truncate(wheel.hub.label, 14)}
-        </text>
-        <text x={CX} y={CY + 12} textAnchor="middle" fontSize={9} fill="var(--text-faint)">
-          {truncate(wheel.hub.category, 22)}
-        </text>
-      </svg>
-
-      <div className="mt-1 flex items-center justify-between px-2 text-[10px] text-faint">
-        <span>{wheel.total} suggestions · click a spoke to send it to Chat</span>
-        <span><span className="text-accent">●</span> from a real journey</span>
+                <button
+                  onClick={() => onPick?.(q.text)}
+                  className="flex w-full items-start gap-2 text-left"
+                  title="Send to Chat"
+                >
+                  <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: SRC_DOT[q.source] }} />
+                  <span className="text-[12px] font-semibold leading-snug text-text hover:text-cognac">{q.text}</span>
+                </button>
+                <p className="mt-1 pl-3.5 text-[11px] leading-snug text-dim">
+                  <span className="text-faint">pain · </span>
+                  {q.painPoint}
+                </p>
+                <p className="mt-0.5 pl-3.5 text-[11px] leading-snug text-cognac">
+                  <span className="text-faint">→ </span>
+                  {q.suggestion}
+                </p>
+              </li>
+            )),
+          )}
+        </ul>
       </div>
     </div>
   );

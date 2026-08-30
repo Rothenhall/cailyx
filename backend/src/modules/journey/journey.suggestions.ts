@@ -1,27 +1,39 @@
 /**
- * Suggestion wheel — a deterministic set of buyer search queries for a project,
- * grouped by awareness stage. Feeds the frontend Flywheel card (an
- * answerthepublic-style radial). Built from the journey planner's query
- * templates + the project's personas + any queries real journeys already
- * produced. No LLM.
+ * Suggestion wheel — a deterministic, layered set of buyer search queries for a
+ * project: awareness stage → theme → query, where each query carries the buyer
+ * PAIN POINT it maps to and the SUGGESTION Cailyx would make. Feeds the frontend
+ * Flywheel card (an answerthepublic-style radial). No LLM, no spend.
  *
  * @module journey.suggestions
  */
 
-import { FOLLOWUPS, OPENERS } from './journey.planner';
 import type { PersonaAwareness } from '../persona/persona.types';
 
 export type SuggestionSource = 'template' | 'persona' | 'journey';
 
-export interface SuggestionSpoke {
+export interface SuggestionLeaf {
+  text: string;
+  source: SuggestionSource;
+  /** the buyer frustration this query maps to */
+  painPoint: string;
+  /** what Cailyx recommends doing about it */
+  suggestion: string;
+}
+
+export interface SuggestionTheme {
+  label: string;
+  queries: SuggestionLeaf[];
+}
+
+export interface SuggestionStage {
   key: PersonaAwareness;
   label: string;
-  queries: Array<{ text: string; source: SuggestionSource }>;
+  themes: SuggestionTheme[];
 }
 
 export interface SuggestionWheel {
   hub: { label: string; domain: string; category: string };
-  spokes: SuggestionSpoke[];
+  stages: SuggestionStage[];
   total: number;
   generatedAt: string;
 }
@@ -34,28 +46,165 @@ const STAGE_LABEL: Record<PersonaAwareness, string> = {
   'most-aware': 'Most aware',
 };
 
-const PER_SPOKE = 7;
+interface LibEntry {
+  theme: string;
+  query: string;
+  painPoint: string;
+  suggestion: string;
+}
 
-function fill(t: string, ctx: { category: string; brand: string; competitor: string }, vocab: string, objection: string): string {
+/** The content library. `{cat}` = category, `{brand}` = client, `{comp}` = a competitor. */
+const LIBRARY: Record<PersonaAwareness, LibEntry[]> = {
+  'problem-aware': [
+    {
+      theme: 'Is this a real problem',
+      query: 'is {cat} actually a problem worth solving for a company like mine',
+      painPoint: 'Not convinced AI visibility affects pipeline yet.',
+      suggestion: 'Run a measurement baseline (n≥5 prompts per surface) so the gap is a real number, not a hunch.',
+    },
+    {
+      theme: 'Is this a real problem',
+      query: 'what is {cat}',
+      painPoint: 'Team uses AEO / GEO loosely with no shared definition.',
+      suggestion: 'Publish a one-page internal primer anchored to your own category and buyers.',
+    },
+    {
+      theme: 'Cost of inaction',
+      query: 'what happens if we ignore {cat} for another year',
+      painPoint: 'Hard to justify budget without a downside story.',
+      suggestion: 'Model branded-search decline + AI-referral share to show the trajectory of doing nothing.',
+    },
+    {
+      theme: 'How teams approach it',
+      query: 'how do teams usually approach {cat}',
+      painPoint: 'No playbook — reinventing the approach from scratch.',
+      suggestion: 'Adopt the fix → build → influence roadmap the gap-analysis produces.',
+    },
+    {
+      theme: 'How teams approach it',
+      query: 'best ways to measure {cat}',
+      painPoint: 'Rank trackers say one thing, AI answers say another.',
+      suggestion: 'Measure mention rate and citation rate across surfaces, not positions.',
+    },
+  ],
+  'solution-aware': [
+    {
+      theme: 'Compare approaches',
+      query: 'compare the main approaches to {cat}',
+      painPoint: 'Agency vs in-house vs tool — trade-offs are unclear.',
+      suggestion: 'Score each on time-to-value and operator hours per week, not feature lists.',
+    },
+    {
+      theme: 'Compare approaches',
+      query: 'aeo vs seo for {cat}',
+      painPoint: 'The team treats AEO as just more SEO.',
+      suggestion: 'Separate the metrics: AI mention + citation rate are a different scoreboard from rankings.',
+    },
+    {
+      theme: 'Evaluation criteria',
+      query: 'what should I look for in a {cat} tool',
+      painPoint: 'Every vendor demo sounds identical.',
+      suggestion: 'Demand the measurement methodology and a row-level observation export.',
+    },
+    {
+      theme: 'Named options',
+      query: 'best {cat} tools in 2026',
+      painPoint: 'The shortlist keeps changing.',
+      suggestion: 'Track your own share of voice against the named set over time.',
+    },
+    {
+      theme: 'Named options',
+      query: '{brand} vs {comp} for {cat}',
+      painPoint: 'Not sure how {brand} differs from {comp}.',
+      suggestion: 'Ask both the same 5 buyer prompts and compare what the AI answers actually cite.',
+    },
+  ],
+  'product-aware': [
+    {
+      theme: 'Head to head',
+      query: '{brand} vs {comp}: which is better for my goal',
+      painPoint: 'Can’t separate real differentiation from marketing.',
+      suggestion: 'Run a side-by-side measurement on your prompt set; the citations decide it.',
+    },
+    {
+      theme: 'Fit & value',
+      query: 'is {brand} worth it for a company at our stage',
+      painPoint: 'Might be over- or under-scoped for us.',
+      suggestion: 'Start at the free Rung-0 scorecard; upgrade only on a named, specific finding.',
+    },
+    {
+      theme: 'Fit & value',
+      query: 'how do I get started with {brand}',
+      painPoint: 'Unclear what the first two weeks look like.',
+      suggestion: 'Week 1: query set + baseline. Week 2: technical audit + the top 3 findings.',
+    },
+    {
+      theme: 'Objections',
+      query: 'is this just seo with a new name',
+      painPoint: 'Skeptical that AI visibility is a real category.',
+      suggestion: 'Show a finding SEO tools miss — a silent CDN block or a hallucinated 404.',
+    },
+    {
+      theme: 'Objections',
+      query: 'can i not just do this myself with prompting',
+      painPoint: 'Thinks a weekend of manual prompting is enough.',
+      suggestion: 'Contrast one manual pass with n≥5 sampled runs across surfaces and geos.',
+    },
+  ],
+  'most-aware': [
+    {
+      theme: 'Getting started',
+      query: 'fastest way to get value from {brand}',
+      painPoint: 'Needs a visible win quickly.',
+      suggestion: 'Ship the technical-audit fixes first — they move machine-access before anything else.',
+    },
+    {
+      theme: 'Pricing',
+      query: '{brand} pricing and what is included',
+      painPoint: 'Fixed-fee sprint vs retainer is confusing.',
+      suggestion: 'Frame it: a sprint buys one outcome, a retainer buys ongoing operating.',
+    },
+    {
+      theme: 'Onboarding',
+      query: 'what does onboarding with {brand} look like',
+      painPoint: 'Worried about the internal lift on their team.',
+      suggestion: 'One operator owns delivery; your team only reviews between calls.',
+    },
+    {
+      theme: 'Onboarding',
+      query: 'how do i know the numbers are real',
+      painPoint: 'Been burned by vanity metrics before.',
+      suggestion: 'Every claim carries a sample size and an A/B/C evidence grade — check the claims log.',
+    },
+  ],
+};
+
+function fill(t: string, ctx: { category: string; brand: string; competitor: string }): string {
   return t
     .replace(/\{cat\}/g, ctx.category)
     .replace(/\{brand\}/g, ctx.brand)
     .replace(/\{comp\}/g, ctx.competitor)
-    .replace(/\{goal\}/g, 'this')
-    .replace(/\{vocab\}/g, vocab)
-    .replace(/\{objection\}/g, objection)
     .trim();
 }
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
 
+/** rough stage bucket for a free-text query (persona vocab / real journey step). */
+function bucketStage(q: string): PersonaAwareness {
+  const s = q.toLowerCase();
+  if (/\bpricing|onboard|get started|getting started|how to start|fastest way\b/.test(s)) return 'most-aware';
+  if (/\bvs\b|review|worth it|is .* worth|which is better|alternative/.test(s)) return 'product-aware';
+  if (/\bbest\b|compare|top \d|approaches|tool|how to solve|how do teams/.test(s)) return 'solution-aware';
+  return 'problem-aware';
+}
+
 export interface SuggestionInputs {
   project: { name: string; domain: string; category: string | null; competitors: string | null };
-  personas: Array<{ awareness: string; vocabulary: string; objections: string }>;
+  personas: Array<{ awareness: string; vocabulary: string }>;
   journeySteps: Array<{ awareness: string; query: string }>;
 }
 
-/** Build the wheel. Deterministic for a given project + persona + journey set. */
+/** Build the layered wheel. Deterministic for a given project + personas + journeys. */
 export function buildSuggestionWheel(input: SuggestionInputs): SuggestionWheel {
   const competitors = parseJsonList(input.project.competitors).map((c) =>
     typeof c === 'string' ? c : (c as { name?: string })?.name ?? '',
@@ -66,54 +215,63 @@ export function buildSuggestionWheel(input: SuggestionInputs): SuggestionWheel {
     competitor: competitors.find((c) => c.length > 1) || 'the incumbent tool',
   };
 
-  // persona vocabulary + objections bucketed by the persona's awareness
-  const personaByStage = new Map<PersonaAwareness, { vocab: string[]; objections: string[] }>();
-  for (const p of input.personas) {
-    const stage = STAGES.includes(p.awareness as PersonaAwareness) ? (p.awareness as PersonaAwareness) : 'solution-aware';
-    const b = personaByStage.get(stage) ?? { vocab: [], objections: [] };
-    b.vocab.push(...parseStrList(p.vocabulary));
-    b.objections.push(...parseStrList(p.objections));
-    personaByStage.set(stage, b);
-  }
-
-  // real journey queries bucketed by step awareness
-  const journeyByStage = new Map<PersonaAwareness, string[]>();
-  for (const s of input.journeySteps) {
-    const stage = STAGES.includes(s.awareness as PersonaAwareness) ? (s.awareness as PersonaAwareness) : 'solution-aware';
-    const arr = journeyByStage.get(stage) ?? [];
-    if (s.query && s.query.trim()) arr.push(s.query.trim());
-    journeyByStage.set(stage, arr);
-  }
-
-  const spokes: SuggestionSpoke[] = STAGES.map((stage) => {
+  const stages: SuggestionStage[] = STAGES.map((stageKey) => {
+    // group the library entries for this stage by theme
+    const byTheme = new Map<string, SuggestionLeaf[]>();
     const seen = new Set<string>();
-    const out: Array<{ text: string; source: SuggestionSource }> = [];
-    const push = (text: string, source: SuggestionSource) => {
-      const t = text.replace(/^\{vocab\}$/, '').trim();
-      if (!t || t.length < 3 || seen.has(norm(t))) return;
-      seen.add(norm(t));
-      out.push({ text: t, source });
+    const add = (theme: string, leaf: SuggestionLeaf) => {
+      if (!leaf.text || leaf.text.length < 3 || seen.has(norm(leaf.text))) return;
+      seen.add(norm(leaf.text));
+      const arr = byTheme.get(theme) ?? [];
+      arr.push(leaf);
+      byTheme.set(theme, arr);
     };
 
-    // 1) real journey queries first (highest signal)
-    for (const q of (journeyByStage.get(stage) ?? []).slice(0, PER_SPOKE)) push(q, 'journey');
+    // real journey queries first (highest signal) — attach to a "From your journeys" theme
+    for (const s of input.journeySteps) {
+      if (bucketStage(s.query) !== stageKey && (s.awareness as PersonaAwareness) !== stageKey) continue;
+      add('From your journeys', {
+        text: s.query.trim(),
+        source: 'journey',
+        painPoint: 'A real buyer search your simulated journeys already ran.',
+        suggestion: 'Check whether you are mentioned / cited for it, then plan a branch from it.',
+      });
+    }
 
-    // 2) persona vocabulary
-    const pv = personaByStage.get(stage);
-    for (const v of (pv?.vocab ?? []).slice(0, PER_SPOKE)) push(v, 'persona');
+    // persona vocabulary
+    for (const p of input.personas) {
+      if ((p.awareness as PersonaAwareness) !== stageKey) continue;
+      for (const v of parseStrList(p.vocabulary).slice(0, 4)) {
+        add('From your personas', {
+          text: v,
+          source: 'persona',
+          painPoint: 'A phrase a target persona types into a search box.',
+          suggestion: 'Make sure a page answers it in the first 40–60 words (BLUF).',
+        });
+      }
+    }
 
-    // 3) planner templates (openers + follow-ups), filled
-    const objection = (pv?.objections ?? [])[0] ?? 'how do I know this is worth it';
-    for (const tpl of OPENERS[stage]) push(fill(tpl, ctx, ctx.category, objection), 'template');
-    for (const frame of FOLLOWUPS[stage]) push(fill(frame.query, ctx, ctx.category, objection), 'template');
+    // the library
+    for (const e of LIBRARY[stageKey]) {
+      add(e.theme, {
+        text: fill(e.query, ctx),
+        source: 'template',
+        painPoint: fill(e.painPoint, ctx),
+        suggestion: fill(e.suggestion, ctx),
+      });
+    }
 
-    return { key: stage, label: STAGE_LABEL[stage], queries: out.slice(0, PER_SPOKE) };
+    const themes: SuggestionTheme[] = [...byTheme.entries()]
+      .map(([label, queries]) => ({ label, queries: queries.slice(0, 6) }))
+      .filter((t) => t.queries.length > 0);
+
+    return { key: stageKey, label: STAGE_LABEL[stageKey], themes };
   });
 
   return {
     hub: { label: input.project.name, domain: input.project.domain, category: ctx.category },
-    spokes,
-    total: spokes.reduce((n, s) => n + s.queries.length, 0),
+    stages,
+    total: stages.reduce((n, s) => n + s.themes.reduce((m, t) => m + t.queries.length, 0), 0),
     generatedAt: new Date().toISOString(),
   };
 }
