@@ -9,6 +9,25 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-08-31 — Brand palette + production-readiness docs
+
+- **`docs/PRODUCTION-READINESS.md`** — the go-live checklist: every secret / API
+  key (Anthropic, DataForSEO, PSI, Perplexity, Google OAuth, Stripe, Plunk,
+  `JWT_SECRET`), infra (SQLite→Postgres, managed Redis, Playwright browser),
+  security hardening, build/deploy sketches, observability + cost control, the
+  swarm boundary as policy, a full env-var reference (dev vs prod), and open
+  decisions. Commit `10e5c6a`.
+- **`CHANGELOG.md`** — this file. `AGENTS.md` + `MODULES-STATUS.md` now point at
+  both and instruct keeping them current.
+- **Frontend colour re-theme** (`39690f0`) — the console now uses the Rothenhall
+  Partners palette (BRANDING.md): Night band backgrounds, brass-soft as the
+  quiet default accent, cognac-soft as the warm spotlight, warm-gold caution,
+  lifted cognac-deep for critical. Applied purely via `globals.css` CSS
+  variables + the tailwind token map. **Fonts unchanged** (terminal monospace).
+- `frontend/.env.example` corrected to the real dev API port (3002).
+
+---
+
 ## 2026-08-30 — Swarm layer, dashboard aggregation, user management, Cailyx console
 
 Commit `8e70574`. 101 files, +11,708 / −384.
