@@ -114,13 +114,19 @@ export class InternalLinkService {
 
       const rootPath = pathOf(rootUrl === origin ? origin + '/' : rootUrl, origin);
       const graphNodes = computeDegrees(nodes, edges, rootPath);
-      let recs = buildRecommendations(graphNodes, edges, rootPath);
+
+      // Degraded crawl: several pages fetched but not one internal <a href> parsed.
+      // That is a JS-rendered nav, not 49 orphans — skip orphan / under-linked
+      // analysis (it would emit confident nonsense) and report the real cause.
+      const degraded = edges.length === 0 && graphNodes.length >= 3;
+      let recs = degraded ? [] : buildRecommendations(graphNodes, edges, rootPath);
       let recModel: string | null = null;
       if (useLlm && recs.length > 0) {
         const refined = await this.refineRecommendations(recs, graphNodes);
         recs = refined.recs;
         recModel = refined.model;
       }
+      if (degraded) for (const n of graphNodes) n.isOrphan = false;
 
       await this.persist(graph.id, graphNodes, edges, recs);
 
@@ -134,6 +140,9 @@ export class InternalLinkService {
           orphanCount,
           recommendationCount: recs.length,
           recModel,
+          error: degraded
+            ? `Crawl found 0 internal links across ${graphNodes.length} pages — the site's navigation is rendered by JavaScript, so static crawlers and AI retrievers can't follow it. Fix: emit real <a href> nav links in the server HTML. Orphan / under-linked analysis was skipped.`
+            : null,
           finishedAt: new Date(),
         },
       });

@@ -9,6 +9,35 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-08-31 — Live-fire pipeline check (day1tech.com) + intake / link-graph fixes
+
+Ran the full pipeline against a real domain through the public API (intake →
+audit → personas → journeys → link graph → authority → council → Flywheel →
+agents/dashboard): **14/14 calls OK, 0 errors, 0 unexpected 503s.** Full smoke
+harness still **8/8 · 204**. The run exposed three real defects, now fixed:
+
+- **Intake stored `name = "null"`** — `String(org.fields['name'] || null)` produced
+  the literal string `"null"`, which is truthy, so `name: company || domain`
+  never fell through. Added a `clean()` guard (rejects `""`, `"null"`,
+  `"undefined"`); brand now falls back og:site_name → shorter `<title>` segment →
+  domain-derived.
+- **Intake used the H1 hero headline as `category`** — day1tech's became
+  *"Technology Execution Has Been Commoditized.Operating Accountability Has
+  Not."*, which then poisoned authority-scan SERP queries. New `deriveCategory()`
+  prefers a specific JSON-LD `@type`, then the non-brand `<title>` segment
+  (→ *"technology operating partner"*), then the first meta-description clause —
+  never a raw headline. No more `'General'` filler; category can be null.
+- **Link-graph emitted 49 bogus "add link" recs** when a JS-rendered nav meant
+  the crawl parsed 0 internal links across 50 pages (every page flagged an
+  orphan, `overlap 1.00`, `priority 149`). Now: a crawl with `edges === 0 &&
+  pages ≥ 3` is treated as *degraded* — orphan/under-linked analysis is skipped
+  and the graph records the real cause ("navigation is JS-rendered; static
+  crawlers and AI retrievers can't follow it"). The Flywheel turns that note
+  into one honest `Content` boost instead of the noise.
+- Also tightened intake competitor extraction: deny-list social / docs / booking
+  hosts, drop CTA-phrase anchors ("Let's talk", "Careers"), skip the subject's
+  own subdomains.
+
 ## 2026-08-31 — Personalised Flywheel + AEO/GEO boosts, all from real data
 
 - **The wheel is now built entirely from the project's own data.**

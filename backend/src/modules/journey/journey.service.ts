@@ -150,6 +150,9 @@ export class JourneyService {
         where: { projectId },
         orderBy: { createdAt: 'desc' },
         select: {
+          error: true,
+          edgeCount: true,
+          pagesCrawled: true,
           recommendations: {
             orderBy: { priority: 'desc' },
             take: 6,
@@ -195,6 +198,7 @@ export class JourneyService {
       auditFindings: audit?.findings ?? [],
       linkRecs: graph?.recommendations ?? [],
       orphanPages: graph?.nodes ?? [],
+      linkGraphNote: graph?.error ?? null,
       authorityCandidates: scan?.candidates ?? [],
       integrations,
     });

@@ -29,6 +29,61 @@ const TLD_COUNTRY: Record<string, string> = {
   it: 'Italy', nl: 'Netherlands', 'com.au': 'Australia', 'co.jp': 'Japan', ch: 'Switzerland',
 };
 
+/** hosts that a "Book a call" / "Docs" / social link points at — never a competitor */
+const NON_COMPETITOR_HOSTS = new Set([
+  'docs.google.com', 'drive.google.com', 'forms.gle', 'calendly.com', 'cal.com',
+  'linkedin.com', 'twitter.com', 'x.com', 'facebook.com', 'instagram.com',
+  'youtube.com', 'youtu.be', 'github.com', 'medium.com', 'substack.com',
+  'notion.so', 'notion.site', 'typeform.com', 'hubspot.com', 'wa.me',
+  'apps.apple.com', 'play.google.com', 'discord.gg', 'discord.com', 't.me',
+]);
+/** anchor text that is a call-to-action / nav label, not a brand name */
+const GENERIC_ANCHOR =
+  /^(let'?s talk|talk to (us|sales)|book (a )?(call|demo)|get (started|in touch)|contact( us)?|sign ?(in|up)|log ?in|request (a )?demo|learn more|read more|see more|our (work|team|blog)|careers?|privacy|terms|cookie|subscribe|download|home|about( us)?|pricing|support|help|faq|documentation|docs|api)\b/i;
+
+const STRIP_TRAILING_PUNCT = /[.\s]+$/;
+/** derive a short category / descriptor phrase, avoiding raw marketing headlines */
+function deriveCategory(opts: {
+  schemaType: string | null;
+  title: string;
+  brand: string | null;
+  metaDescription: string;
+}): string | null {
+  const { schemaType, title, brand, metaDescription } = opts;
+  const GENERIC_TYPES = new Set(['organization', 'website', 'webpage', 'thing', 'corporation', 'localbusiness']);
+  if (schemaType) {
+    const specific = schemaType
+      .split(/[,\s]+/)
+      .map((t) => t.trim())
+      .filter((t) => t && !GENERIC_TYPES.has(t.toLowerCase()));
+    if (specific.length) {
+      return specific
+        .map((t) => t.replace(/([a-z])([A-Z])/g, '$1 $2'))
+        .join(' / ')
+        .toLowerCase();
+    }
+  }
+  // "Brand | Descriptor" or "Descriptor — Brand" — take the non-brand segment
+  const segs = title
+    .split(/\s*[|–—·]\s*|\s+[-]\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (segs.length >= 2 && brand) {
+    const bl = brand.toLowerCase();
+    const descriptor = segs.find(
+      (s) => !s.toLowerCase().includes(bl) && s.split(/\s+/).length <= 6 && !STRIP_TRAILING_PUNCT.test(s),
+    );
+    if (descriptor) return descriptor.toLowerCase();
+  }
+  // first clause of the meta description, capped at ~9 words
+  if (metaDescription) {
+    const clause = metaDescription.split(/[.;—]|\s-\s/)[0].trim();
+    const words = clause.split(/\s+/);
+    if (words.length >= 2 && words.length <= 12) return clause.toLowerCase();
+  }
+  return null;
+}
+
 @Injectable()
 export class IntakeService {
   private readonly logger = new Logger(IntakeService.name);
@@ -56,9 +111,15 @@ export class IntakeService {
     const html = homepage.html || '';
     const $ = cheerio.load(html);
 
-    let company = req.company || null;
-    let description = req.description || null;
-    let category: string | null = null;
+    const clean = (v: unknown): string | null => {
+      if (v == null) return null;
+      const s = String(v).trim();
+      return s && s.toLowerCase() !== 'null' && s.toLowerCase() !== 'undefined' ? s : null;
+    };
+
+    let company = clean(req.company);
+    let description = clean(req.description);
+    let schemaType: string | null = null;
     let country: string | null = null;
 
     try {
@@ -69,9 +130,9 @@ export class IntakeService {
       ) as any;
 
       if (org) {
-        company = company || String(org.fields['name'] || null);
-        description = description || String(org.fields['description'] || '') || null;
-        if (org.fields['@type']) category = String(org.fields['@type']);
+        company = company || clean(org.fields['name']);
+        description = description || clean(org.fields['description']);
+        if (org.fields['@type']) schemaType = String(org.fields['@type']);
         const addr = org.fields['address'] as any;
         const addrCountry = addr && typeof addr === 'object' ? addr['addressCountry'] : null;
         if (typeof addrCountry === 'string') country = addrCountry;
@@ -80,14 +141,21 @@ export class IntakeService {
       // Non-fatal
     }
 
+    // brand name: schema/req → og:site_name → the shorter title segment → domain
+    const pageTitle = ($('title').first().text() || '').trim();
+    const ogSite = clean($('meta[property="og:site_name"]').attr('content'));
+    if (!company && ogSite) company = ogSite;
+    if (!company && pageTitle) {
+      const segs = pageTitle.split(/\s*[|–—·]\s*|\s+-\s+/).map((s) => s.trim()).filter(Boolean);
+      if (segs.length >= 2) company = segs.slice().sort((a, b) => a.length - b.length)[0];
+    }
+
     const metaDescription = $('meta[name="description"]').attr('content')
       || $('meta[property="og:description"]').attr('content')
       || '';
     if (!description && metaDescription) description = metaDescription;
-    if (!category) {
-      const h1 = $('h1').first().text().trim();
-      if (h1) category = h1;
-    }
+
+    const category = deriveCategory({ schemaType, title: pageTitle, brand: company, metaDescription });
 
     if (!country) {
       const parts = domain.split('.');
@@ -95,16 +163,19 @@ export class IntakeService {
       country = TLD_COUNTRY[tld] || TLD_COUNTRY[parts[parts.length - 1]] || null;
     }
 
-    const competitors = this.extractCompetitors($, company);
+    const competitors = this.extractCompetitors($, company, domain);
     const ownEntities = this.extractOwnEntities($, company);
+
+    // last-resort brand: "day1tech.com" → "Day1tech"
+    const brand = company || domain.split('.')[0].replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
     let projectId: string;
     if (created) {
       const proj = await this.projects.create({
-        name: company || domain,
+        name: brand,
         domain,
-        category: category || 'General',
-        clientName: (company || domain) || undefined,
+        category: category || undefined,
+        clientName: brand,
         notes: req.notes || undefined,
         status: 'diagnostic',
       });
@@ -134,22 +205,28 @@ export class IntakeService {
     };
   }
 
-  private extractCompetitors($: cheerio.CheerioAPI, company: string | null): Competitor[] {
+  private extractCompetitors($: cheerio.CheerioAPI, company: string | null, subjectDomain?: string): Competitor[] {
     const seen = new Set<string>();
     const out: Competitor[] = [];
     const companyLower = (company || '').toLowerCase();
+    const rootOf = (h: string) => h.replace(/^www\./, '').split('.').slice(-2).join('.');
+    const subjectRoot = subjectDomain ? rootOf(subjectDomain) : '';
 
     $('a[href^="http"]').each((_, el) => {
       const href = $(el).attr('href') || '';
-      const text = $(el).text().trim();
+      const text = $(el).text().trim().replace(/\s+/g, ' ');
       try {
         const u = new URL(href);
-        if (u.hostname && !seen.has(u.hostname)) {
-          seen.add(u.hostname);
-          if (text && text.length < 60 && !(company && text.toLowerCase().includes(companyLower))) {
-            out.push({ name: text || u.hostname, domain: u.hostname, source: 'homepage-copy' });
-          }
-        }
+        const host = u.hostname.replace(/^www\./, '');
+        if (!host || seen.has(host)) return;
+        seen.add(host);
+        if (rootOf(host) === subjectRoot) return; // own subdomain / asset host
+        if (NON_COMPETITOR_HOSTS.has(host) || NON_COMPETITOR_HOSTS.has(rootOf(host))) return;
+        if (!text || text.length < 2 || text.length > 40) return;
+        if (GENERIC_ANCHOR.test(text)) return; // "Let's talk", "Careers", …
+        if (/\s(us|now|today|more|here)$/i.test(text)) return; // verb-phrase CTAs
+        if (company && text.toLowerCase().includes(companyLower)) return;
+        out.push({ name: text, domain: host, source: 'homepage-copy' });
       } catch { /* skip bad href */ }
     });
 

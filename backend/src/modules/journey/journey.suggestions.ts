@@ -84,6 +84,8 @@ export interface SuggestionInputs {
   linkRecs?: Array<{ fromPath: string; toPath: string; suggestedAnchor: string; reason: string; priority: number }>;
   /** orphan pages from the link graph (optional) */
   orphanPages?: Array<{ path: string; title?: string | null }>;
+  /** a caveat recorded on the latest link graph (e.g. JS-rendered nav) */
+  linkGraphNote?: string | null;
   /** authority discovery candidates (optional) */
   authorityCandidates?: Array<{ domain: string; type: string; rationale: string; relevance: number }>;
   /** integration connectivity flags that matter for measurement (optional) */
@@ -560,6 +562,22 @@ function buildBoosts(input: SuggestionInputs, sig: Signals): SuggestionBoost[] {
         effort: 'quick',
       },
       ['linkrec', r.fromPath, r.toPath],
+    );
+  }
+
+  // 2b) a degraded link-graph crawl (JS-rendered nav) — one honest boost that
+  // replaces the orphan/under-linked noise it would otherwise emit
+  if (input.linkGraphNote) {
+    push(
+      {
+        lane: 'Content',
+        title: 'Internal navigation is not crawlable',
+        why: clip(input.linkGraphNote, 200),
+        action: 'Render real <a href> navigation and cross-links in the server HTML so crawlers and AI retrievers can follow the site.',
+        evidence: 'Link graph',
+        effort: 'project',
+      },
+      ['linkgraph-note', sig.domain],
     );
   }
 
