@@ -113,17 +113,19 @@ select {
   animation: pulse-dot 1.8s ease-in-out infinite;
 }
 
-/* soft raised-paper shadow for canvas cards (BRANDING .convex-light) */
+/* floating bento-panel shadow: hairline ring + layered ambient lift */
 .card-shadow {
   box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.7) inset,
-    0 10px 30px -12px rgba(26, 23, 18, 0.28),
-    0 2px 8px -4px rgba(26, 23, 18, 0.14);
+    0 0 0 1px rgba(26, 23, 18, 0.06),
+    0 2px 4px -1px rgba(26, 23, 18, 0.07),
+    0 14px 30px -10px rgba(26, 23, 18, 0.18),
+    0 30px 56px -20px rgba(26, 23, 18, 0.12);
 }
 .card-shadow-dark {
   box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.05) inset,
-    0 16px 40px -14px rgba(0, 0, 0, 0.6);
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 14px 30px -10px rgba(0, 0, 0, 0.45),
+    0 34px 64px -22px rgba(0, 0, 0, 0.5);
 }
 
 /* ── canvas cards: independent bento-style panels ──
@@ -131,16 +133,16 @@ select {
    generous radius otherwise). They coexist freely on the canvas — no grid, no
    interlocking. --card-r drives the body + header corner rounding. */
 .canvas-card {
-  --card-r: 18px;
+  --card-r: 24px;
   border-radius: var(--card-r);
 }
 .canvas-card > .cc-header {
   border-top-left-radius: calc(var(--card-r) - 1px);
   border-top-right-radius: calc(var(--card-r) - 1px);
 }
-@supports (corner-shape: superellipse(1.6)) {
+@supports (corner-shape: superellipse(1.4)) {
   .canvas-card,
-  .canvas-card > .cc-header { corner-shape: superellipse(1.6); }
+  .canvas-card > .cc-header { corner-shape: superellipse(1.4); }
 }
 
 /* infinite-canvas dotted grid — scales with zoom via the --grid vars on <Canvas> */

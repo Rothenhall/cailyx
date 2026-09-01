@@ -82,10 +82,8 @@ export function CanvasCard({
     <div
       data-card
       onPointerDown={() => onFocus?.()}
-      className={`canvas-card absolute flex flex-col overflow-hidden border ${
-        dark
-          ? 'card-shadow-dark border-night-line bg-night text-night-text'
-          : 'card-shadow border-border bg-bg-raised'
+      className={`canvas-card absolute flex flex-col overflow-hidden ${
+        dark ? 'card-shadow-dark bg-night text-night-text' : 'card-shadow bg-bg-raised'
       }`}
       style={{ left: box.x, top: box.y, width: box.w, height: box.h }}
     >
