@@ -133,12 +133,22 @@ select {
    generous radius otherwise). They coexist freely on the canvas — no grid, no
    interlocking. --card-r drives the body + header corner rounding. */
 .canvas-card {
-  --card-r: 24px;
+  --card-r: 32px;
   border-radius: var(--card-r);
 }
 .canvas-card > .cc-header {
   border-top-left-radius: calc(var(--card-r) - 1px);
   border-top-right-radius: calc(var(--card-r) - 1px);
+}
+/* keep scrollable body content clear of the rounded corners */
+.canvas-card > .cc-body {
+  padding-left: 2px;
+  padding-right: 2px;
+}
+.canvas-card > .cc-body::after {
+  content: '';
+  display: block;
+  height: 14px;
 }
 @supports (corner-shape: superellipse(1.4)) {
   .canvas-card,

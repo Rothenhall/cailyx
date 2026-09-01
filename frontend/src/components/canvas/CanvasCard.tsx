@@ -103,7 +103,7 @@ export function CanvasCard({
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+      <div className="cc-body min-h-0 flex-1 overflow-y-auto">{children}</div>
 
       {/* SE resize handle */}
       <div
