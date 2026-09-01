@@ -126,6 +126,23 @@ select {
     0 16px 40px -14px rgba(0, 0, 0, 0.6);
 }
 
+/* ── canvas cards: independent bento-style panels ──
+   Each card is a self-contained rounded panel (superellipse where supported,
+   generous radius otherwise). They coexist freely on the canvas — no grid, no
+   interlocking. --card-r drives the body + header corner rounding. */
+.canvas-card {
+  --card-r: 18px;
+  border-radius: var(--card-r);
+}
+.canvas-card > .cc-header {
+  border-top-left-radius: calc(var(--card-r) - 1px);
+  border-top-right-radius: calc(var(--card-r) - 1px);
+}
+@supports (corner-shape: superellipse(1.6)) {
+  .canvas-card,
+  .canvas-card > .cc-header { corner-shape: superellipse(1.6); }
+}
+
 /* infinite-canvas dotted grid — scales with zoom via the --grid vars on <Canvas> */
 .canvas-grid {
   background-image: radial-gradient(var(--border) 1px, transparent 1px);

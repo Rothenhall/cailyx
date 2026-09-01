@@ -1,9 +1,11 @@
 'use client';
 
 /**
- * A card on the infinite canvas. Positioned in canvas-space; dragged by its
- * header, resized by the SE handle. All pointer deltas are divided by the
- * current zoom so movement tracks the cursor 1:1 on screen.
+ * A card on the infinite canvas — an independent bento-style panel. Panels
+ * coexist freely (no grid, no interlocking). Positioned in canvas-space,
+ * dragged by its header, resized by the SE handle; drag/resize snap to an 8px
+ * step so edges line up cleanly without a rigid grid. All pointer deltas are
+ * divided by the current zoom so movement tracks the cursor 1:1 on screen.
  *
  * @module components/canvas/CanvasCard
  */
@@ -13,6 +15,8 @@ import type { Box } from './Canvas';
 
 export const CARD_MIN_W = 240;
 export const CARD_MIN_H = 160;
+const STEP = 8;
+const snap = (n: number) => Math.round(n / STEP) * STEP;
 
 export function CanvasCard({
   box,
@@ -51,12 +55,12 @@ export function CanvasCard({
         const dx = (ev.clientX - start.x) / zoom;
         const dy = (ev.clientY - start.y) / zoom;
         if (mode === 'move') {
-          onChange({ ...base, x: Math.round(base.x + dx), y: Math.round(base.y + dy) });
+          onChange({ ...base, x: snap(base.x + dx), y: snap(base.y + dy) });
         } else {
           onChange({
             ...base,
-            w: Math.round(Math.max(CARD_MIN_W, base.w + dx)),
-            h: Math.round(Math.max(CARD_MIN_H, base.h + dy)),
+            w: Math.max(CARD_MIN_W, snap(base.w + dx)),
+            h: Math.max(CARD_MIN_H, snap(base.h + dy)),
           });
         }
       };
@@ -78,7 +82,7 @@ export function CanvasCard({
     <div
       data-card
       onPointerDown={() => onFocus?.()}
-      className={`absolute flex flex-col overflow-hidden rounded-lg border ${
+      className={`canvas-card absolute flex flex-col overflow-hidden border ${
         dark
           ? 'card-shadow-dark border-night-line bg-night text-night-text'
           : 'card-shadow border-border bg-bg-raised'
@@ -87,8 +91,8 @@ export function CanvasCard({
     >
       <header
         onPointerDown={(e) => startDrag(e, 'move')}
-        className={`flex h-9 shrink-0 cursor-grab items-center gap-2 border-b px-3 active:cursor-grabbing ${
-          dark ? 'border-night-line' : 'border-border'
+        className={`cc-header flex h-9 shrink-0 cursor-grab items-center gap-2 border-b px-3 active:cursor-grabbing ${
+          dark ? 'border-night-line bg-night-2' : 'border-border bg-bg-inset'
         }`}
       >
         <span className="text-faint">{icon}</span>
