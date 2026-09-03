@@ -474,12 +474,40 @@ const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1).trimEnd()
  * Audit finding `detail` / `recommendedFix` can be a raw error blob (JSON,
  * box-drawing, stack noise). Pull out the human sentence and flatten it.
  */
+/** metric keys measured in milliseconds — shown in seconds once they're large */
+const MS_KEYS = new Set(['lcp', 'fcp', 'inp', 'ttfb', 'fid', 'tbt', 'si', 'tti']);
+
+/** one `key: value` from a metrics blob, or null if it carries no information */
+function formatMetric(key: string, value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') {
+    if (value === -1) return null; // the "not measured" sentinel
+    if (MS_KEYS.has(key.toLowerCase())) {
+      return value >= 1000 ? `${key} ${(value / 1000).toFixed(2)}s` : `${key} ${Math.round(value)}ms`;
+    }
+    return `${key} ${Math.round(value * 100) / 100}`;
+  }
+  if (typeof value === 'boolean') return value ? key : null;
+  if (typeof value === 'string' && value.trim()) return `${key} ${value.trim()}`;
+  return null;
+}
+
 function cleanDetail(raw: string): string {
   let s = (raw ?? '').trim();
   try {
     const j = JSON.parse(s);
-    if (j && typeof j === 'object' && typeof (j as { error?: unknown }).error === 'string') {
-      s = (j as { error: string }).error;
+    if (j && typeof j === 'object' && !Array.isArray(j)) {
+      const err = (j as { error?: unknown }).error;
+      if (typeof err === 'string') {
+        s = err;
+      } else {
+        // a raw metrics object (e.g. the Core Web Vitals payload) — render it
+        // as readable pairs instead of leaking JSON into the UI
+        const parts = Object.entries(j as Record<string, unknown>)
+          .map(([k, v]) => formatMetric(k, v))
+          .filter((x): x is string => x !== null);
+        if (parts.length) s = parts.join(' · ');
+      }
     }
   } catch {
     /* not JSON — keep as-is */
