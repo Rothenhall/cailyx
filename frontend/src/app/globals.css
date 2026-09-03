@@ -39,7 +39,35 @@
   --night-line: #35301f;
   --night-text: #efe9dc;
 
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  /* ── rothenhall.com brand tokens the console had never carried ──────────
+     Pulled from the live site's stylesheet. Additive: nothing below changes
+     an existing value, so the v1 console renders identically. The /v2 console
+     re-scopes the status ramp on top of these in v2.css. */
+  --ink-80: #3a352c;        /* --color-ink-80 — the missing 4th ink step */
+  --brass-mid: #9a7a4a;     /* --color-brass — the missing mid brass */
+  --cognac-soft: #c67c48;   /* --color-cognac-soft — caution, not alarm */
+  --canvas: #f7f3ea;        /* --color-canvas — lighter than our --bg (canvas-2) */
+
+  /* Semantic status ramp. Brand hues only — the identity has no cool colour,
+     so "running" is carried by motion (a pulsing halo), not by a new hue. */
+  --st-ok: var(--accent);        /* brass-deep */
+  --st-warn: var(--cognac-soft); /* caution  — light end of the cognac scale */
+  --st-danger: var(--red);       /* cognac-deep — heavy end of the same scale */
+  --st-idle: var(--text-faint);
+
+  /* Elevation — one warm ink tint, one implied light source. */
+  --e1: 0 1px 2px rgba(26, 23, 18, 0.05);
+  --e2: 0 1px 2px rgba(26, 23, 18, 0.05), 0 10px 26px -14px rgba(26, 23, 18, 0.18);
+  --e3: 0 2px 6px rgba(26, 23, 18, 0.06), 0 30px 70px -28px rgba(26, 23, 18, 0.34);
+
+  /* Urbanist is the v1 console typeface (loaded in layout.tsx as
+     --font-urbanist). Kept on the --mono token name so existing font-mono /
+     var(--mono) references pick it up unchanged. `--font-display` defaults to
+     the body face, so `font-display` is a semantic hook rather than a second
+     typeface — repoint it here if a display face is ever introduced. */
+  --font-sans: var(--font-urbanist), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: var(--font-sans);
+  --font-display: var(--font-sans);
 }
 
 * {
@@ -195,6 +223,100 @@ select {
 @media (prefers-reduced-motion: reduce) {
   .fw-in, .fw-rings, .fw-pulse, .fw-draw, .fw-row { animation: none !important; }
   .fw-theme, .fw-theme path, .fw-theme text, .fw-stage path { transition: none !important; }
+}
+
+/* ── GooeyNav — connected liquid-pill control group (TopBar) ──────────────
+   Two stacked layers: a blurred+contrasted goo layer (static pills + a sliding
+   highlight blob that merges into them like liquid) and a crisp button layer on
+   top. Theme tokens only; font inherited. */
+.goo-nav {
+  position: relative;
+  display: inline-flex;
+  isolation: isolate;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-inset) 60%, transparent);
+}
+.goo-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+.goo-layer {
+  position: absolute;
+  inset: 3px;
+  pointer-events: none;
+  z-index: 0;
+}
+.goo-pill,
+.goo-blob {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 34px;
+  margin-top: -17px;
+  border-radius: 999px;
+  will-change: transform, width;
+}
+.goo-pill {
+  /* solid warm-brass wash so the row reads as one connected liquid shape at
+     rest (the 2px gap + goo filter neck the pills together) */
+  background: rgba(124, 98, 56, 0.16);
+}
+.goo-blob {
+  background: var(--accent-dim); /* brass-soft — the live highlight */
+  transition:
+    transform 0.42s cubic-bezier(0.34, 1.4, 0.64, 1),
+    width 0.42s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+.goo-row {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.goo-item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+.goo-item:hover,
+.goo-item.is-on {
+  color: var(--text);
+}
+.goo-item .goo-ic {
+  display: inline-flex;
+  color: var(--text-faint);
+  transition: color 0.2s ease;
+}
+.goo-item:hover .goo-ic,
+.goo-item.is-on .goo-ic {
+  color: var(--accent);
+}
+.goo-item .goo-lb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .goo-blob {
+    transition: transform 0.12s linear, width 0.12s linear;
+  }
 }
 
 /* ── skeleton loading (project switch / first load) ── */

@@ -1,5 +1,18 @@
 import type { Metadata } from "next";
+import { Urbanist } from "next/font/google";
 import "./globals.css";
+
+/**
+ * Urbanist — the single app-wide typeface, for both consoles. Exposed as
+ * `--font-urbanist`, which `globals.css` feeds into the `--mono` and
+ * `--font-display` tokens so every `font-mono` / `font-display` /
+ * `var(--mono)` reference resolves to it with no per-component churn.
+ */
+const urbanist = Urbanist({
+  subsets: ["latin"],
+  variable: "--font-urbanist",
+  display: "swap",
+});
 
 /**
  * Root metadata for the Cailyx operator console.
@@ -17,8 +30,8 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" data-theme="light">
-      <body className="min-h-screen bg-bg text-text font-mono antialiased">{children}</body>
+    <html lang="en" data-theme="light" className={urbanist.variable}>
+      <body className="min-h-screen bg-bg text-text font-sans antialiased">{children}</body>
     </html>
   );
 }

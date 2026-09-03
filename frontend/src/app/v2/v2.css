@@ -1,0 +1,482 @@
+/**
+ * /v2 console styles — scoped to this route. Everything is prefixed `v2` or
+ * nested under `.v2` so it never collides with the shared globals.css; the v1
+ * console (`/`) is unaffected.
+ *
+ * The `.v2` block below is the design system: the six-step type scale, the
+ * brand radius/blur ladders, four durations and two easings. Components
+ * reference these tokens only — no ad-hoc pixel values.
+ *
+ * Typeface: Urbanist, inherited from globals.css. `--font-display` resolves to
+ * it too, so the `font-display` hook stays in place for the figure/heading
+ * slots without changing the face.
+ */
+
+.v2 {
+  /* the brand's own tracking tokens */
+  --tk-eyebrow: 0.14em;
+  --tk-wide: 0.025em;
+  --tk-tight: -0.015em;
+  --tk-display: -0.025em;
+
+  /* ── surface & depth ────────────────────────────────────────────────── */
+  --r1: 4px;
+  --r2: 8px;
+  --r3: 12px;
+  --r4: 16px;
+  --r5: 24px;
+
+  --blur-sm: 8px;   /* brand --blur-sm */
+  --blur-md: 12px;  /* brand --blur-md */
+  --blur-glass: 1.5px;
+
+  /* brass washes — retires six inline color-mix() calls */
+  --brass-a08: color-mix(in srgb, var(--accent) 8%, transparent);
+  --brass-a14: color-mix(in srgb, var(--accent) 14%, transparent);
+  --brass-a22: color-mix(in srgb, var(--accent) 22%, transparent);
+  --brass-soft-a18: color-mix(in srgb, var(--accent-dim) 18%, transparent);
+  --warn-a15: color-mix(in srgb, var(--st-warn) 15%, transparent);
+  --danger-a12: color-mix(in srgb, var(--st-danger) 12%, transparent);
+
+  /* ── motion ─────────────────────────────────────────────────────────
+     Four durations, each with a job. --d-micro matches the brand's own
+     default transition (.15s). Two easings, no more. */
+  --d-micro: 150ms;
+  --d-state: 220ms;
+  --d-panel: 340ms;
+  --d-morph: 520ms;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+
+  /* keyboard focus — one ring, applied globally below */
+  --ring: 0 0 0 2px var(--bg-raised), 0 0 0 4px var(--accent-dim);
+}
+
+/* every digit that can sit in a column lines up */
+.v2 .num,
+.v2 table,
+.v2 [data-num] {
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+/* one visible focus state for the whole console */
+.v2 :focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-radius: var(--r2);
+}
+
+/* ── status dot — colour AND form, so state survives at 7px ────────────
+   The brand carries no cool hue, so "running" is expressed as motion and
+   "blocked" as a notch rather than by inventing colours off-palette. */
+.v2-dot {
+  position: relative;
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.v2-dot-ready { background: var(--st-ok); }
+.v2-dot-idle {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--st-idle);
+}
+.v2-dot-attention {
+  background: var(--st-warn);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--st-warn) 26%, transparent);
+}
+.v2-dot-blocked { background: var(--st-danger); }
+/* the notch — a hairline slash that reads as "stopped" without colour */
+.v2-dot-blocked::after {
+  content: '';
+  position: absolute;
+  inset: 50% -1px auto -1px;
+  height: 1.5px;
+  margin-top: -0.75px;
+  background: var(--bg-raised);
+  transform: rotate(-45deg);
+}
+.v2-dot-running { background: var(--st-ok); }
+.v2-dot-running::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1.5px solid var(--st-ok);
+  animation: v2-halo 1.8s var(--ease) infinite;
+}
+@keyframes v2-halo {
+  0%   { opacity: 0.7; transform: scale(0.72); }
+  70%  { opacity: 0;   transform: scale(1.35); }
+  100% { opacity: 0;   transform: scale(1.35); }
+}
+
+/* ── rank marker — the brand's own "01 / 02" device ───────────────────
+   rothenhall.com numbers its disciplines this way; ranked lists in the
+   console borrow it, because rank genuinely is a sequence. */
+.v2-rank {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: var(--tk-wide);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  line-height: 1;
+}
+.v2-rank-lead { color: var(--accent); font-weight: 600; }
+
+/* a text scrim: keeps the glass panels as transparent as they are while
+   stopping the dotted canvas reading through body copy */
+.v2-scrim {
+  position: relative;
+  isolation: isolate;
+}
+.v2-scrim::before {
+  content: '';
+  position: absolute;
+  inset: -6px -8px;
+  z-index: -1;
+  border-radius: var(--r3);
+  background: radial-gradient(
+    120% 100% at 50% 50%,
+    color-mix(in srgb, var(--bg-raised) 82%, transparent) 0%,
+    color-mix(in srgb, var(--bg-raised) 62%, transparent) 62%,
+    transparent 100%
+  );
+}
+
+/* ── GooeyNav (v2 copy) — connected liquid-pill control group ────────────── */
+.v2goo-nav {
+  position: relative;
+  display: inline-flex;
+  isolation: isolate;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-inset) 60%, transparent);
+}
+.v2goo-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+.v2goo-layer {
+  position: absolute;
+  inset: 3px;
+  pointer-events: none;
+  z-index: 0;
+}
+.v2goo-pill,
+.v2goo-blob {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 34px;
+  margin-top: -17px;
+  border-radius: 999px;
+  will-change: transform, width;
+}
+.v2goo-pill {
+  background: rgba(124, 98, 56, 0.16);
+}
+.v2goo-blob {
+  background: var(--accent-dim);
+  transition:
+    transform 0.42s cubic-bezier(0.34, 1.4, 0.64, 1),
+    width 0.42s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+.v2goo-row {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.v2goo-item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+.v2goo-item:hover,
+.v2goo-item.is-on {
+  color: var(--text);
+}
+.v2goo-item .v2goo-ic {
+  display: inline-flex;
+  color: var(--text-faint);
+  transition: color 0.2s ease;
+}
+.v2goo-item:hover .v2goo-ic,
+.v2goo-item.is-on .v2goo-ic {
+  color: var(--accent);
+}
+.v2goo-item .v2goo-lb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .v2goo-blob {
+    transition: transform 0.12s linear, width 0.12s linear;
+  }
+}
+
+/* ── canvas layout ─────────────────────────────────────────────────────
+   The gutters are DERIVED from the two wall-mounted components, not typed:
+   --wheel-half is half the Flywheel box (the part that protrudes) and --nub
+   is the Context drawer's closed width. The page sets both from the
+   components' own exported constants, so moving a wall moves the gutter.
+
+   Three widths. Below the last one the wheel and two panels genuinely stop
+   fitting, so Analytics yields rather than collide. */
+.v2-canvas {
+  grid-template-columns: 5fr 4fr;
+  --pad-analytics-l: calc(var(--wheel-half) - 10px);
+  --pad-analytics-r: 12px;
+  --pad-feed-l: 24px;
+  --pad-feed-r: calc(var(--nub) + 22px);
+}
+.v2-analytics {
+  padding-left: var(--pad-analytics-l);
+  padding-right: var(--pad-analytics-r);
+}
+.v2-feed {
+  padding-left: var(--pad-feed-l);
+  padding-right: var(--pad-feed-r);
+}
+
+@media (max-width: 1180px) {
+  .v2-canvas {
+    grid-template-columns: 1fr 1fr;
+    /* let the card sit further over the wheel's quiet inner half */
+    --pad-analytics-l: calc(var(--wheel-half) - 46px);
+    --pad-feed-l: 16px;
+  }
+}
+
+/* Below this the sums stop working: the wheel takes 186px of the canvas and
+   the Analytics card wants 320px, which leaves the feed unusable. 1000px is
+   the last width where all three get their real size. */
+@media (max-width: 1000px) {
+  .v2-canvas {
+    grid-template-columns: 1fr;
+    --pad-feed-l: calc(var(--wheel-half) - 30px);
+    --pad-feed-r: calc(var(--nub) + 10px);
+  }
+  /* the diagnostics card is the one surface that has a home elsewhere
+     (every figure in it is reachable from the agent detail), so it is what
+     gives way when the canvas runs out of room */
+  .v2-analytics {
+    display: none;
+  }
+}
+
+/* ── dotted canvas (v2) ───────────────────────────────────────────────── */
+.v2-dots {
+  background-image: radial-gradient(rgba(124, 98, 56, 0.17) 1px, transparent 1.7px);
+  background-size: 20px 20px;
+  background-position: -1px -1px;
+}
+.v2hair {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(26, 23, 18, 0.1) 20%, rgba(26, 23, 18, 0.1) 80%, transparent);
+}
+
+/* scrollable, but no visible scrollbar */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── ChatBot (v2) — premium chrome-less chat ───────────────────────────── */
+@keyframes v2msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.v2msg-in {
+  animation: v2msg-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes v2dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+.v2dot {
+  animation: v2dot 1.1s ease-in-out infinite;
+}
+.v2dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.v2dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+/* the composer's own soft lift — not a panel background */
+.v2composer {
+  box-shadow:
+    0 1px 2px rgba(26, 23, 18, 0.04),
+    0 10px 26px -14px rgba(26, 23, 18, 0.16);
+}
+.v2composer:focus-within {
+  box-shadow:
+    0 1px 2px rgba(26, 23, 18, 0.05),
+    0 12px 30px -14px rgba(26, 23, 18, 0.22);
+}
+.v2bubble-bot {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(26, 23, 18, 0.06);
+}
+.v2bubble-user {
+  background: color-mix(in srgb, var(--accent-dim) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-dim) 28%, transparent);
+}
+
+/* skeleton shimmer — shown in the transcript while the chat "boots" */
+@keyframes v2skel {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+.v2skel {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--border) 45%, transparent) 0%,
+    var(--border) 20%,
+    color-mix(in srgb, var(--border) 45%, transparent) 40%,
+    color-mix(in srgb, var(--border) 45%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: v2skel 1.5s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+/* ── Flywheel (v2) ─────────────────────────────────────────────────────
+   Entering focus, the ring eases a hair forward from the hub and SETTLES.
+   This used to loop forever; ambient motion that never resolves reads as
+   jitter, so it is now one-shot. */
+@keyframes v2fw-settle {
+  0%   { transform: scale(1); }
+  55%  { transform: scale(1.018); }
+  100% { transform: scale(1); }
+}
+.v2fw-settle {
+  transform-box: view-box;
+  transform-origin: center;
+  animation: v2fw-settle 900ms var(--ease) both;
+}
+
+/* the wheel's zoom + the context drawer's morph live here rather than in an
+   inline style, so the reduced-motion guard at the bottom can actually
+   reach them (a media query cannot touch an inline `transition`) */
+.v2fw-zoom {
+  transition: transform var(--d-morph) var(--ease);
+}
+.v2drawer {
+  transition: width var(--d-morph) cubic-bezier(0.32, 0.72, 0, 1),
+              top var(--d-morph) cubic-bezier(0.32, 0.72, 0, 1),
+              bottom var(--d-morph) cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@keyframes v2pop {
+  from {
+    opacity: 0;
+    transform: scale(0.94) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* the popup grows from the wedge that was tapped — the component sets
+   --pop-x / --pop-y from the wedge's angle before it mounts */
+.v2-pop {
+  transform-origin: var(--pop-x, 50%) var(--pop-y, 50%);
+  animation: v2pop var(--d-state) var(--spring) both;
+}
+
+/* ── stagger — things that arrive together assemble instead of blinking ── */
+@keyframes v2-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.v2-stagger > * {
+  animation: v2-rise var(--d-state) var(--ease) both;
+  animation-delay: calc(var(--i, 0) * 30ms);
+}
+.v2-stagger-slow > * {
+  animation: v2-rise var(--d-panel) var(--ease) both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+
+/* Analytics — tab content swap */
+@keyframes v2tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.v2tab-in {
+  animation: v2tab-in 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v2msg-in,
+  .v2dot,
+  .v2-pop,
+  .v2fw-settle,
+  .v2tab-in,
+  .v2-stagger > *,
+  .v2-stagger-slow > *,
+  .v2-dot-running::before {
+    animation: none;
+  }
+  /* these two were inline styles until now, which no media query could reach */
+  .v2fw-zoom,
+  .v2drawer,
+  .v2goo-blob {
+    transition-duration: 0.01ms;
+  }
+  .v2skel {
+    animation: none;
+    background: color-mix(in srgb, var(--border) 45%, transparent);
+  }
+}
