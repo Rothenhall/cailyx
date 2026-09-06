@@ -21,14 +21,39 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const demoEmail = process.env.NEXT_PUBLIC_DEMO_EMAIL;
+  const demoPassword = process.env.NEXT_PUBLIC_DEMO_PASSWORD;
+
+  const doLogin = async (loginEmail: string, loginPassword: string) => {
     setBusy(true);
     setError(null);
     try {
-      const path = mode === 'login' ? '/auth/login' : '/auth/register';
-      const body = mode === 'login' ? { email, password } : { email, password, name };
-      const res = await apiFetch<AuthResponse>(path, { method: 'POST', json: body });
+      const res = await apiFetch<AuthResponse>('/auth/login', {
+        method: 'POST',
+        json: { email: loginEmail, password: loginPassword },
+      });
+      setSession({ accessToken: res.accessToken, refreshToken: res.refreshToken });
+      router.push('/');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Authentication failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (mode === 'login') {
+      await doLogin(email, password);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await apiFetch<AuthResponse>('/auth/register', {
+        method: 'POST',
+        json: { email, password, name },
+      });
       setSession({ accessToken: res.accessToken, refreshToken: res.refreshToken });
       router.push('/');
     } catch (err) {
@@ -84,6 +109,15 @@ export default function LoginPage() {
             </button>
           </form>
         </div>
+        {demoEmail && demoPassword && (
+          <button
+            onClick={() => doLogin(demoEmail, demoPassword)}
+            disabled={busy}
+            className="mt-3 w-full rounded-md border border-border bg-bg-raised px-3 py-2 text-sm text-dim hover:border-border-strong disabled:opacity-50"
+          >
+            continue as demo user →
+          </button>
+        )}
         <p className="mt-3 text-center text-xs text-faint">
           password min 10 chars · token stored in this browser only
         </p>
