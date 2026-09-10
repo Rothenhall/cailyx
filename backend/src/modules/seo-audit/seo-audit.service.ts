@@ -19,6 +19,7 @@ import {
   buildFindings,
   buildQueryRows,
   classifyPage,
+  normUrl,
   scoreAudit,
   type PageIssue,
   type QueryRow,
@@ -89,48 +90,78 @@ export class SeoAuditService {
     const t = totCur[0] ?? emptyRow();
     const tp = totPrev[0] ?? null;
 
-    // per-query, collapsing query+page rows into one row per query with a
-    // page set (for cannibalisation) and the top page by clicks
-    const pagesByQuery = new Map<string, Set<string>>();
-    const bestByQuery = new Map<string, SaRow>();
+    // Collapse the query+page rows into one row per query. Distinct *pages*
+    // are tracked by a normalised URL (so www / non-www / trailing-slash
+    // variants of the same page don't read as cannibalisation), while the
+    // topPage kept for display is the real URL with the most clicks.
+    const groups = new Map<
+      string,
+      { pages: Set<string>; topPage: string; topClicks: number; parts: SaRow[] }
+    >();
     for (const r of qCur) {
       const q = r.keys[0];
-      const pg = r.keys[1];
-      if (!pagesByQuery.has(q)) pagesByQuery.set(q, new Set());
-      if (pg) pagesByQuery.get(q)!.add(pg);
-      const existing = bestByQuery.get(q);
-      if (!existing) {
-        bestByQuery.set(q, { ...r, keys: [q, pg] });
-      } else {
-        existing.clicks += r.clicks;
-        existing.impressions += r.impressions;
-        // keep the higher-click page as topPage, weight position/ctr by impressions
-        if (r.clicks > (r.keys[1] === existing.keys[1] ? 0 : existing.clicks)) existing.keys[1] = pg;
+      const pg = r.keys[1] ?? '';
+      let g = groups.get(q);
+      if (!g) {
+        g = { pages: new Set(), topPage: pg, topClicks: -1, parts: [] };
+        groups.set(q, g);
       }
+      if (pg) g.pages.add(normUrl(pg));
+      if (r.clicks > g.topClicks) {
+        g.topClicks = r.clicks;
+        g.topPage = pg;
+      }
+      g.parts.push(r);
     }
-    // recompute blended position/ctr per query from the collapsed impressions
+
+    const pagesByQuery = new Map<string, Set<string>>();
     const curQueryRows: SaRow[] = [];
-    for (const [q, agg] of bestByQuery) {
-      const parts = qCur.filter((r) => r.keys[0] === q);
-      const impr = parts.reduce((s, r) => s + r.impressions, 0) || 1;
-      const position = parts.reduce((s, r) => s + r.position * r.impressions, 0) / impr;
-      const clicks = parts.reduce((s, r) => s + r.clicks, 0);
-      const ctr = agg.impressions ? clicks / agg.impressions : 0;
-      curQueryRows.push({ keys: agg.keys, clicks, impressions: agg.impressions, ctr, position });
+    for (const [q, g] of groups) {
+      pagesByQuery.set(q, g.pages);
+      const impr = g.parts.reduce((s, r) => s + r.impressions, 0);
+      const clicks = g.parts.reduce((s, r) => s + r.clicks, 0);
+      const position = impr ? g.parts.reduce((s, r) => s + r.position * r.impressions, 0) / impr : 0;
+      const ctr = impr ? clicks / impr : 0;
+      curQueryRows.push({ keys: [q, g.topPage], clicks, impressions: impr, ctr, position });
     }
 
     const queryRows: QueryRow[] = buildQueryRows(curQueryRows, qPrev, pagesByQuery);
 
-    // pages to inspect: by impressions desc, capped
-    const pageMetrics = byPage
-      .map((r) => ({
-        url: r.keys[0],
-        clicks: r.clicks,
-        impressions: r.impressions,
-        ctr: r.ctr,
-        position: r.position,
-      }))
-      .filter((p) => p.url)
+    // GSC lists http:// , https:// and www / non-www of the same page as
+    // separate rows. Collapse them by normalised URL, sum the metrics, and
+    // keep the variant Google actually shows users (most impressions) as the
+    // one URL we inspect — otherwise a redirect artifact like
+    // `http://example.com/` gets inspected and flagged as blocked / redirected.
+    const pageGroups = new Map<
+      string,
+      { url: string; clicks: number; impressions: number; ctr: number; position: number; best: number }
+    >();
+    for (const r of byPage) {
+      if (!r.keys[0]) continue;
+      const key = normUrl(r.keys[0]);
+      const g = pageGroups.get(key);
+      if (!g) {
+        pageGroups.set(key, {
+          url: r.keys[0],
+          clicks: r.clicks,
+          impressions: r.impressions,
+          ctr: r.ctr,
+          position: r.position,
+          best: r.impressions,
+        });
+      } else {
+        g.clicks += r.clicks;
+        g.impressions += r.impressions;
+        if (r.impressions > g.best) {
+          g.best = r.impressions;
+          g.url = r.keys[0];
+          g.ctr = r.ctr;
+          g.position = r.position;
+        }
+      }
+    }
+    const pageMetrics = [...pageGroups.values()]
+      .map((g) => ({ url: g.url, clicks: g.clicks, impressions: g.impressions, ctr: g.ctr, position: g.position }))
       .sort((a, b) => b.impressions - a.impressions);
 
     const toInspect = pageMetrics.slice(0, INSPECT_BUDGET);

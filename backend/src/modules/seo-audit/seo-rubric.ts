@@ -30,12 +30,19 @@ export function expectedCtr(position: number): number {
 export const SEO_BANDS = {
   strikingMinPos: 4.5,
   strikingMaxPos: 20,
-  strikingMinImpr: 30, // impressions in the window to be worth chasing
-  ctrGapMinImpr: 100,
+  strikingMinImpr: 10, // impressions in the window to be worth chasing
+  ctrGapMinImpr: 50,
   ctrGapRatio: 0.5, // actual CTR below half the expected
   moverMinImpr: 20,
   moverPosDelta: 3, // positions gained/lost to count as a move
+  cannibalMinImpr: 15, // don't call cannibalisation on a 1-impression query
 } as const;
+
+/** Search-operator strings (`site:`, `-site:`, `intitle:` …) are research
+    queries, not demand — drop them from opportunity analysis. */
+function isOperatorQuery(q: string): boolean {
+  return /(^|\s)-?(site|intitle|inurl|intext|filetype|related|cache):/i.test(q);
+}
 
 export type QueryOpportunity =
   | 'striking-distance'
@@ -76,8 +83,24 @@ export function buildQueryRows(
       const clicksDelta = p ? r.clicks - p.clicks : null;
       const pages = pagesByQuery.get(q);
       const topPage = r.keys[1] ?? null;
+      const operator = isOperatorQuery(q);
 
       const opportunities: QueryOpportunity[] = [];
+      if (operator) {
+        // still record the row (for the table) but flag nothing
+        return {
+          query: q,
+          clicks: r.clicks,
+          impressions: r.impressions,
+          ctr: r.ctr,
+          position: round(r.position, 1),
+          topPage,
+          positionDelta,
+          impressionsDelta,
+          clicksDelta,
+          opportunities,
+        };
+      }
       if (
         r.position >= SEO_BANDS.strikingMinPos &&
         r.position <= SEO_BANDS.strikingMaxPos &&
@@ -96,7 +119,9 @@ export function buildQueryRows(
         if (positionDelta >= SEO_BANDS.moverPosDelta) opportunities.push('ranking-gain');
         else if (positionDelta <= -SEO_BANDS.moverPosDelta) opportunities.push('ranking-drop');
       }
-      if (pages && pages.size >= 2) opportunities.push('cannibalization');
+      if (pages && pages.size >= 2 && r.impressions >= SEO_BANDS.cannibalMinImpr) {
+        opportunities.push('cannibalization');
+      }
 
       return {
         query: q,
@@ -121,6 +146,7 @@ export type PageIssueCode =
   | 'not-indexed-discovered'
   | 'duplicate-alt-canonical'
   | 'canonical-mismatch'
+  | 'canonical-host'
   | 'noindex'
   | 'blocked-robots'
   | 'redirect'
@@ -239,20 +265,34 @@ export function classifyPage(url: string, insp: UrlInspection): PageIssue[] {
     });
   }
 
-  // ── declared vs chosen canonical mismatch (independent of coverage) ──
+  // ── declared vs chosen canonical (independent of coverage) ──────────
+  // Split hairs deliberately: a www / non-www / protocol / trailing-slash
+  // difference is a *host preference* mistake (one finding, low severity),
+  // not N separate "wrong canonical" issues; a genuine path/domain
+  // difference is the real thing.
   if (
     insp.userCanonical &&
     insp.googleCanonical &&
-    !sameUrl(insp.userCanonical, insp.googleCanonical) &&
+    !identicalUrl(insp.userCanonical, insp.googleCanonical) &&
     !out.some((i) => i.code === 'duplicate-alt-canonical')
   ) {
-    out.push({
-      code: 'canonical-mismatch',
-      severity: 'medium',
-      detail: `You declared canonical ${path(insp.userCanonical)} but Google chose ${path(insp.googleCanonical)}.`,
-      fix: `Reconcile the two: point ${path(url)} at the URL you actually want indexed, and make sure that target 200s and self-canonicalises.`,
-      fixArtifact: `<link rel="canonical" href="${insp.googleCanonical}" />`,
-    });
+    if (samePageDifferentHostPrefix(insp.userCanonical, insp.googleCanonical)) {
+      out.push({
+        code: 'canonical-host',
+        severity: 'low',
+        detail: `${path(url)} declares its canonical on ${hostOf(insp.userCanonical)} but Google serves and indexes it on ${hostOf(insp.googleCanonical)} — Google is overriding your host preference.`,
+        fix: `Pick one host (${hostOf(insp.googleCanonical)} is what Google already uses) and make every <link rel="canonical">, 301 redirect, sitemap <loc> and internal link use it. Then re-submit the sitemap.`,
+        fixArtifact: `<link rel="canonical" href="${insp.googleCanonical}" />`,
+      });
+    } else {
+      out.push({
+        code: 'canonical-mismatch',
+        severity: 'medium',
+        detail: `${path(url)} declares canonical ${insp.userCanonical} but Google indexed ${insp.googleCanonical} instead.`,
+        fix: `Decide which URL should rank. Point ${path(url)} at it, make that target return 200 and self-canonicalise, and 301 the other.`,
+        fixArtifact: `<link rel="canonical" href="${insp.googleCanonical}" />`,
+      });
+    }
   }
 
   // ── rich results / breadcrumbs ─────────────────────────────────────
@@ -439,14 +479,48 @@ function path(u: string): string {
     return u;
   }
 }
-function sameUrl(a: string, b: string): boolean {
-  const clean = (s: string) => s.replace(/\/$/, '').replace(/^https?:\/\//, '').toLowerCase();
-  return clean(a) === clean(b);
+function hostOf(u: string): string {
+  try {
+    return new URL(u).host;
+  } catch {
+    return u;
+  }
+}
+/** Normalise for comparison: lowercase, drop protocol, drop leading `www.`,
+    drop the trailing slash, drop default ports. */
+export function normUrl(u: string): string {
+  try {
+    const x = new URL(u);
+    const host = x.host.replace(/^www\./i, '').replace(/:80$|:443$/, '');
+    const p = x.pathname.replace(/\/$/, '');
+    return `${host}${p}${x.search}`.toLowerCase();
+  } catch {
+    return u.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/$/, '').toLowerCase();
+  }
+}
+/** Same URL once protocol / www / trailing slash are ignored. */
+function identicalUrl(a: string, b: string): boolean {
+  return normUrl(a) === normUrl(b);
+}
+/** Same path, but the hosts differ only by a `www.` prefix (or protocol). */
+function samePageDifferentHostPrefix(a: string, b: string): boolean {
+  try {
+    const ha = new URL(a);
+    const hb = new URL(b);
+    const strip = (h: string) => h.replace(/^www\./i, '').toLowerCase();
+    return (
+      strip(ha.host) === strip(hb.host) &&
+      ha.host.toLowerCase() !== hb.host.toLowerCase() &&
+      ha.pathname.replace(/\/$/, '') === hb.pathname.replace(/\/$/, '')
+    );
+  } catch {
+    return false;
+  }
 }
 function pageIssueType(code: PageIssueCode): string {
   if (code === 'noindex') return 'noindex';
   if (code === 'blocked-robots') return 'robots';
-  if (code === 'canonical-mismatch' || code === 'duplicate-alt-canonical') return 'canonical';
+  if (code === 'canonical-mismatch' || code === 'duplicate-alt-canonical' || code === 'canonical-host') return 'canonical';
   if (code === 'redirect') return 'redirect';
   if (code === 'soft-404') return 'soft-404';
   if (code === 'breadcrumb-issue') return 'breadcrumb';
@@ -460,6 +534,7 @@ function titleFor(code: PageIssueCode): string {
     'not-indexed-discovered': 'discovered but not crawled',
     'duplicate-alt-canonical': 'duplicate — Google picked another canonical',
     'canonical-mismatch': 'declared canonical ignored by Google',
+    'canonical-host': 'canonical tags point to the wrong host (www vs non-www)',
     noindex: 'blocked from indexing (noindex)',
     'blocked-robots': 'blocked by robots.txt',
     redirect: 'URL redirects',
