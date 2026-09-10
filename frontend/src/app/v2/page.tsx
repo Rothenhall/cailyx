@@ -21,6 +21,7 @@ import { ContextPanel, CONTEXT_NUB_W } from './_components/ContextPanel';
 import { AgentsFeed } from './_components/AgentsFeed';
 import { Audits } from './_components/Audits';
 import { TechnicalAuditWorkspace } from './_components/TechnicalAuditWorkspace';
+import { SeoAuditWorkspace } from './_components/SeoAuditWorkspace';
 import { ChatBot, type ChatSeed } from './_components/ChatBot';
 import { Flywheel, FLYWHEEL_VB } from './_components/Flywheel';
 import { ErrorBoundary } from './_components/ErrorBoundary';
@@ -42,7 +43,7 @@ export default function V2Console() {
   const [agentKey, setAgentKey] = useState<string | null>(null);
   const [palette, setPalette] = useState(false);
   /* the Technical tile takes over the canvas rather than opening in-card */
-  const [expanded, setExpanded] = useState<'technical' | null>(null);
+  const [expanded, setExpanded] = useState<'technical' | 'seo' | null>(null);
   /* live Google (GSC + GA) connections — folded into the header count */
   const [googleConnected, setGoogleConnected] = useState<number | null>(null);
   const refreshGoogle = () =>
@@ -238,7 +239,7 @@ export default function V2Console() {
               domain={c.project?.domain ?? null}
               booting={c.booting}
               onNotify={notify}
-              onExpand={() => setExpanded('technical')}
+              onExpand={(t) => setExpanded(t === 'seo' ? 'seo' : 'technical')}
             />
           </ErrorBoundary>
         </section>
@@ -282,6 +283,18 @@ export default function V2Console() {
         {expanded === 'technical' && (
           <ErrorBoundary label="Technical audit">
             <TechnicalAuditWorkspace
+              key={c.activeId ?? 'none'}
+              projectId={c.activeId}
+              domain={c.project?.domain ?? null}
+              onClose={() => setExpanded(null)}
+              onNotify={notify}
+            />
+          </ErrorBoundary>
+        )}
+
+        {expanded === 'seo' && (
+          <ErrorBoundary label="SEO audit">
+            <SeoAuditWorkspace
               key={c.activeId ?? 'none'}
               projectId={c.activeId}
               domain={c.project?.domain ?? null}

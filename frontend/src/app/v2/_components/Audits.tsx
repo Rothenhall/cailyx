@@ -510,7 +510,7 @@ export function Audits({
                 <button
                   key={t}
                   type="button"
-                  onClick={() => (t === 'technical' && onExpand ? onExpand(t) : setTab(t))}
+                  onClick={() => ((t === 'technical' || t === 'seo') && onExpand ? onExpand(t) : setTab(t))}
                   style={{ ['--i' as string]: i }}
                   className={`relative flex w-full items-center gap-3 rounded-r3 border bg-bg-raised px-3 py-2.5 text-left transition-colors duration-micro hover:border-accent-dim ${
                     n > 0 ? 'border-border-strong' : 'border-border'

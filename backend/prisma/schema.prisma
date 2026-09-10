@@ -453,6 +453,138 @@ model GoogleProjectResource {
   @@index([connectionId])
 }
 
+// ─── SEO audit (Search Console data + fixes) ──────────────────────────
+// The technical audit's sibling: it reads Google Search Console (Search
+// Analytics + URL Inspection), then attaches a fix — and, where it can, a
+// ready-to-apply artifact — to every issue. Search Console shows the data;
+// this turns it into work.
+
+model SeoAudit {
+  id              String   @id
+  projectId       String
+  siteUrl         String // the mapped GSC property
+  triggeredBy     String   @default("manual")
+  createdAt       DateTime @default(now())
+  windowDays      Int      @default(28)
+
+  /// 0-100 composite. Null when Search Console returned nothing.
+  score           Int?
+  previousAuditId String?
+  /// JSON AuditDelta[] vs previousAuditId.
+  deltas          String?
+
+  /// Window totals, denormalised for fast list / trend rendering.
+  clicks      Int   @default(0)
+  impressions Int   @default(0)
+  ctr         Float @default(0)
+  position    Float @default(0)
+
+  /// JSON: { prev: {clicks,impressions,ctr,position} | null, timeseries: [{date,clicks,impressions,ctr,position}] }
+  metrics        String?
+  pagesInspected Int     @default(0)
+  /// JSON: { totalCostUsd, totalLatencyMs, inspectCalls, saCalls }
+  observability  String?
+
+  narrative      String?
+  narrativeModel String?
+  narrativeAt    DateTime?
+
+  findings SeoFinding[]
+  queries  SeoQuery[]
+  pages    SeoPage[]
+
+  @@index([projectId])
+  @@index([projectId, createdAt])
+  @@index([createdAt])
+}
+
+/// One row per query, with window metrics, run-over-run movement, and the
+/// opportunity codes the rubric flagged (striking-distance, ctr-gap, …).
+model SeoQuery {
+  id          String @id @default(cuid())
+  auditId     String
+  query       String
+  clicks      Int    @default(0)
+  impressions Int    @default(0)
+  ctr         Float  @default(0)
+  position    Float  @default(0)
+
+  positionDelta    Float?
+  impressionsDelta Int?
+  clicksDelta      Int?
+
+  /// The page currently ranking highest for this query.
+  topPage String?
+  /// JSON string[]: opportunity codes.
+  opportunities String?
+
+  audit SeoAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@unique([auditId, query])
+  @@index([auditId])
+}
+
+/// One row per inspected URL: its Search Analytics metrics plus the URL
+/// Inspection verdict (index status, chosen canonical, coverage reason) and
+/// the classified issues with fixes.
+model SeoPage {
+  id          String @id @default(cuid())
+  auditId     String
+  url         String
+  clicks      Int    @default(0)
+  impressions Int    @default(0)
+  ctr         Float  @default(0)
+  position    Float  @default(0)
+
+  coverageState   String? // "Submitted and indexed", "Crawled - currently not indexed", …
+  indexVerdict    String? // PASS | PARTIAL | FAIL | NEUTRAL
+  indexingState   String? // INDEXING_ALLOWED | BLOCKED_BY_META_TAG | BLOCKED_BY_HTTP_HEADER | BLOCKED_BY_ROBOTS_TXT
+  robotsTxtState  String?
+  pageFetchState  String?
+  googleCanonical String?
+  userCanonical   String?
+  lastCrawlTime   DateTime?
+
+  /// JSON: [{ code, severity, detail, fix, fixArtifact? }]
+  issues     String?
+  /// JSON string[]: rich-result types Google detected (BreadcrumbList, …).
+  richResults String?
+  /// JSON: [{ type, issues: [{ severity, message }] }]
+  richIssues String?
+
+  audit SeoAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@unique([auditId, url])
+  @@index([auditId])
+  @@index([url])
+}
+
+/// A grouped, actionable issue across the run — the "fix these" layer.
+model SeoFinding {
+  id             String @id @default(cuid())
+  auditId        String
+  type           String // indexing | canonical | noindex | robots | redirect | soft-404 | breadcrumb | rich-result | ctr-gap | striking-distance | ranking-drop | cannibalization | sitemap | crawl
+  status         String // fail | warn | pass
+  severity       String // critical | high | medium | low
+  title          String
+  detail         String
+  recommendedFix String
+  /// JSON string[]: the URLs / queries this finding covers.
+  affected       String?
+  count          Int     @default(1)
+  /// JSON: a ready-to-apply artifact (canonical tag, BreadcrumbList JSON-LD,
+  /// meta-description text). Null when there is nothing to hand over.
+  fixArtifact    String?
+  /// Can Cailyx act on this from here (e.g. ping the sitemap)? action key or null.
+  action         String?
+
+  audit SeoAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@index([auditId])
+  @@index([type])
+  @@index([status])
+}
+
 // ─── Measurement (Wave 1, PRD §6.6-6.7, SOP-2) ────────────────
 
 model MeasurementRun {

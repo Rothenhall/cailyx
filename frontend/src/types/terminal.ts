@@ -100,6 +100,107 @@ export interface SearchConsoleSummary {
   topPages: Array<{ key: string; clicks: number; impressions: number; ctr: number; position: number }>;
 }
 
+/* ── SEO audit (Search Console data + fixes) ────────────────────────────── */
+
+export interface SeoAuditSummary {
+  id: string;
+  createdAt: string;
+  score: number | null;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+  windowDays: number;
+  previousAuditId: string | null;
+  triggeredBy: string;
+}
+
+export interface SeoQueryRow {
+  id: string;
+  query: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+  positionDelta: number | null;
+  impressionsDelta: number | null;
+  clicksDelta: number | null;
+  topPage: string | null;
+  /** JSON string[] of opportunity codes */
+  opportunities: string;
+}
+
+export interface SeoPageRow {
+  id: string;
+  url: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+  coverageState: string | null;
+  indexVerdict: string | null;
+  indexingState: string | null;
+  robotsTxtState: string | null;
+  pageFetchState: string | null;
+  googleCanonical: string | null;
+  userCanonical: string | null;
+  lastCrawlTime: string | null;
+  /** JSON: [{ code, severity, detail, fix, fixArtifact? }] */
+  issues: string | null;
+  /** JSON string[] */
+  richResults: string | null;
+  /** JSON: [{ type, issues: [{ severity, message }] }] */
+  richIssues: string | null;
+}
+
+export interface SeoFinding {
+  id: string;
+  type: string;
+  status: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  title: string;
+  detail: string;
+  recommendedFix: string;
+  /** JSON string[] of affected URLs / queries */
+  affected: string | null;
+  count: number;
+  fixArtifact: string | null;
+  /** e.g. "submit-sitemap" — an action Cailyx can take from the report */
+  action: string | null;
+}
+
+export interface SeoAudit extends SeoAuditSummary {
+  siteUrl: string;
+  deltas?: string | AuditDelta[] | null;
+  /** JSON: { prev, timeseries: [{date,clicks,impressions,ctr,position}] } */
+  metrics: string | null;
+  pagesInspected: number;
+  observability: string | null;
+  narrative: string | null;
+  narrativeModel: string | null;
+  findings: SeoFinding[];
+  queries: SeoQueryRow[];
+  pages: SeoPageRow[];
+}
+
+export interface SeoComparison {
+  currentAuditId: string;
+  previousAuditId: string | null;
+  currentAt: string;
+  previousAt: string | null;
+  deltas: AuditDelta[];
+}
+
+export interface SeoTrendPoint {
+  auditId: string;
+  at: string;
+  score: number | null;
+  clicks: number;
+  impressions: number;
+  position: number;
+  triggeredBy: string;
+}
+
 export interface AnalyticsSummary {
   range: { startDate: string; endDate: string; days: number };
   property: string;

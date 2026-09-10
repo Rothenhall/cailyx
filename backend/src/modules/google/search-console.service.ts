@@ -13,6 +13,32 @@ import { GoogleConnectionService } from './google-connection.service';
 import type { DateWindow, GoogleResourceOption, SearchConsoleSummary } from './google.types';
 
 const API = 'https://searchconsole.googleapis.com/webmasters/v3';
+const INSPECT_API = 'https://searchconsole.googleapis.com/v1/urlInspection/index:inspect';
+
+export interface SaRow {
+  keys: string[];
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+}
+
+/** The slice of the URL Inspection response the SEO audit reads. */
+export interface UrlInspection {
+  coverageState: string | null;
+  verdict: string | null;
+  indexingState: string | null;
+  robotsTxtState: string | null;
+  pageFetchState: string | null;
+  googleCanonical: string | null;
+  userCanonical: string | null;
+  lastCrawlTime: string | null;
+  sitemaps: string[];
+  referringUrls: string[];
+  richResultsVerdict: string | null;
+  /** detected rich-result items with any issues attached */
+  richResultItems: Array<{ type: string; issues: Array<{ severity: string; message: string }> }>;
+}
 
 function window(days: number): DateWindow {
   const end = new Date();
@@ -97,5 +123,107 @@ export class SearchConsoleService {
       topQueries: shape(queriesRes.rows),
       topPages: shape(pagesRes.rows),
     };
+  }
+
+  /* ── lower-level calls the SEO audit builds on ─────────────────────────── */
+
+  /** Raw Search Analytics query. `startDate`/`endDate` are YYYY-MM-DD. */
+  async searchAnalytics(
+    userId: string,
+    siteUrl: string,
+    body: {
+      startDate: string;
+      endDate: string;
+      dimensions?: string[];
+      rowLimit?: number;
+      startRow?: number;
+      dimensionFilterGroups?: unknown[];
+    },
+  ): Promise<SaRow[]> {
+    const res = await this.call<{ rows?: SaRow[] }>(
+      userId,
+      `/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+    return (res.rows ?? []).map((r) => ({
+      keys: r.keys ?? [],
+      clicks: r.clicks ?? 0,
+      impressions: r.impressions ?? 0,
+      ctr: r.ctr ?? 0,
+      position: r.position ?? 0,
+    }));
+  }
+
+  /** URL Inspection for a single URL. Returns null when Google has nothing on it. */
+  async inspectUrl(userId: string, siteUrl: string, inspectionUrl: string): Promise<UrlInspection | null> {
+    const token = await this.connections.accessTokenFor(userId, 'search-console');
+    const res = await fetch(INSPECT_API, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inspectionUrl, siteUrl }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const text = await res.text();
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      this.logger.warn(`GSC inspect ${inspectionUrl} -> ${res.status}: ${text.slice(0, 200)}`);
+      throw new BadGatewayException(`URL Inspection API ${res.status}`);
+    }
+    const d = (JSON.parse(text || '{}').inspectionResult ?? {}) as Record<string, any>;
+    const idx = d.indexStatusResult ?? {};
+    const rr = d.richResultsResult ?? {};
+    return {
+      coverageState: idx.coverageState ?? null,
+      verdict: idx.verdict ?? null,
+      indexingState: idx.indexingState ?? null,
+      robotsTxtState: idx.robotsTxtState ?? null,
+      pageFetchState: idx.pageFetchState ?? null,
+      googleCanonical: idx.googleCanonical ?? null,
+      userCanonical: idx.userCanonical ?? null,
+      lastCrawlTime: idx.lastCrawlTime ?? null,
+      sitemaps: Array.isArray(idx.sitemap) ? idx.sitemap : [],
+      referringUrls: Array.isArray(idx.referringUrls) ? idx.referringUrls : [],
+      richResultsVerdict: rr.verdict ?? null,
+      richResultItems: (rr.detectedItems ?? []).flatMap((grp: any) =>
+        (grp.items ?? []).map((it: any) => ({
+          type: String(grp.richResultType ?? 'unknown'),
+          issues: (it.issues ?? []).map((is: any) => ({
+            severity: String(is.severity ?? 'WARNING'),
+            message: String(is.issueMessage ?? ''),
+          })),
+        })),
+      ),
+    };
+  }
+
+  /** Submitted sitemaps + their error / warning counts. */
+  async listSitemaps(
+    userId: string,
+    siteUrl: string,
+  ): Promise<Array<{ path: string; errors: number; warnings: number; lastDownloaded: string | null; isPending: boolean }>> {
+    const d = await this.call<{ sitemap?: Array<any> }>(
+      userId,
+      `/sites/${encodeURIComponent(siteUrl)}/sitemaps`,
+    );
+    return (d.sitemap ?? []).map((s) => ({
+      path: String(s.path ?? ''),
+      errors: Number(s.errors ?? 0),
+      warnings: Number(s.warnings ?? 0),
+      lastDownloaded: s.lastDownloaded ?? null,
+      isPending: Boolean(s.isPending),
+    }));
+  }
+
+  /** Re-submit a sitemap so Google recrawls it. This is one thing Cailyx can
+      actually *do* about discovery, rather than only advise. */
+  async submitSitemap(userId: string, siteUrl: string, feedpath: string): Promise<void> {
+    const token = await this.connections.accessTokenFor(userId, 'search-console');
+    const res = await fetch(
+      `${API}/sites/${encodeURIComponent(siteUrl)}/sitemaps/${encodeURIComponent(feedpath)}`,
+      { method: 'PUT', headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) },
+    );
+    if (!res.ok && res.status !== 204) {
+      throw new BadGatewayException(`Sitemap submit ${res.status}`);
+    }
   }
 }

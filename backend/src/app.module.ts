@@ -44,6 +44,7 @@ import { SerpIntelligenceModule } from './modules/serp-intelligence/serp-intelli
 import { AuthorityModule } from './modules/authority/authority.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { GoogleModule } from './modules/google/google.module';
+import { SeoAuditModule } from './modules/seo-audit/seo-audit.module';
 import { AgentsModule } from './modules/agents/agents.module';
 import { UsersModule } from './modules/users/users.module';
 
@@ -132,6 +133,9 @@ import { UsersModule } from './modules/users/users.module';
 
     // Google Search Console + Analytics (3-legged OAuth)
     GoogleModule,
+
+    // SEO audit — Search Console data + fixes
+    SeoAuditModule,
     AgentsModule,
 
     // Operator administration (admin only)

@@ -19,6 +19,10 @@ import type {
   ProjectDetail,
   SafeUser,
   SearchConsoleSummary,
+  SeoAudit,
+  SeoAuditSummary,
+  SeoComparison,
+  SeoTrendPoint,
   TechnicalAudit,
 } from '@/types/terminal';
 
@@ -82,6 +86,28 @@ export const getAnalyticsSummary = (projectId: string, days = 28) =>
   apiFetch<AnalyticsSummary>(
     `/integrations/google/analytics/summary?projectId=${encodeURIComponent(projectId)}&days=${days}`,
   );
+
+/* ── SEO audit ──────────────────────────────────────────────────────────── */
+
+export const listSeoAudits = (projectId: string) =>
+  apiFetch<{ audits: SeoAuditSummary[] }>(`/projects/${projectId}/seo-audit`).then((r) => r.audits);
+
+export const getSeoAudit = (projectId: string, auditId: string) =>
+  apiFetch<SeoAudit>(`/projects/${projectId}/seo-audit/${auditId}`);
+
+export const runSeoAudit = (projectId: string, windowDays = 28) =>
+  apiFetch<SeoAudit>(`/projects/${projectId}/seo-audit/run`, { method: 'POST', json: { windowDays } });
+
+export const getSeoComparison = (projectId: string, auditId: string) =>
+  apiFetch<SeoComparison>(`/projects/${projectId}/seo-audit/${auditId}/comparison`);
+
+export const getSeoTrend = (projectId: string, limit = 30) =>
+  apiFetch<{ history: SeoTrendPoint[] }>(
+    `/projects/${projectId}/seo-audit/trend/history?limit=${limit}`,
+  ).then((r) => r.history);
+
+export const submitSeoSitemaps = (projectId: string) =>
+  apiFetch<{ submitted: string[] }>(`/projects/${projectId}/seo-audit/submit-sitemaps`, { method: 'POST' });
 
 export const listAudits = (projectId: string) =>
   apiFetch<{
