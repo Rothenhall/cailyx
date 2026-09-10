@@ -81,6 +81,67 @@ export interface PageMetadata {
   positioningCopy: string | null;
 }
 
+/**
+ * One sitemap URL as the audit scored it. `jsonLdTypes` and `issues` arrive as
+ * JSON strings because the backend stores them in SQLite text columns — parse
+ * with `parseJsonArray` in lib/text.ts rather than trusting the shape.
+ */
+export interface AuditPage {
+  id: string;
+  url: string;
+  status: number;
+  lastmod: string | null;
+  title: string | null;
+  titleLength: number | null;
+  metaDescription: string | null;
+  metaDescLength: number | null;
+  h1Count: number | null;
+  canonical: string | null;
+  wordCount: number | null;
+  jsonLdTypes: string | null;
+  jsonLdValid: boolean;
+  jsonLdCount: number;
+  issues: string | null;
+  score: number | null;
+}
+
+/** One metric's movement between two runs. */
+export interface AuditDelta {
+  metric: string;
+  label: string;
+  previous: number | null;
+  current: number | null;
+  change: number | null;
+  direction: 'improved' | 'regressed' | 'unchanged' | 'new';
+  /** Needed to colour the arrow — a falling LCP is good, a falling score is not. */
+  higherIsBetter: boolean;
+}
+
+export interface AuditComparison {
+  currentAuditId: string;
+  previousAuditId: string | null;
+  currentAt: string;
+  previousAt: string | null;
+  deltas: AuditDelta[];
+  pageChanges: {
+    added: string[];
+    removed: string[];
+    improved: Array<{ url: string; from: number; to: number }>;
+    regressed: Array<{ url: string; from: number; to: number }>;
+  };
+}
+
+/** One point on the score history. */
+export interface AuditTrendPoint {
+  auditId: string;
+  at: string;
+  score: number | null;
+  targetUrl: string;
+  pagesCrawled: number;
+  triggeredBy: string;
+  failures: number;
+}
+
 export interface TechnicalAudit {
   id: string;
   projectId: string;
@@ -88,6 +149,19 @@ export interface TechnicalAudit {
   createdAt: string;
   findings: AuditFinding[];
   pageMetadata: PageMetadata | null;
+  /** 0-100 composite. Null when no check produced a score. */
+  score: number | null;
+  previousAuditId: string | null;
+  /** JSON AuditDelta[] on the list endpoint; already parsed on the detail one. */
+  deltas?: AuditDelta[] | string | null;
+  sitemapUrl: string | null;
+  pagesCrawled: number;
+  pages?: AuditPage[];
+  /** Model-written commentary comparing this run to the previous. */
+  narrative: string | null;
+  narrativeModel: string | null;
+  /** JSON: { totalCostUsd, totalLatencyMs, checksRun, probesRun, fetcherLogCount, cacheHitRate } */
+  observability?: string | null;
 }
 
 export interface LinkGraph {

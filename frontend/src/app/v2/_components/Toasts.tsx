@@ -47,8 +47,8 @@ export function ToastStack({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: 
           key={t.id}
           type="button"
           onClick={() => onDismiss(t.id)}
-          className={`v2-pop pointer-events-auto flex max-w-[320px] items-center gap-2 rounded-r3 border bg-bg-raised/95 px-3 py-2 text-left text-body shadow-[0_18px_44px_-20px_rgba(26,23,18,0.5)] backdrop-blur ${
-            t.tone === 'warn' ? 'border-warn/50 text-warn' : 'border-border text-dim'
+          className={`v2-pop pointer-events-auto flex max-w-[320px] items-center gap-2 rounded-r3 border bg-bg-raised/90 px-3 py-2 text-left text-body shadow-[0_18px_44px_-20px_rgba(26,23,18,0.5)] backdrop-blur ${
+            t.tone === 'warn' ? 'border-warn/40 text-warn' : 'border-border text-dim'
           }`}
         >
           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${t.tone === 'warn' ? 'bg-warn' : 'bg-accent'}`} />

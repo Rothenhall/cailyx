@@ -15,17 +15,81 @@ datasource db {
 // ─── Technical Audit ───────────────────────────────────────────
 
 model TechnicalAudit {
-  id           String   @id
-  projectId    String
-  targetUrl    String
-  triggeredBy  String   @default("manual")
-  createdAt    DateTime @default(now())
+  id          String   @id
+  projectId   String
+  targetUrl   String
+  triggeredBy String   @default("manual")
+  createdAt   DateTime @default(now())
+
+  /// 0-100 composite of every check that ran. Null when no check scored.
+  score           Int?
+  /// The run this one is diffed against — null for a project's first audit.
+  previousAuditId String?
+  /// JSON AuditDelta[]: what moved since previousAuditId, and by how much.
+  deltas          String?
+  /// Where the sitemap was actually found (may differ from targetUrl/sitemap.xml).
+  sitemapUrl      String?
+  /// How many sitemap URLs were fetched into AuditPage for this run.
+  pagesCrawled    Int     @default(0)
+  /// JSON AuditObservability: cost, latency, probe + cache counts for the run.
+  observability   String?
+
+  /// LLM commentary on this run vs the previous one. Written after scoring and
+  /// never fed back into `score` — the composite stays deterministic.
+  narrative      String?
+  /// Which model wrote `narrative`, so a change in voice is traceable.
+  narrativeModel String?
+  narrativeAt    DateTime?
 
   findings     AuditFinding[]
   pageMetadata PageMetadata?
+  pages        AuditPage[]
 
   @@index([projectId])
   @@index([createdAt])
+  @@index([projectId, createdAt])
+}
+
+/// One row per sitemap URL fetched during a run. This is the table that makes
+/// the audit site-wide rather than homepage-only: the per-page SEO and JSON-LD
+/// results live here, and run-over-run page deltas are computed by joining two
+/// audits on `url`.
+model AuditPage {
+  id      String    @id @default(cuid())
+  auditId String
+  url     String
+  /// HTTP status of the page fetch. 0 when the fetch threw.
+  status  Int       @default(0)
+  /// <lastmod> as declared by the sitemap, if any.
+  lastmod DateTime?
+
+  title           String?
+  titleLength     Int?
+  metaDescription String?
+  metaDescLength  Int?
+  h1Count         Int?
+  canonical       String?
+  wordCount       Int?
+
+  /// JSON string[]: @type values found in JSON-LD blocks on the page.
+  jsonLdTypes String?
+  /// Did every JSON-LD block parse as valid JSON?
+  jsonLdValid Boolean @default(false)
+  jsonLdCount Int     @default(0)
+
+  /// JSON string[]: stable issue codes (title-too-long, no-json-ld, …).
+  issues String?
+  /// 0-100 per-page score, from the same deterministic rubric for every page.
+  score  Int?
+
+  checkedAt DateTime @default(now())
+
+  audit TechnicalAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@unique([auditId, url])
+  @@index([auditId])
+  @@index([url])
+  @@index([score])
 }
 
 model AuditFinding {
@@ -53,7 +117,15 @@ model ScheduleConfig {
   nextRunAt DateTime?
   active    Boolean   @default(false)
 
+  /// Resolved once at schedule time from the project's own domain, so a
+  /// cadence can be set before any manual audit exists.
+  targetUrl String?
+  lastRunAt DateTime?
+  /// Set when a scheduled run throws, so a silently dead schedule is visible.
+  lastError String?
+
   @@index([projectId])
+  @@index([active, nextRunAt])
 }
 
 model PageMetadata {
@@ -149,7 +221,7 @@ model PlatformRecord {
 }
 
 model ModelDiff {
-  id         String    @id @default(cuid())
+  id         String   @id @default(cuid())
   entityId   String
   prompt     String
   provider   String
@@ -157,11 +229,11 @@ model ModelDiff {
   rawAnswer  String?
   citations  String?
   divergence String?
-  status     String    @default("not-run")
-  costUsd    Float     @default(0)
-  latencyMs  Int       @default(0)
-  createdAt  DateTime  @default(now())
-  checkedAt  DateTime  @default(now())
+  status     String   @default("not-run")
+  costUsd    Float    @default(0)
+  latencyMs  Int      @default(0)
+  createdAt  DateTime @default(now())
+  checkedAt  DateTime @default(now())
 
   entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
 
@@ -212,43 +284,64 @@ model Gap {
   @@index([priorityScore])
 }
 
-
 // ─── Projects (backbone entity) ───────────────────────────────
 
 model Project {
-  id          String    @id @default(cuid())
+  id          String   @id @default(cuid())
   name        String
   domain      String
   category    String?
   clientName  String?
-  status      String    @default("diagnostic") // scorecard | diagnostic | sprint | retainer | archived
+  status      String   @default("diagnostic") // scorecard | diagnostic | sprint | retainer | archived
   notes       String?
   userId      String? // owning operator (nullable: pre-auth rows);
   competitors String? // JSON array of {name, domain} — seeded by intake, used by share-of-voice
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@unique([domain])
   @@index([status])
 }
+
+// ─── Self-report attribution ──────────────────────────────────
+// "How did you find us?" answered by the buyer, not inferred. AI referrals
+// mostly land as Direct in analytics and agentic browsers are indistinguishable
+// from Chrome at the HTTP layer, so asking is the only signal that survives.
+// Written by a public endpoint — deliberately stores no IP.
+
+model AttributionResponse {
+  id           String   @id @default(cuid())
+  projectId    String
+  source       String // chatgpt | claude | perplexity | gemini | copilot | other-ai | search | social | referral | other
+  prompt       String? // what they asked the assistant, if they said
+  note         String?
+  contactEmail String?
+  page         String? // the page the form was submitted from
+  createdAt    DateTime @default(now())
+
+  @@index([projectId])
+  @@index([source])
+  @@index([createdAt])
+}
+
 // ─── Reporting ────────────────────────────────────────────────
 
 model Report {
-  id              String   @id @default(cuid())
-  projectId       String
-  slug            String   @unique
-  title           String
-  targetUrl       String
-  visibility      String   @default("private") // private | public
+  id               String   @id @default(cuid())
+  projectId        String
+  slug             String   @unique
+  title            String
+  targetUrl        String
+  visibility       String   @default("private") // private | public
   executiveSummary String
-  scoreTotal      Int
-  scoreBand       String
-  subScores       String
+  scoreTotal       Int
+  scoreBand        String
+  subScores        String
   findingsSnapshot String
-  roadmapSnapshot String
-  branding        String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  roadmapSnapshot  String
+  branding         String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   @@index([projectId])
   @@index([slug])
@@ -258,14 +351,14 @@ model Report {
 // ─── Query Set (SOP-1, PRD FR-5) ──────────────────────────────
 
 model QuerySet {
-  id          String    @id @default(cuid())
+  id          String         @id @default(cuid())
   projectId   String
-  version     Int       @default(1)
-  persona     String    // problem-aware | solution-aware | product-aware | most-aware
+  version     Int            @default(1)
+  persona     String // problem-aware | solution-aware | product-aware | most-aware
   label       String?
-  status      String    @default("draft") // draft | active | archived
-  source      String    @default("manual") // manual | sales-questions | support-tickets
-  createdAt   DateTime  @default(now())
+  status      String         @default("draft") // draft | active | archived
+  source      String         @default("manual") // manual | sales-questions | support-tickets
+  createdAt   DateTime       @default(now())
   activatedAt DateTime?
   items       QuerySetItem[]
 
@@ -275,11 +368,11 @@ model QuerySet {
 }
 
 model QuerySetItem {
-  id         String   @id @default(cuid())
-  querySetId String
-  prompt     String
-  funnelStage String  // problem-aware | solution-aware | product-aware | most-aware
-  createdAt  DateTime @default(now())
+  id          String   @id @default(cuid())
+  querySetId  String
+  prompt      String
+  funnelStage String // problem-aware | solution-aware | product-aware | most-aware
+  createdAt   DateTime @default(now())
 
   querySet QuerySet @relation(fields: [querySetId], references: [id], onDelete: Cascade)
 
@@ -321,21 +414,21 @@ model RefreshToken {
 // ─── Measurement (Wave 1, PRD §6.6-6.7, SOP-2) ────────────────
 
 model MeasurementRun {
-  id        String    @id @default(cuid())
-  projectId String
-  querySetId String
-  surface   String // claude | perplexity | mock
-  geo       String    @default("US")
-  runCount  Int       @default(5) // n>=5 enforced in code — never lower
-  status    String    @default("pending") // pending | running | completed | failed
-  totalRequests     Int     @default(0)
-  completedRequests Int     @default(0)
-  failedRequests    Int     @default(0)
-  costTotal Float     @default(0)
-  error     String?
-  startedAt DateTime?
-  finishedAt DateTime?
-  createdAt DateTime  @default(now())
+  id                String    @id @default(cuid())
+  projectId         String
+  querySetId        String
+  surface           String // claude | perplexity | mock
+  geo               String    @default("US")
+  runCount          Int       @default(5) // n>=5 enforced in code — never lower
+  status            String    @default("pending") // pending | running | completed | failed
+  totalRequests     Int       @default(0)
+  completedRequests Int       @default(0)
+  failedRequests    Int       @default(0)
+  costTotal         Float     @default(0)
+  error             String?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  createdAt         DateTime  @default(now())
 
   observations Observation[]
 
@@ -345,22 +438,22 @@ model MeasurementRun {
 }
 
 model Observation {
-  id             String   @id @default(cuid())
-  runId          String
-  itemId         String
-  runNumber      Int // 1..n of the repeat this observation is
-  prompt         String // copied at execution time (query-set immutability keeps this stable)
-  mentioned      Boolean  @default(false)
-  cited          Boolean  @default(false)
-  citedUrl       String?
-  position       Int? // rank of the subject's citation among cited URLs, 1-based
-  competitors    String   @default("[]") // JSON array of competitor names seen alongside
+  id               String   @id @default(cuid())
+  runId            String
+  itemId           String
+  runNumber        Int // 1..n of the repeat this observation is
+  prompt           String // copied at execution time (query-set immutability keeps this stable)
+  mentioned        Boolean  @default(false)
+  cited            Boolean  @default(false)
+  citedUrl         String?
+  position         Int? // rank of the subject's citation among cited URLs, 1-based
+  competitors      String   @default("[]") // JSON array of competitor names seen alongside
   characterization String? // v1: "present" | "absent" (judge-diff later)
-  rawAnswer      String
-  costUsd        Float    @default(0)
-  latencyMs      Int?
-  model          String?
-  createdAt      DateTime @default(now())
+  rawAnswer        String
+  costUsd          Float    @default(0)
+  latencyMs        Int?
+  model            String?
+  createdAt        DateTime @default(now())
 
   run MeasurementRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
@@ -373,15 +466,15 @@ model Observation {
 // Versioned scoring rubric (PRD §8). Weights sum to 100; bands map totals.
 // Active row is what scoring uses; all rows immutable once a run references them.
 model ScoreRubric {
-  id          String   @id @default(cuid())
-  version     Int      @unique
-  weights     String // JSON: {machineAccess, entityClarity, shortlistPresence, extractability, authority}
-  bands       String // JSON: [{max, band}] ascending, fallback last
-  active      Boolean  @default(false)
-  note        String?
-  createdAt   DateTime @default(now())
+  id        String   @id @default(cuid())
+  version   Int      @unique
+  weights   String // JSON: {machineAccess, entityClarity, shortlistPresence, extractability, authority}
+  bands     String // JSON: [{max, band}] ascending, fallback last
+  active    Boolean  @default(false)
+  note      String?
+  createdAt DateTime @default(now())
 
-  scoreRuns   ScoreRun[]
+  scoreRuns ScoreRun[]
 }
 
 // One scoring pass over a project (FR-8.1-8.4). Sub-scores carry evidence;
@@ -396,7 +489,7 @@ model ScoreRun {
   subScores     String // JSON: [{dimension, weight, value, contribution, evidence[], partial, partialReason?}]
   createdAt     DateTime @default(now())
 
-  rubric        ScoreRubric @relation(fields: [rubricVersion], references: [version])
+  rubric ScoreRubric @relation(fields: [rubricVersion], references: [version])
 
   @@index([projectId])
   @@index([projectId, createdAt])
@@ -426,22 +519,23 @@ model Claim {
 // A finding with generated what/why/fix copy in two registers (FR-9.3),
 // claims-discipline filtered. thinRun flags honest thin evidence (FR-9.1).
 model Finding {
-  id           String   @id @default(cuid())
-  projectId    String
-  gapId        String? // source gap-analysis row
-  title        String
+  id            String   @id @default(cuid())
+  projectId     String
+  gapId         String? // source gap-analysis row
+  title         String
   whatExecutive String?
   whatTechnical String?
-  whyExecutive String?
-  whyTechnical String?
-  fixExecutive String?
-  fixTechnical String?
-  thinRun      Boolean  @default(false)
-  disclosedGap String? // when thinRun, what the copy says about missing evidence
-  createdAt    DateTime @default(now())
+  whyExecutive  String?
+  whyTechnical  String?
+  fixExecutive  String?
+  fixTechnical  String?
+  thinRun       Boolean  @default(false)
+  disclosedGap  String? // when thinRun, what the copy says about missing evidence
+  createdAt     DateTime @default(now())
 
   @@index([projectId])
 }
+
 // ─── Wave 3: crawler-monitor, monitoring ─────────────────────────
 
 // One AI-crawler hit from ingested server logs (SOP-3/4.5).
@@ -482,25 +576,24 @@ model Alert {
 // Scores come only from the deterministic pipeline (reproducible); LLM notes,
 // when requested, are stored separately and never feed the score.
 model PageAnalysis {
-  id        String   @id @default(cuid())
-  projectId String
-  url       String
-  title     String?
-  wordCount Int      @default(0)
-  blufScore     Int      @default(0) // 0-30: answer in the first 40-60 words
-  questionH2Score Int    @default(0) // 0-25: share of question-shaped H2s
-  formatScore   Int      @default(0) // 0-25: tables / numbered steps / definition blocks
-  claimsScore   Int      @default(0) // 0-20: extractable "number + noun + time + source" claims
-  structureScore Int     @default(0) // sum of the four subscores (0-100)
-  blufText      String? // first paragraph copy when BLUF is present
-  headingStructure String @default("[]") // JSON: [{level, text, questionShaped, standalone, standaloneReason}]
-  extractableClaims String @default("[]") // JSON: [{text, hasNumber, hasTimeframe, hasSource}]
-  formatFindings String   @default("{}") // JSON: {tables, orderedLists, definitionBlocks}
-  llmNotes      String? // optional Claude refinement (standalone verdicts, BLUF rewrite) — never part of structureScore
-  fetchedAt     DateTime?
-  status        String   @default("complete") // complete | fetch-failed
-  createdAt DateTime @default(now())
-
+  id                String    @id @default(cuid())
+  projectId         String
+  url               String
+  title             String?
+  wordCount         Int       @default(0)
+  blufScore         Int       @default(0) // 0-30: answer in the first 40-60 words
+  questionH2Score   Int       @default(0) // 0-25: share of question-shaped H2s
+  formatScore       Int       @default(0) // 0-25: tables / numbered steps / definition blocks
+  claimsScore       Int       @default(0) // 0-20: extractable "number + noun + time + source" claims
+  structureScore    Int       @default(0) // sum of the four subscores (0-100)
+  blufText          String? // first paragraph copy when BLUF is present
+  headingStructure  String    @default("[]") // JSON: [{level, text, questionShaped, standalone, standaloneReason}]
+  extractableClaims String    @default("[]") // JSON: [{text, hasNumber, hasTimeframe, hasSource}]
+  formatFindings    String    @default("{}") // JSON: {tables, orderedLists, definitionBlocks}
+  llmNotes          String? // optional Claude refinement (standalone verdicts, BLUF rewrite) — never part of structureScore
+  fetchedAt         DateTime?
+  status            String    @default("complete") // complete | fetch-failed
+  createdAt         DateTime  @default(now())
 
   @@index([projectId])
   @@index([projectId, structureScore])
@@ -508,13 +601,13 @@ model PageAnalysis {
 
 // Per-mention check history for a tracked target (drives decay, SOP-7).
 model MentionCheck {
-  id        String   @id @default(cuid())
-  targetId  String
-  checkedAt DateTime @default(now())
-  mentioned Boolean
-  evidence  String? // matched excerpt on the page
+  id           String   @id @default(cuid())
+  targetId     String
+  checkedAt    DateTime @default(now())
+  mentioned    Boolean
+  evidence     String? // matched excerpt on the page
   fetchedTitle String?
-  httpStatus Int?
+  httpStatus   Int?
 
   target MentionTarget @relation(fields: [targetId], references: [id], onDelete: Cascade)
 
@@ -534,9 +627,9 @@ model MentionTarget {
   notes     String?
   createdAt DateTime @default(now())
 
-  campaign MentionCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  campaign   MentionCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   campaignId String?
-  checks MentionCheck[]
+  checks     MentionCheck[]
 
   @@index([projectId])
   @@index([projectId, status])
@@ -544,11 +637,11 @@ model MentionTarget {
 
 // Optional grouping of targets into an outreach campaign (SOP-7).
 model MentionCampaign {
-  id        String   @id @default(cuid())
-  projectId String
-  name      String
+  id            String   @id @default(cuid())
+  projectId     String
+  name          String
   listicleQuery String? // the "best X" query this campaign hunts with
-  createdAt DateTime @default(now())
+  createdAt     DateTime @default(now())
 
   targets MentionTarget[]
 
@@ -558,18 +651,18 @@ model MentionCampaign {
 // A sleeper page (SOP-10): declining traffic + intact backlinks → refresh candidate.
 // Traffic evidence comes from manual entry or pasted GSC CSV export (OAuth deferred).
 model SleeperPage {
-  id        String   @id @default(cuid())
-  projectId String
-  url       String
-  label     String?
-  trafficDeclinePct Float? // from GSC export or manual entry
-  referringDomains  Int?
-  status    String   @default("flagged") // flagged | brief-sent | in-progress | refreshed | abandoned
+  id                 String    @id @default(cuid())
+  projectId          String
+  url                String
+  label              String?
+  trafficDeclinePct  Float? // from GSC export or manual entry
+  referringDomains   Int?
+  status             String    @default("flagged") // flagged | brief-sent | in-progress | refreshed | abandoned
   dateModifiedBefore String? // visible dateModified on the shipped page
   dateModifiedAfter  String?
-  refreshedAt DateTime?
-  notes     String?
-  createdAt DateTime @default(now())
+  refreshedAt        DateTime?
+  notes              String?
+  createdAt          DateTime  @default(now())
 
   @@index([projectId])
   @@index([projectId, status])
@@ -578,16 +671,16 @@ model SleeperPage {
 // An original-data asset (SOP-8, P3) that earns citations by being named
 // after the client brand and citing sourceable numbers.
 model DataAsset {
-  id        String   @id @default(cuid())
-  projectId String
-  title     String
-  brandAlignment String @default("brand-named") // brand-named | subject-matter
+  id              String    @id @default(cuid())
+  projectId       String
+  title           String
+  brandAlignment  String    @default("brand-named") // brand-named | subject-matter
   methodologyNote String?
-  surveySize Int?
-  status    String   @default("planned") // planned | fielding | published
-  publishedAt DateTime?
-  assetUrl  String?
-  createdAt DateTime @default(now())
+  surveySize      Int?
+  status          String    @default("planned") // planned | fielding | published
+  publishedAt     DateTime?
+  assetUrl        String?
+  createdAt       DateTime  @default(now())
 
   @@index([projectId])
 }
@@ -600,15 +693,15 @@ model DataAsset {
 // pipeline at low depth. Findings are the top-3 named problems; nonObvious is
 // the SOP guarantee (the prospect could not know this without us).
 model ScorecardRun {
-  id         String   @id @default(cuid())
-  projectId  String
-  score      Float
-  band       String   // invisible | faint | present | recommended
-  topFindings String  @default("[]") // JSON: [{title, why, fix, severity}]
-  nonObvious Boolean  @default(false)
-  depth      String   @default("free") // free (n>=3, subset) | operator
-  publicToken String  @unique @default(cuid()) // shares the branded report without auth
-  createdAt  DateTime @default(now())
+  id          String   @id @default(cuid())
+  projectId   String
+  score       Float
+  band        String // invisible | faint | present | recommended
+  topFindings String   @default("[]") // JSON: [{title, why, fix, severity}]
+  nonObvious  Boolean  @default(false)
+  depth       String   @default("free") // free (n>=3, subset) | operator
+  publicToken String   @unique @default(cuid()) // shares the branded report without auth
+  createdAt   DateTime @default(now())
 
   @@index([projectId])
 }
@@ -616,34 +709,34 @@ model ScorecardRun {
 // GTM qualification arithmetic (GTM Playbook). One row per project; PUT
 // recomputes; every intermediate stage is stored, not just the verdict.
 model PipelineMath {
-  id           String   @id @default(cuid())
-  projectId    String   @unique
+  id            String   @id @default(cuid())
+  projectId     String   @unique
   revenueTarget Float
-  acv          Float
-  winRate      Float    // fraction 0..1
-  meetingToSql Float    // fraction of meetings that become SQLs
-  leadToMeeting Float   // fraction of leads that book meetings
-  visitorToLead Float   // fraction of visitors that become leads
-  marketSize   Float?   // addressable market (visitors/period)
-  stages       String   @default("{}") // JSON: {deals, sqls, meetings, leads, visitors}
-  verdict      String   @default("feasible") // feasible | fiction
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  acv           Float
+  winRate       Float // fraction 0..1
+  meetingToSql  Float // fraction of meetings that become SQLs
+  leadToMeeting Float // fraction of leads that book meetings
+  visitorToLead Float // fraction of visitors that become leads
+  marketSize    Float? // addressable market (visitors/period)
+  stages        String   @default("{}") // JSON: {deals, sqls, meetings, leads, visitors}
+  verdict       String   @default("feasible") // feasible | fiction
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@index([projectId])
 }
 
 // A funnel lead (PRD 6.11 FR-11.2) with CTA click event log (FR-11.3).
 model Lead {
-  id        String   @id @default(cuid())
-  projectId String
-  email     String
-  name      String?
-  source    String   @default("form") // bulk | api | form | scorecard
-  status    String   @default("new") // new | reached | booked | won | lost
+  id             String   @id @default(cuid())
+  projectId      String
+  email          String
+  name           String?
+  source         String   @default("form") // bulk | api | form | scorecard
+  status         String   @default("new") // new | reached | booked | won | lost
   scorecardRunId String? // lead generated by a Rung-0 run
-  ctaEvents String   @default("[]") // JSON: [{type, at, meta}]
-  createdAt DateTime @default(now())
+  ctaEvents      String   @default("[]") // JSON: [{type, at, meta}]
+  createdAt      DateTime @default(now())
 
   @@index([projectId])
   @@index([projectId, status])
@@ -652,15 +745,15 @@ model Lead {
 // Stripe Checkout upgrade ledger (FR-11.4). Option A from docs/analysis/wave-5.md:
 // links come from env-configured Checkout URLs; clicks + webhook flip status.
 model Upgrade {
-  id         String   @id @default(cuid())
-  projectId  String
-  leadId     String?
-  tier       String   // full | monitoring
-  status     String   @default("created") // created | clicked | completed | abandoned
-  checkoutUrl String?
+  id              String    @id @default(cuid())
+  projectId       String
+  leadId          String?
+  tier            String // full | monitoring
+  status          String    @default("created") // created | clicked | completed | abandoned
+  checkoutUrl     String?
   stripeSessionId String?
-  createdAt  DateTime @default(now())
-  completedAt DateTime?
+  createdAt       DateTime  @default(now())
+  completedAt     DateTime?
 
   @@index([projectId])
   @@index([projectId, status])
@@ -709,29 +802,29 @@ model Persona {
 // calls to AI surfaces / licensed SERP data only — never a browser driven as a
 // fake human, and never traffic/clicks/impressions on a live surface.
 model Journey {
-  id          String   @id @default(cuid())
-  projectId   String
-  personaId   String
-  campaignId  String?
-  label       String
-  objective   String // copied from persona.researchObjective at plan time
-  surface     String   @default("mock") // mock | claude | perplexity
-  geo         String   @default("US")
-  maxDepth    Int      @default(4)
-  maxBranches Int      @default(2)
-  planSource  String   @default("deterministic") // deterministic | llm
-  planModel   String?
-  status      String   @default("planned") // planned | running | completed | partial | failed
-  stepCount   Int      @default(0)
-  executedSteps Int    @default(0)
-  mentionedSteps Int   @default(0)
-  citedSteps   Int      @default(0)
-  costUsd      Float    @default(0)
-  note         String? // cost-governor stop reason, etc.
-  error        String?
-  plannedAt    DateTime @default(now())
-  startedAt    DateTime?
-  finishedAt   DateTime?
+  id             String    @id @default(cuid())
+  projectId      String
+  personaId      String
+  campaignId     String?
+  label          String
+  objective      String // copied from persona.researchObjective at plan time
+  surface        String    @default("mock") // mock | claude | perplexity
+  geo            String    @default("US")
+  maxDepth       Int       @default(4)
+  maxBranches    Int       @default(2)
+  planSource     String    @default("deterministic") // deterministic | llm
+  planModel      String?
+  status         String    @default("planned") // planned | running | completed | partial | failed
+  stepCount      Int       @default(0)
+  executedSteps  Int       @default(0)
+  mentionedSteps Int       @default(0)
+  citedSteps     Int       @default(0)
+  costUsd        Float     @default(0)
+  note           String? // cost-governor stop reason, etc.
+  error          String?
+  plannedAt      DateTime  @default(now())
+  startedAt      DateTime?
+  finishedAt     DateTime?
 
   persona  Persona          @relation(fields: [personaId], references: [id], onDelete: Cascade)
   campaign JourneyCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
@@ -746,30 +839,30 @@ model Journey {
 // One node in a journey tree. parentId = null is the root query; children are
 // the follow-ups a persona would realistically ask next.
 model JourneyStep {
-  id        String   @id @default(cuid())
+  id        String  @id @default(cuid())
   journeyId String
   parentId  String?
-  depth     Int      @default(0)
-  ordinal   Int      @default(0) // order among siblings
-  kind      String   @default("query") // query | refinement | branch | comparison | objection
-  awareness String   @default("problem-aware")
+  depth     Int     @default(0)
+  ordinal   Int     @default(0) // order among siblings
+  kind      String  @default("query") // query | refinement | branch | comparison | objection
+  awareness String  @default("problem-aware")
   query     String
   rationale String // why this persona asks this next
-  status    String   @default("pending") // pending | done | failed | skipped
+  status    String  @default("pending") // pending | done | failed | skipped
 
   // execution result (null until executed)
-  answerText     String?
-  citations      String  @default("[]") // JSON string[]
-  mentioned      Boolean @default(false)
-  cited          Boolean @default(false)
-  citedUrl       String?
-  position       Int?
-  competitorsSeen String @default("[]") // JSON string[]
-  costUsd        Float   @default(0)
-  latencyMs      Int?
-  model          String?
-  executedAt     DateTime?
-  createdAt      DateTime @default(now())
+  answerText      String?
+  citations       String    @default("[]") // JSON string[]
+  mentioned       Boolean   @default(false)
+  cited           Boolean   @default(false)
+  citedUrl        String?
+  position        Int?
+  competitorsSeen String    @default("[]") // JSON string[]
+  costUsd         Float     @default(0)
+  latencyMs       Int?
+  model           String?
+  executedAt      DateTime?
+  createdAt       DateTime  @default(now())
 
   journey  Journey       @relation(fields: [journeyId], references: [id], onDelete: Cascade)
   parent   JourneyStep?  @relation("JourneyStepTree", fields: [parentId], references: [id], onDelete: Cascade)
@@ -784,25 +877,25 @@ model JourneyStep {
 // USD budget. Execution stops the moment spentUsd >= budgetUsd. This is the
 // single knob that bounds a "50-100 agents -> thousands of journeys" run.
 model JourneyCampaign {
-  id         String   @id @default(cuid())
-  projectId  String
-  name       String
-  surface    String   @default("mock")
-  geo        String    @default("US")
-  planSource String   @default("deterministic") // deterministic | llm
-  journeyTarget Int    @default(10) // how many journeys to plan
-  maxDepth   Int      @default(4)
-  maxBranches Int     @default(2)
-  personaRoles String @default("[]") // JSON string[] filter; empty = any active persona
-  budgetUsd  Float    @default(5.0)
-  spentUsd   Float    @default(0)
-  status     String   @default("planned") // planned | running | completed | partial | failed
-  journeysPlanned  Int @default(0)
-  journeysExecuted Int @default(0)
-  note       String?
-  createdAt  DateTime @default(now())
-  startedAt  DateTime?
-  finishedAt DateTime?
+  id               String    @id @default(cuid())
+  projectId        String
+  name             String
+  surface          String    @default("mock")
+  geo              String    @default("US")
+  planSource       String    @default("deterministic") // deterministic | llm
+  journeyTarget    Int       @default(10) // how many journeys to plan
+  maxDepth         Int       @default(4)
+  maxBranches      Int       @default(2)
+  personaRoles     String    @default("[]") // JSON string[] filter; empty = any active persona
+  budgetUsd        Float     @default(5.0)
+  spentUsd         Float     @default(0)
+  status           String    @default("planned") // planned | running | completed | partial | failed
+  journeysPlanned  Int       @default(0)
+  journeysExecuted Int       @default(0)
+  note             String?
+  createdAt        DateTime  @default(now())
+  startedAt        DateTime?
+  finishedAt       DateTime?
 
   journeys Journey[]
 
@@ -815,22 +908,22 @@ model JourneyCampaign {
 // emits "add link A -> B" recommendations from topical overlap + inbound
 // deficit. Client-site analysis only — no third-party crawling.
 model LinkGraph {
-  id            String   @id @default(cuid())
-  projectId     String
-  rootUrl       String
-  maxPages      Int      @default(50)
-  maxDepth      Int      @default(3)
-  source        String   @default("http") // http | fixture
-  status        String   @default("crawling") // crawling | analyzing | complete | failed
-  pagesCrawled  Int      @default(0)
-  edgeCount     Int      @default(0)
-  orphanCount   Int      @default(0)
-  recommendationCount Int @default(0)
-  recSource     String   @default("deterministic") // deterministic | llm
-  recModel      String?
-  error         String?
-  createdAt     DateTime @default(now())
-  finishedAt    DateTime?
+  id                  String    @id @default(cuid())
+  projectId           String
+  rootUrl             String
+  maxPages            Int       @default(50)
+  maxDepth            Int       @default(3)
+  source              String    @default("http") // http | fixture
+  status              String    @default("crawling") // crawling | analyzing | complete | failed
+  pagesCrawled        Int       @default(0)
+  edgeCount           Int       @default(0)
+  orphanCount         Int       @default(0)
+  recommendationCount Int       @default(0)
+  recSource           String    @default("deterministic") // deterministic | llm
+  recModel            String?
+  error               String?
+  createdAt           DateTime  @default(now())
+  finishedAt          DateTime?
 
   nodes           LinkNode[]
   edges           LinkEdge[]
@@ -841,19 +934,19 @@ model LinkGraph {
 }
 
 model LinkNode {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   graphId       String
   url           String
   path          String
   title         String?
   h1            String?
-  wordCount     Int      @default(0)
-  topicKeywords String   @default("[]") // JSON string[] — top TF terms
-  depth         Int      @default(0) // clicks from root
-  httpStatus    Int      @default(0)
-  inboundCount  Int      @default(0)
-  outboundCount Int      @default(0)
-  isOrphan      Boolean  @default(false)
+  wordCount     Int       @default(0)
+  topicKeywords String    @default("[]") // JSON string[] — top TF terms
+  depth         Int       @default(0) // clicks from root
+  httpStatus    Int       @default(0)
+  inboundCount  Int       @default(0)
+  outboundCount Int       @default(0)
+  isOrphan      Boolean   @default(false)
   fetchedAt     DateTime?
 
   graph LinkGraph @relation(fields: [graphId], references: [id], onDelete: Cascade)
@@ -864,11 +957,11 @@ model LinkNode {
 }
 
 model LinkEdge {
-  id         String @id @default(cuid())
+  id         String  @id @default(cuid())
   graphId    String
   fromPath   String
   toPath     String
-  anchorText String @default("")
+  anchorText String  @default("")
   rel        String?
   context    String? // ~120 chars around the link
 
@@ -879,15 +972,15 @@ model LinkEdge {
 }
 
 model LinkRecommendation {
-  id              String  @id @default(cuid())
+  id              String @id @default(cuid())
   graphId         String
   fromPath        String
   toPath          String
   suggestedAnchor String
   reason          String
-  topicOverlap    Float   @default(0)
-  priority        Int     @default(0)
-  status          String  @default("open") // open | applied | dismissed
+  topicOverlap    Float  @default(0)
+  priority        Int    @default(0)
+  status          String @default("open") // open | applied | dismissed
 
   graph LinkGraph @relation(fields: [graphId], references: [id], onDelete: Cascade)
 
@@ -901,17 +994,17 @@ model LinkRecommendation {
 // what other modules already produced (gap-analysis, measurement, journeys,
 // link graph, technical/entity audits) — it proposes nothing new to measure.
 model CouncilSession {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   projectId    String
-  question     String   @default("Which interventions will most improve our AI visibility?")
-  rounds       Int      @default(1)
-  agentRoles   String   @default("[]") // JSON string[] of role slugs that debated
-  source       String   @default("deterministic") // deterministic | llm
+  question     String    @default("Which interventions will most improve our AI visibility?")
+  rounds       Int       @default(1)
+  agentRoles   String    @default("[]") // JSON string[] of role slugs that debated
+  source       String    @default("deterministic") // deterministic | llm
   model        String?
-  status       String   @default("complete") // running | complete | failed
-  evidenceRefs String   @default("{}") // JSON: which artefacts were in scope + their ids
+  status       String    @default("complete") // running | complete | failed
+  evidenceRefs String    @default("{}") // JSON: which artefacts were in scope + their ids
   error        String?
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
   finishedAt   DateTime?
 
   contributions CouncilContribution[]
@@ -923,13 +1016,13 @@ model CouncilSession {
 
 // One agent's statement in one round: its stance on each candidate intervention.
 model CouncilContribution {
-  id         String   @id @default(cuid())
-  sessionId  String
-  round      Int      @default(1)
-  agentRole  String   // technical | content | authority | measurement | narrative | skeptic | synthesizer
-  summary    String   // the agent's argument this round
-  positions  String   @default("[]") // JSON: [{interventionKey, vote: for|against|conditional, weight, rationale}]
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid())
+  sessionId String
+  round     Int      @default(1)
+  agentRole String // technical | content | authority | measurement | narrative | skeptic | synthesizer
+  summary   String // the agent's argument this round
+  positions String   @default("[]") // JSON: [{interventionKey, vote: for|against|conditional, weight, rationale}]
+  createdAt DateTime @default(now())
 
   session CouncilSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
@@ -939,17 +1032,17 @@ model CouncilContribution {
 
 // The synthesized outcome: candidate interventions ranked by the debate.
 model CouncilRanking {
-  id              String @id @default(cuid())
+  id              String  @id @default(cuid())
   sessionId       String
   rank            Int
   interventionKey String
   title           String
   rationale       String
-  consensus       Float  @default(0) // 0..1 agreement across agents
-  expectedImpact  Int    @default(0) // 0..100 heuristic
-  effort          String @default("medium") // low | medium | high
-  confidence      String @default("medium") // low | medium | high
-  sourceRefs      String @default("[]") // JSON string[] of artefact refs backing it
+  consensus       Float   @default(0) // 0..1 agreement across agents
+  expectedImpact  Int     @default(0) // 0..100 heuristic
+  effort          String  @default("medium") // low | medium | high
+  confidence      String  @default("medium") // low | medium | high
+  sourceRefs      String  @default("[]") // JSON string[] of artefact refs backing it
   dissent         String? // recorded minority objection, if any
 
   session CouncilSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -994,15 +1087,15 @@ model SerpQuery {
 }
 
 model SerpSnapshot {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   trackerId  String
   provider   String
-  status     String   @default("running") // running | complete | partial | failed
-  queriesRun Int      @default(0)
-  costUsd    Float    @default(0)
+  status     String    @default("running") // running | complete | partial | failed
+  queriesRun Int       @default(0)
+  costUsd    Float     @default(0)
   note       String?
   error      String?
-  capturedAt DateTime @default(now())
+  capturedAt DateTime  @default(now())
   finishedAt DateTime?
 
   tracker SerpTracker  @relation(fields: [trackerId], references: [id], onDelete: Cascade)
@@ -1013,21 +1106,21 @@ model SerpSnapshot {
 }
 
 model SerpResult {
-  id          String @id @default(cuid())
-  snapshotId  String
-  queryId     String
-  keyword     String
-  subjectRank Int? // client's best organic rank_absolute, null if not present
-  subjectUrl  String?
-  aiOverviewPresent          Boolean @default(false)
-  aiOverviewMentionsSubject  Boolean @default(false)
-  featuredSnippetDomain      String?
-  topDomains       String @default("[]") // JSON: [{domain, rank}] first page organic
-  competitorsSeen  String @default("[]") // JSON string[] — project competitors in the SERP
-  sourceCount      Int    @default(0) // distinct domains cited across features
-  rawItemCount     Int    @default(0)
-  costUsd          Float  @default(0)
-  capturedAt       DateTime @default(now())
+  id                        String   @id @default(cuid())
+  snapshotId                String
+  queryId                   String
+  keyword                   String
+  subjectRank               Int? // client's best organic rank_absolute, null if not present
+  subjectUrl                String?
+  aiOverviewPresent         Boolean  @default(false)
+  aiOverviewMentionsSubject Boolean  @default(false)
+  featuredSnippetDomain     String?
+  topDomains                String   @default("[]") // JSON: [{domain, rank}] first page organic
+  competitorsSeen           String   @default("[]") // JSON string[] — project competitors in the SERP
+  sourceCount               Int      @default(0) // distinct domains cited across features
+  rawItemCount              Int      @default(0)
+  costUsd                   Float    @default(0)
+  capturedAt                DateTime @default(now())
 
   snapshot SerpSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
   query    SerpQuery    @relation(fields: [queryId], references: [id], onDelete: Cascade)
@@ -1041,20 +1134,20 @@ model SerpResult {
 // promotes chosen ones into the mention-tracking outreach ledger. Discovery +
 // drafting only — no automated outreach, posting, or account creation.
 model AuthorityScan {
-  id             String   @id @default(cuid())
-  projectId      String
-  category       String
-  method         String   @default("combined") // serp | llm | citations | combined
-  status         String   @default("running") // running | complete | partial | failed
-  listicleQueries String  @default("[]") // JSON string[] used for SERP discovery
-  candidateCount Int      @default(0)
-  promotedCount  Int      @default(0)
-  costUsd        Float    @default(0)
-  model          String?
-  note           String?
-  error          String?
-  createdAt      DateTime @default(now())
-  finishedAt     DateTime?
+  id              String    @id @default(cuid())
+  projectId       String
+  category        String
+  method          String    @default("combined") // serp | llm | citations | combined
+  status          String    @default("running") // running | complete | partial | failed
+  listicleQueries String    @default("[]") // JSON string[] used for SERP discovery
+  candidateCount  Int       @default(0)
+  promotedCount   Int       @default(0)
+  costUsd         Float     @default(0)
+  model           String?
+  note            String?
+  error           String?
+  createdAt       DateTime  @default(now())
+  finishedAt      DateTime?
 
   candidates AuthorityCandidate[]
 
@@ -1063,20 +1156,20 @@ model AuthorityScan {
 }
 
 model AuthorityCandidate {
-  id             String  @id @default(cuid())
-  scanId         String
-  projectId      String
-  domain         String
-  url            String
-  title          String
-  type           String  @default("publication") // listicle | community | podcast | publication | directory | newsletter
-  discoveredVia  String  // serp:<keyword> | llm | citation:journey | citation:measurement
-  rank           Int? // SERP rank when discovered via SERP
-  relevance      Float   @default(0) // 0..1 heuristic
-  rationale      String
-  status         String  @default("new") // new | promoted | dismissed
+  id               String   @id @default(cuid())
+  scanId           String
+  projectId        String
+  domain           String
+  url              String
+  title            String
+  type             String   @default("publication") // listicle | community | podcast | publication | directory | newsletter
+  discoveredVia    String // serp:<keyword> | llm | citation:journey | citation:measurement
+  rank             Int? // SERP rank when discovered via SERP
+  relevance        Float    @default(0) // 0..1 heuristic
+  rationale        String
+  status           String   @default("new") // new | promoted | dismissed
   promotedTargetId String? // MentionTarget id once promoted
-  createdAt      DateTime @default(now())
+  createdAt        DateTime @default(now())
 
   scan AuthorityScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
 

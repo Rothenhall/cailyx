@@ -11,7 +11,19 @@
  * @module technical-audit.controller
  */
 
-import { Controller, Post, Get, Put, Param, Body, HttpCode, HttpStatus, NotFoundException } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Put,
+  Param,
+  Query,
+  Body,
+  HttpCode,
+  HttpStatus,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { TechnicalAuditService } from './technical-audit.service';
@@ -49,7 +61,40 @@ export class TechnicalAuditController {
     @Param('projectId') projectId: string,
     @Body() body: RunAuditDto,
   ) {
-    return this.auditService.runAudit(body.targetUrl, projectId, 'manual');
+    const targetUrl = await this.resolveTarget(projectId, body.targetUrl);
+    return this.auditService.runAudit(targetUrl, projectId, 'manual');
+  }
+
+  /**
+   * The audited URL is a property of the project, not something an operator
+   * should retype. Resolution order: an explicit body value, then the
+   * project's own `domain`.
+   *
+   * A caller-supplied URL is already validated as http(s) by the DTO; the
+   * project's domain is normalised here because it is stored bare
+   * ("example.com") and may or may not carry a scheme.
+   */
+  private async resolveTarget(projectId: string, supplied?: string): Promise<string> {
+    if (supplied) return supplied;
+
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { domain: true },
+    });
+    if (!project?.domain) {
+      throw new BadRequestException(
+        `Project ${projectId} has no domain set, so there is nothing to audit. ` +
+          'Set the project domain, or pass an explicit targetUrl.',
+      );
+    }
+
+    const raw = project.domain.trim();
+    const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    try {
+      return new URL(withScheme).toString();
+    } catch {
+      throw new BadRequestException(`Project domain "${raw}" is not a usable URL.`);
+    }
   }
 
   /**
@@ -69,6 +114,10 @@ export class TechnicalAuditController {
         targetUrl: true,
         triggeredBy: true,
         createdAt: true,
+        score: true,
+        pagesCrawled: true,
+        previousAuditId: true,
+        narrative: true,
         findings: {
           select: { id: true, type: true, status: true, severity: true },
         },
@@ -93,12 +142,48 @@ export class TechnicalAuditController {
       include: {
         findings: true,
         pageMetadata: true,
+        // Worst pages first: a 150-row inventory is read top-down, and the
+        // operator wants the pages that need work, not alphabetical order.
+        pages: { orderBy: { score: 'asc' } },
       },
     });
     if (!audit) {
       throw new NotFoundException(`Audit ${auditId} not found for project ${projectId}`);
     }
     return audit;
+  }
+
+  /**
+   * Previous-vs-current comparison for one run: every metric that moved, plus
+   * which pages were added, removed, improved or regressed.
+   */
+  @Get(':auditId/comparison')
+  @ApiOperation({ summary: 'Compare an audit run against the one before it' })
+  @ApiResponse({ status: 200, description: 'Deltas and page-level churn' })
+  @ApiResponse({ status: 404, description: 'Audit not found' })
+  async getComparison(
+    @Param('projectId') projectId: string,
+    @Param('auditId') auditId: string,
+  ) {
+    const comparison = await this.auditService.getComparison(projectId, auditId);
+    if (!comparison) {
+      throw new NotFoundException(`Audit ${auditId} not found for project ${projectId}`);
+    }
+    return comparison;
+  }
+
+  /**
+   * Score history, oldest first — the series behind the trend line.
+   */
+  @Get('trend/history')
+  @ApiOperation({ summary: 'Audit score history for a project' })
+  @ApiResponse({ status: 200, description: 'Chronological score series' })
+  async getTrend(
+    @Param('projectId') projectId: string,
+    @Query('limit') limit?: string,
+  ) {
+    const n = Math.min(Math.max(Number(limit) || 30, 1), 200);
+    return { history: await this.auditService.getTrend(projectId, n) };
   }
 
   /**
@@ -114,22 +199,12 @@ export class TechnicalAuditController {
     @Param('projectId') projectId: string,
     @Body() body: SetScheduleDto,
   ) {
-    // Get the target URL from the most recent audit for this project
-    const latestAudit = await this.prisma.technicalAudit.findFirst({
-      where: { projectId },
-      orderBy: { createdAt: 'desc' },
-      select: { targetUrl: true },
-    });
-
-    const targetUrl = latestAudit?.targetUrl || '';
-    if (!targetUrl && body.cadence !== 'manual-only') {
-      return {
-        cadence: body.cadence,
-        nextRunAt: null,
-        active: false,
-        error: 'No target URL found for this project. Run a manual audit first.',
-      };
-    }
+    // The target comes from the project itself. It used to be read from the
+    // most recent audit, which made scheduling impossible until someone had
+    // already run one by hand — and returned that failure as a 200 with an
+    // `error` string, which callers routinely missed.
+    const targetUrl =
+      body.cadence === 'manual-only' ? '' : await this.resolveTarget(projectId);
 
     return this.scheduling.setSchedule(projectId, body.cadence, targetUrl);
   }

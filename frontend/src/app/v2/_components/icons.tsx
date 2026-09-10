@@ -1,18 +1,31 @@
 /**
- * icons — /v2. One solid-fill icon set on a 16px grid.
+ * icons — /v2. Two sets, each doing the job it is good at.
  *
- * Two reasons this exists. The agent roster was drawing Unicode codepoints
- * (⌁ ◎ ⍜ ⌸ ♺) as text, so its "icons" were whatever fallback face the OS
- * happened to pick — inconsistent weight, inconsistent metrics, and a real
- * tofu risk for the rarer glyphs. And the utility icons were 1.5px strokes,
- * which go thin and grey against warm paper at 14px.
+ * The twelve AGENT icons come from Animate UI: animated Lucide, so a tile
+ * plays its own motion on hover. They replace a bespoke solid set, which in
+ * turn had replaced raw Unicode codepoints rendered as text.
  *
- * Filled masses hold their weight at small sizes. Counters are knocked out
- * with `fill-rule: evenodd` rather than drawn as hairlines, so nothing depends
- * on a stroke width surviving a scale-down. Everything inherits `currentColor`.
+ * The UTILITY icons below stay hand-drawn and solid on a 16px grid. They sit
+ * at 12–14px inside dense chrome, where a 24-viewBox stroke thins to a grey
+ * hairline on warm paper — the exact problem the solid set was built to fix.
+ * Counters are knocked out with `fill-rule: evenodd`, so nothing depends on a
+ * stroke width surviving a scale-down. Both sets inherit `currentColor`.
  *
  * @module app/v2/_components/icons
  */
+
+import { Search } from '@/components/animate-ui/icons/search';
+import { RadioTower } from '@/components/animate-ui/icons/radio-tower';
+import { Lightbulb } from '@/components/animate-ui/icons/lightbulb';
+import { Star } from '@/components/animate-ui/icons/star';
+import { Route } from '@/components/animate-ui/icons/route';
+import { UsersRound } from '@/components/animate-ui/icons/users-round';
+import { Gavel } from '@/components/animate-ui/icons/gavel';
+import { Sparkles } from '@/components/animate-ui/icons/sparkles';
+import { List } from '@/components/animate-ui/icons/list';
+import { BellRing } from '@/components/animate-ui/icons/bell-ring';
+import { MessageCircleQuestion } from '@/components/animate-ui/icons/message-circle-question';
+import { ChartBar } from '@/components/animate-ui/icons/chart-bar';
 
 export type IconProps = { className?: string };
 
@@ -23,137 +36,58 @@ const base = {
   'aria-hidden': true,
 } as const;
 
-/* ── agent roster ─────────────────────────────────────────────────────── */
+/* ── agent roster · Animate UI ────────────────────────────────────────────
+   The twelve agents now use Animate UI's animated Lucide icons, so each tile
+   plays its own motion on hover. Two of them read better than the shapes they
+   replace: `gavel` is a truer Council mark than a discussion bubble, and
+   `message-circle-question` is literally the Attribution question.
 
-/** SEO — a magnifier: on-page inspection */
-export function SeoIcon({ className }: IconProps) {
-  return (
-    <svg {...base} className={className}>
-      <path fillRule="evenodd" d="M7 1.3a5.7 5.7 0 1 0 3.35 10.31l3.02 3.02a1 1 0 0 0 1.42-1.42l-3.02-3.02A5.7 5.7 0 0 0 7 1.3Zm0 2a3.7 3.7 0 1 1 0 7.4 3.7 3.7 0 0 1 0-7.4Z" />
-    </svg>
-  );
-}
-
-/** GEO — concentric rings: visibility across answer surfaces */
-export function GeoIcon({ className }: IconProps) {
-  return (
-    <svg {...base} className={className}>
-      <path fillRule="evenodd" d="M8 .9a7.1 7.1 0 1 0 0 14.2A7.1 7.1 0 0 0 8 .9Zm0 2a5.1 5.1 0 1 1 0 10.2A5.1 5.1 0 0 1 8 2.9Z" />
-      <path fillRule="evenodd" d="M8 4.4a3.6 3.6 0 1 0 0 7.2 3.6 3.6 0 0 0 0-7.2Zm0 1.9a1.7 1.7 0 1 1 0 3.4 1.7 1.7 0 0 1 0-3.4Z" />
-    </svg>
-  );
-}
-
-/** Articles — a document with ruled lines knocked out */
-export function ArticlesIcon({ className }: IconProps) {
-  return (
-    <svg {...base} className={className}>
-      <path
-        fillRule="evenodd"
-        d="M4.6 1h4.6l4 4v8.6A1.4 1.4 0 0 1 11.8 15H4.6a1.4 1.4 0 0 1-1.4-1.4V2.4A1.4 1.4 0 0 1 4.6 1Zm.8 6.6h5.2v1.3H5.4V7.6Zm0 3.2h3.6v1.3H5.4v-1.3Z"
-      />
-      <path d="M9.9 1.3 12.9 4.3h-2.4a.6.6 0 0 1-.6-.6V1.3Z" />
-    </svg>
-  );
-}
-
-/** Authority — a star: earned placement */
-export function AuthorityIcon({ className }: IconProps) {
-  return (
-    <svg {...base} className={className}>
-      <path d="M8 1.4 9.71 5.65 14.28 5.96 10.76 8.9 11.88 13.34 8 10.9 4.12 13.34 5.24 8.9 1.72 5.96 6.29 5.65Z" />
-    </svg>
-  );
-}
-
-/** Journey — a branching path */
-export function JourneyIcon({ className }: IconProps) {
-  return (
-    <svg {...base} className={className}>
-      <rect x="7.2" y="8.4" width="1.6" height="6.2" rx="0.8" />
-      <rect x="4.2" y="5.2" width="1.6" height="6" rx="0.8" transform="rotate(-45 5 8.2)" />
-      <rect x="10.2" y="5.2" width="1.6" height="6" rx="0.8" transform="rotate(45 11 8.2)" />
-      <circle cx="2.9" cy="3.4" r="2" />
-      <circle cx="13.1" cy="3.4" r="2" />
-    </svg>
-  );
-}
-
-/** Persona — a figure */
-export function PersonaIcon({ className }: IconProps) {
-  return (
-    <svg {...base} className={className}>
-      <circle cx="8" cy="4.7" r="3" />
-      <path d="M8 9.1c3.1 0 5.5 1.9 5.5 5.1a.8.8 0 0 1-.8.8H3.3a.8.8 0 0 1-.8-.8c0-3.2 2.4-5.1 5.5-5.1Z" />
-    </svg>
-  );
-}
-
-/** Council — a deliberation bubble. Scales were the obvious metaphor but the
- *  pans collapse into the post at 16px; the council module is role agents
- *  debating and a synthesiser ranking the result, so discussion reads truer
- *  and survives the size. */
-export function CouncilIcon({ className }: IconProps) {
-  return (
-    <svg {...base} className={className}>
-      <path
-        fillRule="evenodd"
-        d="M3 1.6h10a2 2 0 0 1 2 2v6.2a2 2 0 0 1-2 2H8.6l-3.5 2.9a.6.6 0 0 1-1-.46V11.8H3a2 2 0 0 1-2-2V3.6a2 2 0 0 1 2-2Zm2 4.05a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Zm3 0a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Zm3 0a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Z"
-      />
-    </svg>
-  );
-}
-
-/** Mentions — a four-point spark */
-export function MentionsIcon({ className }: IconProps) {
-  return (
-    <svg {...base} className={className}>
-      <path d="M8 .9c.62 4.1 2.1 5.58 6.2 6.2-4.1.62-5.58 2.1-6.2 6.2-.62-4.1-2.1-5.58-6.2-6.2C5.9 6.48 7.38 5 8 .9Z" />
-      <circle cx="13.1" cy="12.8" r="1.7" />
-    </svg>
-  );
-}
-
-/** SERP — stacked result rows, the top one taking the answer slot */
-export function SerpIcon({ className }: IconProps) {
-  return (
-    <svg {...base} className={className}>
-      <rect x="1.6" y="2.4" width="12.8" height="3.4" rx="1.2" />
-      <rect x="1.6" y="7.4" width="9.2" height="1.9" rx="0.95" />
-      <rect x="1.6" y="10.8" width="11.6" height="1.9" rx="0.95" />
-    </svg>
-  );
-}
-
-/** Monitoring — a bell: scheduled re-runs and regression alerts */
-export function MonitoringIcon({ className }: IconProps) {
-  return (
-    <svg {...base} className={className}>
-      <path d="M8 1.1a1.15 1.15 0 0 1 1.15 1.15v.38a4.5 4.5 0 0 1 3.35 4.35v2.44l1.13 1.65a.8.8 0 0 1-.66 1.25H3.03a.8.8 0 0 1-.66-1.25L3.5 9.42V6.98a4.5 4.5 0 0 1 3.35-4.35v-.38A1.15 1.15 0 0 1 8 1.1Z" />
-      <path d="M6.3 13.2h3.4a1.7 1.7 0 0 1-3.4 0Z" />
-    </svg>
-  );
-}
-
-/** every agent key the backend can return, plus a neutral fallback */
-export const AGENT_ICON: Record<string, (p: IconProps) => React.ReactElement> = {
-  seo: SeoIcon,
-  geo: GeoIcon,
-  content: ArticlesIcon,
-  authority: AuthorityIcon,
-  journeys: JourneyIcon,
-  personas: PersonaIcon,
-  council: CouncilIcon,
-  mentions: MentionsIcon,
-  serp: SerpIcon,
-  monitoring: MonitoringIcon,
+   These arrive as 24-viewBox strokes at width 2, where the set above was
+   16-viewBox solid fill. At tile size that thins out badly on warm paper, so
+   `strokeWidth` is lifted to 2.25 — the one adjustment the swap needs. */
+const AGENT_ANIM: Record<string, React.ComponentType<AnimatedIconProps>> = {
+  seo: Search,
+  geo: RadioTower,
+  articles: Lightbulb,
+  content: Lightbulb, // 'content' is the category; the agent key is 'articles'
+  authority: Star,
+  journeys: Route,
+  personas: UsersRound,
+  council: Gavel,
+  mentions: Sparkles,
+  serp: List,
+  monitoring: BellRing,
+  attribution: MessageCircleQuestion,
+  rivals: ChartBar,
 };
 
-export function AgentIcon({ agentKey, className }: { agentKey: string; className?: string }) {
-  const Ico = AGENT_ICON[agentKey] ?? DotIcon;
-  return <Ico className={className} />;
+type AnimatedIconProps = {
+  className?: string;
+  size?: number;
+  strokeWidth?: number;
+  animateOnHover?: boolean;
+};
+
+export function AgentIcon({
+  agentKey,
+  className,
+  size = 18,
+  animateOnHover = false,
+}: {
+  agentKey: string;
+  className?: string;
+  size?: number;
+  /** play the icon's own animation while the pointer is over its container */
+  animateOnHover?: boolean;
+}) {
+  const Ico = AGENT_ANIM[agentKey];
+  if (!Ico) return <DotIcon className={className} />;
+  return (
+    <Ico className={className} size={size} strokeWidth={2.25} animateOnHover={animateOnHover} />
+  );
 }
 
+/** shown for an agent key the map does not know — deliberately mute */
 function DotIcon({ className }: IconProps) {
   return (
     <svg {...base} className={className}>

@@ -113,6 +113,175 @@ export class ProjectsService {
     });
   }
 
+
+  /**
+   * The competitor benchmark list plus candidates discovered from data already
+   * on file.
+   *
+   * Discovery is deterministic: `SerpResult.topDomains` records the first-page
+   * organic domains for every keyword this project tracks, so the domains that
+   * keep out-ranking it *are* the competitive set. No NLP, no extra fetching,
+   * no spend. The project's own domain and anything already tracked are
+   * excluded, and candidates are ranked by how often they appear and how high.
+   */
+  async listCompetitors(id: string): Promise<{
+    tracked: Array<{ name: string; domain: string | null; source?: string }>;
+    discovered: Array<{ domain: string; appearances: number; bestRank: number | null; keyword: string | null }>;
+    readiness: { rivals: number; runs: number; observations: number };
+    you: { total: number; mentioned: number; cited: number };
+    rivals: Array<{ name: string; appearances: number; share: number; beatYou: number }>;
+    losing: Array<{ prompt: string; surface: string; rivals: string[] }>;
+  }> {
+    const project = await this.prisma.project.findUnique({
+      where: { id },
+      select: { domain: true, competitors: true },
+    });
+    if (!project) throw new NotFoundException('Project not found: ' + id);
+
+    const tracked = this.parseCompetitorList(project.competitors);
+    const own = project.domain.replace(/^www\./i, '').toLowerCase();
+    const taken = new Set(
+      tracked.map((c) => (c.domain ?? '').replace(/^www\./i, '').toLowerCase()).filter(Boolean),
+    );
+    taken.add(own);
+
+    const results = await this.prisma.serpResult.findMany({
+      where: { snapshot: { tracker: { projectId: id } } },
+      select: { topDomains: true, keyword: true },
+      take: 500,
+      orderBy: { id: 'desc' },
+    });
+
+    const agg = new Map<string, { appearances: number; bestRank: number | null; keyword: string | null }>();
+    for (const r of results) {
+      let rows: Array<{ domain?: unknown; rank?: unknown }>;
+      try {
+        const parsed: unknown = JSON.parse(r.topDomains);
+        rows = Array.isArray(parsed) ? (parsed as Array<{ domain?: unknown; rank?: unknown }>) : [];
+      } catch {
+        continue;
+      }
+      for (const row of rows) {
+        if (typeof row?.domain !== 'string') continue;
+        const d = row.domain.replace(/^www\./i, '').toLowerCase();
+        if (!d || taken.has(d)) continue;
+        const rank = typeof row.rank === 'number' ? row.rank : null;
+        const cur = agg.get(d);
+        if (!cur) {
+          agg.set(d, { appearances: 1, bestRank: rank, keyword: r.keyword });
+        } else {
+          cur.appearances += 1;
+          if (rank !== null && (cur.bestRank === null || rank < cur.bestRank)) {
+            cur.bestRank = rank;
+            cur.keyword = r.keyword;
+          }
+        }
+      }
+    }
+
+    const discovered = [...agg.entries()]
+      .map(([domain, v]) => ({ domain, ...v }))
+      .sort((a, b) => b.appearances - a.appearances || (a.bestRank ?? 999) - (b.bestRank ?? 999))
+      .slice(0, 20);
+
+    /* ── head-to-head ────────────────────────────────────────────────────
+       Every observation records whether the subject was mentioned and which
+       named rivals appeared in the same answer. That is enough to say which
+       prompts are being lost and to whom — the one competitive view the
+       console could not previously produce. */
+    const [runs, observations] = await Promise.all([
+      this.prisma.measurementRun.count({ where: { projectId: id } }),
+      this.prisma.observation.findMany({
+        where: { run: { projectId: id } },
+        select: {
+          prompt: true,
+          mentioned: true,
+          cited: true,
+          competitors: true,
+          run: { select: { surface: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 1000,
+      }),
+    ]);
+
+    const names = (raw: string): string[] => {
+      try {
+        const v: unknown = JSON.parse(raw);
+        return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const you = {
+      total: observations.length,
+      mentioned: observations.filter((o) => o.mentioned).length,
+      cited: observations.filter((o) => o.cited).length,
+    };
+
+    const rivalAgg = new Map<string, { appearances: number; beatYou: number }>();
+    const losing: Array<{ prompt: string; surface: string; rivals: string[] }> = [];
+
+    for (const o of observations) {
+      const seen = names(o.competitors);
+      for (const n of seen) {
+        const cur = rivalAgg.get(n) ?? { appearances: 0, beatYou: 0 };
+        cur.appearances += 1;
+        // "beat you" = they were named in an answer where you were not
+        if (!o.mentioned) cur.beatYou += 1;
+        rivalAgg.set(n, cur);
+      }
+      if (!o.mentioned && seen.length > 0 && losing.length < 40) {
+        losing.push({ prompt: o.prompt, surface: o.run.surface, rivals: seen });
+      }
+    }
+
+    const rivals = [...rivalAgg.entries()]
+      .map(([name, v]) => ({
+        name,
+        appearances: v.appearances,
+        share: observations.length ? v.appearances / observations.length : 0,
+        beatYou: v.beatYou,
+      }))
+      .sort((a, b) => b.beatYou - a.beatYou || b.appearances - a.appearances);
+
+    return {
+      tracked,
+      discovered,
+      readiness: { rivals: tracked.length, runs, observations: observations.length },
+      you,
+      rivals,
+      losing,
+    };
+  }
+
+  /** Parse the competitors column, tolerating the plain-string legacy shape. */
+  private parseCompetitorList(raw: string | null | undefined): Array<{ name: string; domain: string | null; source?: string }> {
+    if (!raw) return [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((c) => {
+          if (typeof c === 'string') return { name: c, domain: null };
+          if (c && typeof c === 'object') {
+            const o = c as { name?: unknown; domain?: unknown; source?: unknown };
+            if (typeof o.name !== 'string' || !o.name.trim()) return null;
+            return {
+              name: o.name.trim(),
+              domain: typeof o.domain === 'string' && o.domain.trim() ? o.domain.trim() : null,
+              ...(typeof o.source === 'string' ? { source: o.source } : {}),
+            };
+          }
+          return null;
+        })
+        .filter((c): c is { name: string; domain: string | null; source?: string } => c !== null);
+    } catch {
+      return [];
+    }
+  }
+
   /**
    * Transition the engagement lifecycle (scorecard → diagnostic → sprint → retainer).
    * Validates the transition is legal per PLAN Phase 0.

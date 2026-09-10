@@ -20,6 +20,16 @@ import { createUser, deleteUser, listUsers, resetUserPassword, updateUser } from
 import type { User } from '@/types/api';
 import type { Integration, IntegrationCategory, SafeUser } from '@/types/terminal';
 
+/**
+ * Integrations hidden from the console for now. The two Google surfaces are
+ * not part of the current audit story — the technical audit gets its
+ * performance data straight from the PageSpeed Insights API and its coverage
+ * data from the sitemap crawl, so neither connector feeds anything on screen.
+ * Hidden rather than deleted: the backend integration is untouched, so
+ * removing a key here brings the card straight back.
+ */
+export const HIDDEN_INTEGRATIONS = new Set(['google-analytics', 'google-search-console']);
+
 const CAT_LABEL: Partial<Record<IntegrationCategory, string>> = {
   analytics: 'Analytics · Google',
   'ai-surface': 'AI answer surfaces',
@@ -84,7 +94,7 @@ function IntegrationRow({ i }: { i: Integration }) {
       <p className="mt-1 text-body leading-snug text-faint">{i.detail}</p>
       {i.configHint && (
         <div className="mt-1.5 flex items-center gap-2">
-          <code className="rounded bg-bg-raised px-1.5 py-0.5 text-caption text-dim">{i.configHint}</code>
+          <code className="rounded-r1 bg-bg-raised px-1.5 py-0.5 text-caption text-dim">{i.configHint}</code>
           {!ok && i.connectUrl && (
             <a
               href={i.connectUrl}
@@ -103,7 +113,7 @@ function IntegrationRow({ i }: { i: Integration }) {
 
 function GateRow({ tone, title, right, detail }: { tone: 'warn' | 'danger'; title: string; right: string; detail: string }) {
   return (
-    <li className="rounded-r2 border border-border/60 bg-bg-inset/50 px-2.5 py-2">
+    <li className="rounded-r2 border border-border/60 bg-bg-inset/60 px-2.5 py-2">
       <div className="flex items-center gap-2">
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${tone === 'warn' ? 'bg-warn' : 'bg-danger'}`} />
         <span className="text-body font-medium text-dim">{title}</span>
@@ -180,7 +190,9 @@ export function SettingsPanel({
 
   if (!open) return null;
 
-  const configurable = integrations.filter((i) => i.category !== 'mode');
+  const configurable = integrations.filter(
+    (i) => i.category !== 'mode' && !HIDDEN_INTEGRATIONS.has(i.key),
+  );
   const connected = configurable.filter((i) => i.connected).length;
   const total = configurable.length;
   const blocked = configurable.filter((i) => !i.connected);
@@ -241,7 +253,7 @@ export function SettingsPanel({
           </span>
           <div className="min-w-0">
             <h2 className="text-ui font-semibold tracking-tight2 text-text">Workspace</h2>
-            <p className="text-caption text-faint">connections, setup gates &amp; team</p>
+            <p className="font-display text-caption text-faint">connections, setup gates &amp; team</p>
           </div>
 
           {/* segmented tabs */}
@@ -276,7 +288,7 @@ export function SettingsPanel({
           {tab === 'connections' ? (
             <>
               {/* summary */}
-              <div className="mb-4 rounded-r3 border border-border bg-bg-inset/50 p-3">
+              <div className="mb-4 rounded-r3 border border-border bg-bg-inset/60 p-3">
                 <div className="flex items-baseline justify-between gap-2">
                   <span className="text-body font-semibold text-dim">
                     {connected} of {total} connected
@@ -325,7 +337,7 @@ export function SettingsPanel({
               )}
 
               {/* setup gates — folded into connections */}
-              <div className="mt-5 rounded-r3 border border-warn/40 bg-warn/[0.06] p-3">
+              <div className="mt-5 rounded-r3 border border-warn/40 bg-warn/[0.08] p-3">
                 <div className="mb-2 flex items-center gap-1.5">
                   <BoltIcon className="h-3.5 w-3.5 text-warn" />
                   <span className="text-caption font-semibold uppercase tracking-eyebrow text-warn">Setup gates</span>
@@ -374,7 +386,7 @@ export function SettingsPanel({
                 </span>
                 <button
                   onClick={() => setShowCreate((s) => !s)}
-                  className="rounded-r2 border border-accent-dim bg-accent-dim/15 px-2.5 py-1 text-body font-medium text-accent transition-colors hover:bg-accent-dim/25"
+                  className="rounded-r2 border border-accent-dim bg-accent-dim/14 px-2.5 py-1 text-body font-medium text-accent transition-colors hover:bg-accent-dim/24"
                 >
                   {showCreate ? 'close' : '+ new operator'}
                 </button>
@@ -411,13 +423,13 @@ export function SettingsPanel({
                         }`}
                       >
                         <div className="flex items-center gap-2">
-                          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent-dim/25 text-caption font-semibold text-accent">
+                          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent-dim/24 text-caption font-semibold text-accent">
                             {o.name.slice(0, 1).toUpperCase()}
                           </span>
                           <div className="min-w-0">
                             <div className="flex items-center gap-1.5 text-body font-semibold text-dim">
                               <span className="truncate">{o.name}</span>
-                              {isSelf && <span className="rounded bg-accent-dim/25 px-1 text-eyebrow uppercase text-accent">you</span>}
+                              {isSelf && <span className="rounded-r1 bg-accent-dim/24 px-1 text-eyebrow uppercase text-accent">you</span>}
                             </div>
                             <div className="truncate text-caption text-faint">{o.email}</div>
                           </div>
@@ -468,7 +480,7 @@ export function SettingsPanel({
                               onClick={() => setEditing({ id: o.id, kind: 'remove' })}
                               disabled={isSelf || lastAdmin || working}
                               title={isSelf ? 'You cannot remove your own account' : lastAdmin ? 'The last admin cannot be removed' : undefined}
-                              className="rounded-r1 border border-border px-1.5 py-0.5 text-danger transition-colors duration-micro hover:bg-danger/10 disabled:opacity-30"
+                              className="rounded-r1 border border-border px-1.5 py-0.5 text-danger transition-colors duration-micro hover:bg-danger/14 disabled:opacity-30"
                             >
                               remove
                             </button>
@@ -522,7 +534,7 @@ function InlineFlow({
 
   if (kind === 'remove') {
     return (
-      <div className="mt-2 flex items-center gap-2 rounded-r2 border border-danger/40 bg-danger/[0.06] px-2.5 py-2">
+      <div className="mt-2 flex items-center gap-2 rounded-r2 border border-danger/40 bg-danger/[0.08] px-2.5 py-2">
         <span className="min-w-0 flex-1 text-caption leading-snug text-dim">
           Remove <span className="font-semibold text-text">{operator.email}</span>? This cannot be undone.
         </span>
@@ -572,7 +584,7 @@ function InlineFlow({
       </button>
       <button
         disabled={!ok}
-        className="shrink-0 rounded-r1 border border-accent-dim bg-accent-dim/15 px-2 py-1 text-caption font-medium text-accent transition-colors duration-micro hover:bg-accent-dim/25 disabled:opacity-40"
+        className="shrink-0 rounded-r1 border border-accent-dim bg-accent-dim/14 px-2 py-1 text-caption font-medium text-accent transition-colors duration-micro hover:bg-accent-dim/24 disabled:opacity-40"
       >
         {isPw ? 'Reset' : 'Save'}
       </button>
@@ -639,7 +651,7 @@ function CreateForm({ onCreate }: { onCreate: (o: { email: string; password: str
       </select>
       <button
         disabled={!ok || busy}
-        className="col-span-2 rounded-r2 border border-accent-dim bg-accent-dim/15 px-3 py-1.5 text-body font-medium text-accent transition-colors hover:bg-accent-dim/25 disabled:opacity-40"
+        className="col-span-2 rounded-r2 border border-accent-dim bg-accent-dim/14 px-3 py-1.5 text-body font-medium text-accent transition-colors hover:bg-accent-dim/24 disabled:opacity-40"
       >
         {busy ? 'creating…' : 'create operator'}
       </button>

@@ -101,7 +101,7 @@ export function NewProjectModal({
           <div className="flex gap-2 pt-1">
             <button
               disabled={busy || !name.trim() || !domain.trim()}
-              className="flex-1 rounded-r2 border border-accent-dim bg-accent-dim/20 px-3 py-2 text-body font-medium text-accent transition-colors hover:bg-accent-dim/30 disabled:opacity-50"
+              className="flex-1 rounded-r2 border border-accent-dim bg-accent-dim/24 px-3 py-2 text-body font-medium text-accent transition-colors hover:bg-accent-dim/24 disabled:opacity-50"
             >
               {busy ? 'creating…' : 'create'}
             </button>

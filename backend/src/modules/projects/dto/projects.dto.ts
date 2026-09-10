@@ -4,7 +4,18 @@
  * @module projects.dto
  */
 
-import { IsString, IsNotEmpty, IsOptional, IsIn, IsUrl, MaxLength } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+  IsIn,
+  IsUrl,
+  MaxLength,
+  IsArray,
+  ValidateNested,
+  ArrayMaxSize,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class CreateProjectDto {
   @IsString()
@@ -61,4 +72,32 @@ export class UpdateProjectDto {
   @IsOptional()
   @MaxLength(2000)
   notes?: string;
+}
+
+/** One named competitor on the project's benchmark list. */
+export class CompetitorDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  name: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(253)
+  domain?: string;
+
+  /** where it came from: manual | intake | serp */
+  @IsString()
+  @IsOptional()
+  @MaxLength(24)
+  source?: string;
+}
+
+/** Replace the whole competitor list. */
+export class SetCompetitorsDto {
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => CompetitorDto)
+  competitors: CompetitorDto[];
 }

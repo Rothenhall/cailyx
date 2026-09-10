@@ -7,13 +7,22 @@
  * brand radius/blur ladders, four durations and two easings. Components
  * reference these tokens only — no ad-hoc pixel values.
  *
- * Typeface: Urbanist, inherited from globals.css. `--font-display` resolves to
- * it too, so the `font-display` hook stays in place for the figure/heading
- * slots without changing the face.
+ * Typeface: Poppins, loaded once app-wide in layout.tsx and inherited here —
+ * every title, subtitle, description and figure resolves to it; hierarchy is
+ * carried by weight and the scale below, not a second face. This scope
+ * deliberately declares no font of its own.
  */
 
 .v2 {
-  /* the brand's own tracking tokens */
+  /* ── typography ──────────────────────────────────────────────────────
+     One face for the whole console — `--font-sans`, `--font-display` and
+     `--mono` all inherit Poppins from globals.css. Hierarchy is carried by the
+     six-step scale, weight and the tracking tokens below rather than by a
+     second typeface; `font-display` survives as a semantic hook (see the
+     weight rule further down) for the card titles that sit at body size but
+     read as headings.
+
+     the brand's own tracking tokens */
   --tk-eyebrow: 0.14em;
   --tk-wide: 0.025em;
   --tk-tight: -0.015em;
@@ -50,6 +59,63 @@
 
   /* keyboard focus — one ring, applied globally below */
   --ring: 0 0 0 2px var(--bg-raised), 0 0 0 4px var(--accent-dim);
+}
+
+/* There is deliberately no font rule for titles here. This block used to swap
+   in a second face for headings; with one typeface across the console there is
+   nothing to swap, and hierarchy is already carried by the scale's own size
+   and tracking plus the weight each call site states. Re-adding a rule here
+   would be a `.v2 .x` selector loading after Tailwind's utilities, so it would
+   silently outrank the `font-semibold` / `font-medium` those call sites set.
+   `font-display` stays live as Tailwind's utility, resolving to Poppins. */
+
+/* ── interaction layer ─────────────────────────────────────────────────
+   An audit found 50 of 52 buttons had no press state: they changed colour on
+   hover and then nothing happened under the finger. Rather than sprinkling
+   `active:` across every call site, the response lives here once.
+
+   Press is a scale, not a colour, so it reads on brass, on paper and on the
+   dark drawer alike. `:disabled` opts out of both the press and the pointer,
+   and `.v2-nopress` opts out anywhere the transform would fight a layout. */
+.v2 button:not(:disabled),
+.v2 [role='button']:not([aria-disabled='true']) {
+  cursor: pointer;
+}
+.v2 button:not(:disabled):not(.v2-nopress),
+.v2 a:not(.v2-nopress) {
+  transition: transform var(--d-micro) var(--ease);
+}
+.v2 button:not(:disabled):not(.v2-nopress):active {
+  transform: scale(0.972);
+}
+.v2 button:disabled {
+  cursor: not-allowed;
+}
+
+/* inputs and selects answer focus the same way everywhere */
+.v2 input,
+.v2 select,
+.v2 textarea {
+  transition: border-color var(--d-micro) var(--ease), background-color var(--d-micro) var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v2 button:not(:disabled):not(.v2-nopress):active {
+    transform: none;
+  }
+}
+
+/* ── alpha scale ───────────────────────────────────────────────────────
+   The same audit found 24 distinct opacity steps — worse drift than the
+   twelve font sizes. These are the six that mean something; near-duplicates
+   (0.06/0.07/0.09, 55/60, 85/90) collapse onto them. */
+.v2 {
+  --a-hairline: 0.08; /* barely-there wash over a surface */
+  --a-wash: 0.14;     /* resting tint on a control */
+  --a-hover: 0.24;    /* the same tint, lifted */
+  --a-muted: 0.45;    /* de-emphasised text or rule */
+  --a-second: 0.65;   /* secondary text on a coloured ground */
+  --a-near: 0.9;      /* almost solid */
 }
 
 /* every digit that can sit in a column lines up */
@@ -242,17 +308,17 @@
    components' own exported constants, so moving a wall moves the gutter.
 
    Three widths. Below the last one the wheel and two panels genuinely stop
-   fitting, so Analytics yields rather than collide. */
+   fitting, so Audits yields rather than collide. */
 .v2-canvas {
   grid-template-columns: 5fr 4fr;
-  --pad-analytics-l: calc(var(--wheel-half) - 10px);
-  --pad-analytics-r: 12px;
+  --pad-audits-l: calc(var(--wheel-half) - 10px);
+  --pad-audits-r: 12px;
   --pad-feed-l: 24px;
   --pad-feed-r: calc(var(--nub) + 22px);
 }
-.v2-analytics {
-  padding-left: var(--pad-analytics-l);
-  padding-right: var(--pad-analytics-r);
+.v2-audits {
+  padding-left: var(--pad-audits-l);
+  padding-right: var(--pad-audits-r);
 }
 .v2-feed {
   padding-left: var(--pad-feed-l);
@@ -263,13 +329,13 @@
   .v2-canvas {
     grid-template-columns: 1fr 1fr;
     /* let the card sit further over the wheel's quiet inner half */
-    --pad-analytics-l: calc(var(--wheel-half) - 46px);
+    --pad-audits-l: calc(var(--wheel-half) - 46px);
     --pad-feed-l: 16px;
   }
 }
 
 /* Below this the sums stop working: the wheel takes 186px of the canvas and
-   the Analytics card wants 320px, which leaves the feed unusable. 1000px is
+   the Audits card wants 320px, which leaves the feed unusable. 1000px is
    the last width where all three get their real size. */
 @media (max-width: 1000px) {
   .v2-canvas {
@@ -280,7 +346,7 @@
   /* the diagnostics card is the one surface that has a home elsewhere
      (every figure in it is reachable from the agent detail), so it is what
      gives way when the canvas runs out of room */
-  .v2-analytics {
+  .v2-audits {
     display: none;
   }
 }
@@ -443,7 +509,7 @@
   animation-delay: calc(var(--i, 0) * 45ms);
 }
 
-/* Analytics — tab content swap */
+/* Audits — tab content swap */
 @keyframes v2tab-in {
   from {
     opacity: 0;
@@ -479,4 +545,257 @@
     animation: none;
     background: color-mix(in srgb, var(--border) 45%, transparent);
   }
+}
+
+/* ── audit workspace — Technical, expanded to the whole canvas ──────────
+   The Technical tile does not open in the 320px card; it takes over the
+   canvas. The workspace is fully opaque and the rest of the board is
+   hidden outright (not dimmed) while it is open — a translucent panel over
+   a dimmed-but-present canvas read as a grey haze sitting on the report.
+   The board is not unmounted, so closing snaps back with no reflow. The
+   gate is `.is-zoomed` on the canvas; `.v2-audit-ws` is the one child
+   left visible. */
+.v2-canvas.is-zoomed > *:not(.v2-audit-ws) {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--d-panel) var(--ease),
+    visibility 0s linear var(--d-panel);
+}
+
+@keyframes v2-ws-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94) translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.v2-audit-ws {
+  animation: v2-ws-in var(--d-panel) var(--ease) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v2-audit-ws {
+    animation: none;
+  }
+  .v2-canvas.is-zoomed > *:not(.v2-audit-ws) {
+    transition-duration: 0.01ms;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   AUDIT REPORT — a real traffic-light palette + document typography.
+
+   The console proper is deliberately all-warm (no cool hue anywhere). A
+   technical audit is the one surface where that rule costs the user real
+   legibility: "pass" and "fail" both rendered in brown is unreadable at a
+   glance. So the audit surfaces — the full-canvas report (`.v2-audit-ws`)
+   and the Audits card that launches it (`.v2-audits`) — get a genuine
+   green / amber / red ramp, desaturated to sit on the warm paper without
+   shouting. Nothing else in the console is touched.
+   ════════════════════════════════════════════════════════════════════════ */
+.v2-audits,
+.v2-audit-ws {
+  --a-ok: #1f8b4c;
+  --a-ok-soft: #e8f3ec;
+  --a-ok-line: #b7dac4;
+  --a-warn: #b0741b;
+  --a-warn-soft: #f7efdc;
+  --a-warn-line: #e4cb92;
+  --a-bad: #c23b2b;
+  --a-bad-soft: #f8e9e6;
+  --a-bad-line: #e7b9b1;
+
+  /* the report reads as a document, not console chrome: a hair more air and
+     a comfortable reading measure for body copy */
+  --a-read: 13.5px;
+}
+
+/* ── markdown narrative ────────────────────────────────────────────────────
+   The analysis is model output — headings, lists, emphasis, the odd link or
+   table. Rendered through react-markdown; these rules give it document
+   rhythm without pulling in @tailwindcss/typography. */
+.audit-md {
+  color: var(--text-dim);
+  font-size: var(--a-read);
+  line-height: 1.65;
+}
+.audit-md > :first-child { margin-top: 0; }
+.audit-md > :last-child { margin-bottom: 0; }
+.audit-md h1,
+.audit-md h2,
+.audit-md h3 {
+  color: var(--text);
+  font-weight: 600;
+  letter-spacing: var(--tk-tight);
+  line-height: 1.3;
+  margin: 1.4em 0 0.5em;
+}
+.audit-md h1 { font-size: 1.15rem; }
+.audit-md h2 { font-size: 1.02rem; }
+.audit-md h3 {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: var(--tk-eyebrow);
+  color: var(--text-faint);
+}
+.audit-md p { margin: 0.55em 0; }
+.audit-md ul,
+.audit-md ol { margin: 0.55em 0; padding-left: 1.25em; }
+.audit-md li { margin: 0.25em 0; }
+.audit-md ul > li { list-style: disc; }
+.audit-md ol > li { list-style: decimal; }
+.audit-md strong { color: var(--text); font-weight: 600; }
+.audit-md a {
+  color: var(--cognac);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.audit-md code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.88em;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--r1);
+  padding: 0.05em 0.35em;
+}
+.audit-md pre {
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--r3);
+  padding: 0.75em 0.9em;
+  overflow-x: auto;
+  margin: 0.7em 0;
+}
+.audit-md pre code { background: none; border: 0; padding: 0; }
+.audit-md blockquote {
+  border-left: 2px solid var(--accent-dim);
+  padding-left: 0.9em;
+  margin: 0.7em 0;
+  color: var(--text-faint);
+}
+.audit-md table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.7em 0;
+  font-size: 0.92em;
+}
+.audit-md th,
+.audit-md td {
+  border: 1px solid var(--border);
+  padding: 0.35em 0.6em;
+  text-align: left;
+}
+.audit-md th { background: var(--bg-inset); font-weight: 600; color: var(--text); }
+.audit-md hr { border: 0; border-top: 1px solid var(--border); margin: 1.1em 0; }
+
+/* ── radial score gauge — the audit-report visual language ─────────────────
+   Lighthouse, Ahrefs and Semrush all lead with a ring. The arc is drawn with
+   stroke-dasharray; this only carries the settle transition and the
+   reduced-motion opt-out. */
+.audit-gauge-arc {
+  transition: stroke-dasharray var(--d-morph) var(--ease);
+}
+@media (prefers-reduced-motion: reduce) {
+  .audit-gauge-arc { transition: none; }
+}
+
+/* ── audit report: panels, tabs, evidence ─────────────────────────────────
+   The report is a set of panels you switch between, not one long scroll.
+   Each panel fills the height and scrolls only inside itself. */
+.v2-audit-ws .audit-tabs {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.v2-audit-ws .audit-tabs::-webkit-scrollbar { display: none; }
+.v2-audit-ws .audit-tab {
+  position: relative;
+  white-space: nowrap;
+  padding: 10px 14px 11px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-faint);
+  border: 0;
+  background: none;
+  cursor: pointer;
+  transition: color var(--d-micro) var(--ease);
+}
+.v2-audit-ws .audit-tab:hover { color: var(--text-dim); }
+.v2-audit-ws .audit-tab.is-on { color: var(--text); }
+.v2-audit-ws .audit-tab.is-on::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+}
+.v2-audit-ws .audit-tab .cnt {
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* the "what was actually fetched" pane — visually distinct from a verdict card */
+.v2-audit-ws .evidence {
+  border: 1px solid var(--border);
+  border-radius: var(--r4);
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      color-mix(in srgb, var(--bg-inset) 55%, transparent) 0 6px,
+      color-mix(in srgb, var(--bg-inset) 30%, transparent) 6px 12px
+    );
+}
+.v2-audit-ws .evidence-body {
+  background: var(--bg-raised);
+  border-radius: 0 0 calc(var(--r4) - 1px) calc(var(--r4) - 1px);
+}
+.v2-audit-ws pre.audit-code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow: auto;
+  max-height: 18rem;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--r3);
+  padding: 10px 12px;
+  color: var(--text-dim);
+}
+
+/* hover reveal — a quiet tooltip for gauges and check tiles */
+.v2-audit-ws .tip {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(3px);
+  padding: 5px 8px;
+  border-radius: var(--r2);
+  background: var(--night, #14120d);
+  color: var(--night-text, #efe9dc);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--d-micro) var(--ease), transform var(--d-micro) var(--ease);
+}
+.v2-audit-ws .tip-host:hover .tip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+@media (prefers-reduced-motion: reduce) {
+  .v2-audit-ws .tip { transition: none; }
 }

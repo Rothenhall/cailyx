@@ -1,14 +1,22 @@
 /**
  * Technical Audit Service — Runs all AI visibility access checks.
  *
- * Five checks in order of value:
- *   1. robots.txt AI-bot blocks     — Can AI crawlers read the site per robots.txt?
- *   2. CDN AI-bot blocking probe     — Does the CDN silently block AI crawlers despite robots.txt?
- *   3. JS render dependency          — Can non-JS AI crawlers read the content?
- *   4. Core Web Vitals               — Does the site meet Google's performance thresholds?
- *   5. Schema audit (FR-3.2)         — JSON-LD structured data, Organization/Person, sameAs
+ * Eight checks, ordered so the cheap access questions answer before the
+ * expensive site-wide crawl (there is no point scoring 150 pages a crawler
+ * cannot reach):
  *
- * Also captures page metadata (FR-3.5) and generates reproduction commands (FR-2.6).
+ *   1. robots.txt AI-bot blocks  — Can AI crawlers read the site per robots.txt?
+ *   2. CDN AI-bot blocking probe — Does the CDN silently block them anyway?
+ *   3. Sitemap                   — Present, and actually being kept up to date?
+ *   4. JS render dependency      — Can non-JS AI crawlers read the content?
+ *   5. Lighthouse / CWV          — Full PSI run: 4 categories, all failing audits.
+ *   6. Schema (FR-3.2)           — JSON-LD, Organization/Person, sameAs.
+ *   7. Agent readiness           — Vercel/Ora `is-agentic` score.
+ *   8. Page inventory            — Every sitemap URL: JSON-LD, title/meta lengths, H1.
+ *
+ * Also captures page metadata (FR-3.5), generates reproduction commands
+ * (FR-2.6), rolls the checks into one 0-100 composite, and diffs the run
+ * against the project's previous audit so a series is comparable.
  *
  * @module technical-audit.service
  */
@@ -27,7 +35,19 @@ import {
   LIVE_FETCH_AGENTS,
   POLICY_TOKENS,
 } from '../fetcher/fetcher.constants';
+import { SitemapCheckService } from './checks/sitemap.check';
+import { AgentReadinessCheckService } from './checks/agent-readiness.check';
+import { PageInventoryCheckService } from './checks/page-inventory.check';
+import { AuditNarrativeService } from './checks/audit-narrative.service';
+import { buildComparison, computeDeltas, type ComparableRun } from './technical-audit.deltas';
+import { ISSUE_LABELS } from './checks/seo-rubric';
 import type {
+  AuditCheckType,
+  AgentReadinessAnalysis,
+  AuditDelta,
+  AuditPageResult,
+  PageInventoryAnalysis,
+  SitemapAnalysis,
   AuditFinding,
   TechnicalAudit,
   RobotsAnalysis,
@@ -52,6 +72,10 @@ export class TechnicalAuditService {
     private readonly prisma: PrismaService,
     private readonly scheduling: SchedulingService,
     private readonly configService: ConfigService,
+    private readonly sitemapCheck: SitemapCheckService,
+    private readonly agentReadinessCheck: AgentReadinessCheckService,
+    private readonly pageInventoryCheck: PageInventoryCheckService,
+    private readonly narrative: AuditNarrativeService,
   ) {
     // Register handler for scheduled technical audits
     this.scheduling.registerHandler('technical-audit', async (projectId, targetUrl) => {
@@ -68,6 +92,8 @@ export class TechnicalAuditService {
   private get clsNeedsImprovement(): number { return this.configService.get<number>('technicalAudit.thresholds.clsNeedsImprovement', 0.25) ?? 0.25; }
   private get inpGoodMs(): number { return this.configService.get<number>('technicalAudit.thresholds.inpGoodMs', 200) ?? 200; }
   private get inpNeedsImprovementMs(): number { return this.configService.get<number>('technicalAudit.thresholds.inpNeedsImprovementMs', 500) ?? 500; }
+  private get sitemapStaleDays(): number { return this.configService.get<number>('technicalAudit.thresholds.sitemapStaleDays', 90) ?? 90; }
+  private get pageCrawlBudget(): number { return this.configService.get<number>('technicalAudit.pageCrawlBudget', 150) ?? 150; }
   private get maxCostPerRun(): number { return this.configService.get<number>('technicalAudit.maxCostPerRunUsd', 5.0) ?? 5.0; }
 
   /**
@@ -84,44 +110,62 @@ export class TechnicalAuditService {
 
     const findings: AuditFinding[] = [];
 
-    // Check 1: robots.txt
-    try {
-      const robotsFinding = await this.checkRobotsTxt(targetUrl, runId);
-      findings.push(robotsFinding);
-    } catch (err) {
-      findings.push(this.errorFinding('robots', (err as Error).message));
-    }
+    // Each check is isolated: one failing adapter must not cost the operator
+    // the other seven results.
+    const run = async (label: AuditCheckType, fn: () => Promise<AuditFinding>) => {
+      try {
+        findings.push(await fn());
+      } catch (err) {
+        findings.push(this.errorFinding(label, (err as Error).message));
+      }
+    };
 
-    // Check 2: CDN AI-bot blocking probe
-    try {
-      const cdnFinding = await this.checkCdnBlocking(targetUrl, runId);
-      findings.push(cdnFinding);
-    } catch (err) {
-      findings.push(this.errorFinding('cdn-inferred', (err as Error).message));
-    }
+    await run('robots', () => this.checkRobotsTxt(targetUrl, runId));
+    await run('cdn-inferred', () => this.checkCdnBlocking(targetUrl, runId));
 
-    // Check 3: JS render dependency
-    try {
-      const jsFinding = await this.checkJsRenderDependency(targetUrl, runId);
-      findings.push(jsFinding);
-    } catch (err) {
-      findings.push(this.errorFinding('js-render', (err as Error).message));
-    }
+    // The sitemap runs before the page inventory because it *is* the
+    // inventory's input — its entries decide what gets crawled.
+    let sitemap: SitemapAnalysis | null = null;
+    await run('sitemap', async () => {
+      sitemap = await this.sitemapCheck.analyze(targetUrl, runId);
+      return this.sitemapFinding(sitemap);
+    });
 
-    // Check 4: Core Web Vitals
-    try {
-      const cwvFinding = await this.checkCoreWebVitals(targetUrl, runId);
-      findings.push(cwvFinding);
-    } catch (err) {
-      findings.push(this.errorFinding('cwv', (err as Error).message));
-    }
+    await run('js-render', () => this.checkJsRenderDependency(targetUrl, runId));
+    await run('cwv', () => this.checkCoreWebVitals(targetUrl, runId));
+    await run('schema', () => this.checkSchema(targetUrl, runId));
 
-    // Check 5: Schema (FR-3.2)
-    try {
-      const schemaFinding = await this.checkSchema(targetUrl, runId);
-      findings.push(schemaFinding);
-    } catch (err) {
-      findings.push(this.errorFinding('schema', (err as Error).message));
+    let readiness: AgentReadinessAnalysis | null = null;
+    await run('agent-readiness', async () => {
+      readiness = await this.agentReadinessCheck.analyze(targetUrl);
+      return this.agentReadinessFinding(readiness);
+    });
+
+    // Site-wide crawl. Skipped rather than failed when there is no sitemap —
+    // "we could not enumerate the site" is not the same claim as "the pages
+    // are bad", and failing here would double-count the sitemap finding that
+    // has already fired.
+    let inventory: PageInventoryAnalysis | null = null;
+    let pages: AuditPageResult[] = [];
+    const entries = (sitemap as SitemapAnalysis | null)?.entries ?? [];
+    if (entries.length) {
+      await run('page-inventory', async () => {
+        const res = await this.pageInventoryCheck.analyze(entries, runId, this.pageCrawlBudget);
+        inventory = res.analysis;
+        pages = res.pages;
+        return this.pageInventoryFinding(res.analysis);
+      });
+    } else {
+      findings.push({
+        type: 'page-inventory',
+        status: 'not-run',
+        detail: { reason: 'No sitemap URLs to crawl', discovered: 0, crawled: 0 },
+        severity: 'low',
+        confidence: 'confirmed',
+        recommendedFix:
+          'Publish a sitemap.xml listing your indexable pages and declare it in robots.txt. ' +
+          'Without one, the per-page structured-data and metadata audit cannot enumerate the site.',
+      });
     }
 
     // Capture page metadata (FR-3.5) — for downstream entity/findings stages
@@ -132,6 +176,19 @@ export class TechnicalAuditService {
       this.logger.warn(`Failed to capture page metadata: ${(err as Error).message}`);
     }
 
+    const score = this.computeComposite(findings, inventory, readiness);
+
+    // Diff against the project's previous run BEFORE this one is written, so
+    // "previous" is unambiguous even if two audits overlap.
+    const { previousAuditId, previousScore, previousAt, previousNarrative, deltas } =
+      await this.diffAgainstPrevious(projectId, {
+      id: runId,
+      createdAt: new Date().toISOString(),
+      score,
+      findings,
+      pages,
+    });
+
     const audit: TechnicalAudit = {
       id: runId,
       projectId,
@@ -139,6 +196,12 @@ export class TechnicalAuditService {
       createdAt: new Date().toISOString(),
       findings,
       targetUrl,
+      score,
+      previousAuditId,
+      deltas,
+      sitemapUrl: (sitemap as SitemapAnalysis | null)?.sitemapUrl ?? null,
+      pagesCrawled: pages.length,
+      pages,
       pageMetadata,
     };
 
@@ -155,14 +218,26 @@ export class TechnicalAuditService {
       checksRun: findings.length,
       cacheHitRate: fetcherLogs.length > 0 ? cacheHits / fetcherLogs.length : 0,
     };
+    if (totalCost > this.maxCostPerRun) {
+      this.logger.warn(
+        `Audit ${runId} cost $${totalCost.toFixed(4)}, over the $${this.maxCostPerRun} per-run ceiling`,
+      );
+    }
+
     // Persist to database
     try {
-      const dbAudit = await this.prisma.technicalAudit.create({
+      await this.prisma.technicalAudit.create({
         data: {
           id: audit.id,
           projectId: audit.projectId,
           targetUrl: audit.targetUrl,
           triggeredBy: audit.triggeredBy,
+          score: audit.score ?? null,
+          previousAuditId: audit.previousAuditId ?? null,
+          deltas: JSON.stringify(audit.deltas ?? []),
+          sitemapUrl: audit.sitemapUrl ?? null,
+          pagesCrawled: audit.pagesCrawled ?? 0,
+          observability: JSON.stringify(audit.observability ?? null),
           findings: {
             create: audit.findings.map((f) => ({
               type: f.type,
@@ -174,23 +249,105 @@ export class TechnicalAuditService {
               reproductionCommands: JSON.stringify(f.reproductionCommands),
             })),
           },
-          pageMetadata: audit.pageMetadata ? {
-            create: {
-              title: audit.pageMetadata.title,
-              metaDescription: audit.pageMetadata.metaDescription,
-              headings: JSON.stringify(audit.pageMetadata.headings),
-              positioningCopy: audit.pageMetadata.positioningCopy,
-            },
-          } : undefined,
+          pageMetadata: audit.pageMetadata
+            ? {
+                create: {
+                  title: audit.pageMetadata.title,
+                  metaDescription: audit.pageMetadata.metaDescription,
+                  headings: JSON.stringify(audit.pageMetadata.headings),
+                  positioningCopy: audit.pageMetadata.positioningCopy,
+                },
+              }
+            : undefined,
         },
       });
-      this.logger.debug('Audit persisted to DB: ' + dbAudit.id);
+
+      // Pages are written separately and in chunks. A 150-page nested create
+      // builds one enormous statement and SQLite caps host variables per
+      // statement, so a large sitemap would fail the whole persist.
+      if (pages.length) {
+        const CHUNK = 25;
+        for (let i = 0; i < pages.length; i += CHUNK) {
+          await this.prisma.auditPage.createMany({
+            data: pages.slice(i, i + CHUNK).map((pg) => ({
+              auditId: audit.id,
+              url: pg.url,
+              status: pg.status,
+              lastmod: pg.lastmod ? new Date(pg.lastmod) : null,
+              title: pg.title,
+              titleLength: pg.titleLength,
+              metaDescription: pg.metaDescription,
+              metaDescLength: pg.metaDescLength,
+              h1Count: pg.h1Count,
+              canonical: pg.canonical,
+              wordCount: pg.wordCount,
+              jsonLdTypes: JSON.stringify(pg.jsonLdTypes),
+              jsonLdValid: pg.jsonLdValid,
+              jsonLdCount: pg.jsonLdCount,
+              issues: JSON.stringify(pg.issues),
+              score: pg.score,
+            })),
+          });
+        }
+      }
+      this.logger.debug(`Audit persisted to DB: ${audit.id} (${pages.length} pages)`);
     } catch (err) {
       this.logger.warn('Failed to persist audit to DB: ' + (err as Error).message);
     }
 
+    // Narrative last, and deliberately after the write. It is the only step
+    // that leaves the machine for a model, so it must not be able to cost us
+    // the run: the audit is already durable by this point, and a failure here
+    // leaves `narrative` null with every number intact.
+    try {
+      const written = await this.narrative.write({
+        domain: new URL(targetUrl).hostname,
+        targetUrl,
+        currentScore: score,
+        previousScore,
+        currentAt: audit.createdAt,
+        previousAt,
+        deltas,
+        findings: findings.map((f) => ({
+          type: f.type,
+          status: f.status,
+          severity: f.severity,
+          recommendedFix: f.recommendedFix,
+        })),
+        inventory,
+        // Keyed by check type so the narrator can read a check's own numbers
+        // rather than inferring them from the derived deltas.
+        details: Object.fromEntries(findings.map((f) => [f.type, f.detail])),
+        previousNarrative,
+      });
+      if (written) {
+        audit.narrative = written.text;
+        audit.narrativeModel = written.model;
+        // The narrative is billed separately from the fetcher, and it runs
+        // after the row is written, so add its cost back into observability.
+        if (audit.observability && written.costUsd > 0) {
+          audit.observability.totalCostUsd =
+            (audit.observability.totalCostUsd ?? 0) + written.costUsd;
+        }
+        await this.prisma.technicalAudit.update({
+          where: { id: audit.id },
+          data: {
+            narrative: written.text,
+            narrativeModel: written.model,
+            narrativeAt: new Date(),
+            observability: JSON.stringify(audit.observability ?? null),
+          },
+        });
+      }
+    } catch (err) {
+      this.logger.warn(`Narrative step failed: ${(err as Error).message}`);
+    }
+
     const failCount = findings.filter((f) => f.status === 'fail').length;
-    this.logger.log(`Technical audit complete for ${targetUrl}: ${failCount} failures, ${findings.length} findings`);
+    this.logger.log(
+      `Technical audit complete for ${targetUrl}: score ${audit.score ?? 'n/a'}, ` +
+        `${failCount} failures across ${findings.length} checks, ${pages.length} pages crawled`,
+    );
 
     return audit;
   }
@@ -565,6 +722,13 @@ export class TechnicalAuditService {
     const analysis: CwvAnalysis = {
       lcp: psiResult.lcp, cls: psiResult.cls, inp: psiResult.inp,
       performanceScore: psiResult.performanceScore, lcpStatus, clsStatus, inpStatus,
+      // One Lighthouse pass already produced all of this; keeping only the
+      // three CWV numbers threw away the SEO and accessibility verdicts.
+      categories: psiResult.categories,
+      failedAudits: psiResult.failedAudits,
+      fieldData: psiResult.fieldData,
+      finalUrl: psiResult.finalUrl,
+      lighthouseVersion: psiResult.lighthouseVersion,
     };
 
     const hasPoorMetric = lcpStatus === 'poor' || clsStatus === 'poor' || inpStatus === 'poor';
@@ -804,4 +968,341 @@ export class TechnicalAuditService {
       recommendedFix: `Check failed with error: ${errorMsg}. Retry the audit or check logs.`,
     };
   }
+
+  // ─── Findings for the three new checks ─────────────────────────
+
+  /**
+   * Sitemap finding. Presence is necessary but not sufficient — the failure
+   * that actually matters is a sitemap nobody maintains, so a found-but-stale
+   * sitemap fails just as a missing one does, with a different fix.
+   */
+  private sitemapFinding(a: SitemapAnalysis): AuditFinding {
+    if (!a.found) {
+      return {
+        type: 'sitemap',
+        status: 'fail',
+        detail: a as unknown as Record<string, unknown>,
+        severity: 'high',
+        confidence: 'confirmed',
+        recommendedFix:
+          `No sitemap was found (tried: ${a.triedUrls.join(', ') || 'none'}). ` +
+          'Publish /sitemap.xml with a <lastmod> on every URL and declare it in robots.txt ' +
+          'with a "Sitemap:" line. Without one, crawlers discover pages only by following links, ' +
+          'and orphaned pages are never found at all.',
+      };
+    }
+
+    const problems: string[] = [];
+    if (a.urlCount === 0) problems.push('the sitemap is empty');
+    if (a.withLastmod === 0) problems.push('no URL declares a <lastmod>');
+    if (a.staleDays !== null && a.staleDays > this.sitemapStaleDays) {
+      problems.push(`the newest <lastmod> is ${a.staleDays} days old`);
+    }
+    if (!a.declaredInRobots) problems.push('it is not declared in robots.txt');
+    if (a.offOriginCount > 0) problems.push(`${a.offOriginCount} URLs point off-origin`);
+    if (a.duplicateCount > 0) problems.push(`${a.duplicateCount} URLs are duplicated`);
+
+    // A missing <lastmod> or a stale one is the "is it maintained?" question
+    // from the brief; the cosmetic problems alone are not worth a failure.
+    const material =
+      a.urlCount === 0 ||
+      a.withLastmod === 0 ||
+      (a.staleDays !== null && a.staleDays > this.sitemapStaleDays);
+
+    return {
+      type: 'sitemap',
+      status: material ? 'fail' : 'pass',
+      detail: a as unknown as Record<string, unknown>,
+      severity: a.urlCount === 0 ? 'high' : material ? 'medium' : 'low',
+      confidence: 'confirmed',
+      recommendedFix: problems.length
+        ? `Sitemap found at ${a.sitemapUrl} with ${a.urlCount} URLs, but ${problems.join('; ')}. ` +
+          'Emit <lastmod> from your build so freshness is real rather than asserted, and ' +
+          'declare the sitemap in robots.txt.'
+        : `Sitemap is healthy: ${a.urlCount} URLs, ${a.withLastmod} with <lastmod>, ` +
+          `most recent change ${a.staleDays} days ago.`,
+    };
+  }
+
+  /** Agent-readiness finding from the is-agentic score. */
+  private agentReadinessFinding(a: AgentReadinessAnalysis): AuditFinding {
+    if (a.score === null) {
+      return {
+        type: 'agent-readiness',
+        status: 'not-run',
+        detail: a as unknown as Record<string, unknown>,
+        severity: 'low',
+        // The scan did not happen, so nothing here was observed.
+        confidence: 'inferred',
+        recommendedFix:
+          `Agent-readiness could not be scored: ${a.error ?? 'unknown reason'}. ` +
+          'Run `npx is-agentic <domain>` locally to confirm the scanner can reach the site.',
+      };
+    }
+
+    const failed = a.issues.filter((i) => i.result === 'failed');
+    const partial = a.issues.filter((i) => i.result === 'partial');
+
+    return {
+      type: 'agent-readiness',
+      status: a.score >= 80 ? 'pass' : 'fail',
+      detail: a as unknown as Record<string, unknown>,
+      severity: a.score < 50 ? 'high' : a.score < 80 ? 'medium' : 'low',
+      confidence: 'confirmed',
+      recommendedFix:
+        `is-agentic scores this site ${a.score}/100 (${a.scoreLabel ?? 'unlabelled'}) across ` +
+        `${a.eligibleChecks ?? 0} eligible checks. ` +
+        (failed.length || partial.length
+          ? `${failed.length} failed and ${partial.length} partial: ` +
+            [...failed, ...partial].slice(0, 5).map((i) => i.name).join(', ') +
+            `. Full report: ${a.reportUrl ?? 'n/a'}`
+          : `No outstanding issues. Full report: ${a.reportUrl ?? 'n/a'}`),
+    };
+  }
+
+  /** Site-wide per-page finding. */
+  private pageInventoryFinding(a: PageInventoryAnalysis): AuditFinding {
+    const truncated = a.discovered > a.crawled;
+    const top = Object.entries(a.issueCounts)
+      .sort((x, y) => y[1] - x[1])
+      .slice(0, 5)
+      .map(([code, n]) => `${n}× ${ISSUE_LABELS[code as keyof typeof ISSUE_LABELS] ?? code}`);
+
+    const bad = a.averageScore !== null && a.averageScore < 70;
+
+    return {
+      type: 'page-inventory',
+      status: a.errored === a.crawled && a.crawled > 0 ? 'error' : bad ? 'fail' : 'pass',
+      detail: a as unknown as Record<string, unknown>,
+      severity: bad ? 'medium' : 'low',
+      confidence: 'confirmed',
+      recommendedFix:
+        `Crawled ${a.crawled} of ${a.discovered} sitemap URLs` +
+        (truncated ? ` (budget ${a.budget}, newest-changed first)` : '') +
+        `. Average page score ${a.averageScore ?? 'n/a'}/100. ` +
+        (top.length ? `Most common: ${top.join(', ')}. ` : '') +
+        (a.pagesWithoutJsonLd
+          ? `${a.pagesWithoutJsonLd} pages carry no JSON-LD — that is the single highest-leverage fix, ` +
+            'since it is what lets an assistant quote the page as a source.'
+          : 'Every crawled page carries JSON-LD.'),
+    };
+  }
+
+  // ─── Composite score ───────────────────────────────────────────
+
+  /**
+   * Roll the checks into one 0-100 number.
+   *
+   * The weights below are disclosed rather than tuned: they encode a claim
+   * about what actually stops an AI assistant using a site, in order —
+   * can it fetch the page at all, can it read it without JS, is there
+   * structured data to quote, is the copy usable, is it fast.
+   *
+   * Components that did not run are dropped and the remainder is
+   * renormalised. That is a deliberate departure from the "never renormalize"
+   * rule elsewhere in the codebase: here a component can be genuinely absent
+   * (no PSI key, no sitemap), and scoring an unrun check as zero would report
+   * a configuration gap as a site defect.
+   */
+  private computeComposite(
+    findings: AuditFinding[],
+    inventory: PageInventoryAnalysis | null,
+    readiness: AgentReadinessAnalysis | null,
+  ): number | null {
+    const weights = { access: 25, rendering: 15, structured: 20, content: 15, performance: 15, agent: 10 };
+    const parts: Array<{ weight: number; value: number }> = [];
+    const by = (t: string) => findings.find((f) => f.type === t);
+
+    // access — robots + CDN, scored on what fraction of probed bots got through
+    const cdn = by('cdn-inferred');
+    const robots = by('robots');
+    if (cdn || robots) {
+      const d = cdn?.detail as { probes?: unknown[]; blockedBots?: unknown[] } | undefined;
+      const probed = Array.isArray(d?.probes) ? d!.probes!.length : 0;
+      const blocked = Array.isArray(d?.blockedBots) ? d!.blockedBots!.length : 0;
+      const cdnScore = probed > 0 ? Math.round(((probed - blocked) / probed) * 100) : cdn?.status === 'pass' ? 100 : 50;
+      const robotsScore = robots ? (robots.status === 'pass' ? 100 : 40) : cdnScore;
+      parts.push({ weight: weights.access, value: Math.round((cdnScore + robotsScore) / 2) });
+    }
+
+    // rendering — the JS-dependency check, expressed as content retained
+    const js = by('js-render');
+    if (js && js.status !== 'error' && js.status !== 'not-run') {
+      const loss = (js.detail as { contentLossPercent?: number })?.contentLossPercent;
+      parts.push({
+        weight: weights.rendering,
+        value: typeof loss === 'number' ? Math.max(0, Math.round(100 - loss)) : js.status === 'pass' ? 100 : 50,
+      });
+    }
+
+    // structured data — homepage schema, plus site-wide JSON-LD coverage
+    const schema = by('schema');
+    const structuredParts: number[] = [];
+    if (schema && schema.status !== 'error') structuredParts.push(schema.status === 'pass' ? 100 : 40);
+    if (inventory && inventory.crawled > 0) {
+      structuredParts.push(Math.round(((inventory.crawled - inventory.pagesWithoutJsonLd) / inventory.crawled) * 100));
+    }
+    if (structuredParts.length) {
+      parts.push({
+        weight: weights.structured,
+        value: Math.round(structuredParts.reduce((a, b) => a + b, 0) / structuredParts.length),
+      });
+    }
+
+    // content — the per-page rubric average
+    if (inventory?.averageScore !== null && inventory?.averageScore !== undefined) {
+      parts.push({ weight: weights.content, value: inventory.averageScore });
+    }
+
+    // performance — Lighthouse performance category
+    const cwv = by('cwv');
+    const perf = (cwv?.detail as { performanceScore?: number })?.performanceScore;
+    if (typeof perf === 'number') parts.push({ weight: weights.performance, value: perf });
+
+    // agent readiness — is-agentic
+    if (readiness?.score !== null && readiness?.score !== undefined) {
+      parts.push({ weight: weights.agent, value: readiness.score });
+    }
+
+    if (!parts.length) return null;
+    const totalWeight = parts.reduce((s, p) => s + p.weight, 0);
+    const weighted = parts.reduce((s, p) => s + p.value * p.weight, 0);
+    return Math.max(0, Math.min(100, Math.round(weighted / totalWeight)));
+  }
+
+  // ─── Run-over-run comparison ───────────────────────────────────
+
+  /** Load the project's most recent stored run and diff the new one against it. */
+  private async diffAgainstPrevious(
+    projectId: string,
+    current: ComparableRun,
+  ): Promise<{
+    previousAuditId: string | null;
+    previousScore: number | null;
+    previousAt: string | null;
+    previousNarrative: string | null;
+    deltas: AuditDelta[];
+  }> {
+    const none = {
+      previousAuditId: null,
+      previousScore: null,
+      previousAt: null,
+      previousNarrative: null,
+    };
+    try {
+      // Only diff against a run that actually completed. A failed/partial
+      // run (score null, no findings) in the chain would report every metric
+      // as "new" on the next run and pollute the trend.
+      const prev = await this.prisma.technicalAudit.findFirst({
+        where: { projectId, score: { not: null } },
+        orderBy: { createdAt: 'desc' },
+        include: { findings: true, pages: true },
+      });
+      if (!prev) return { ...none, deltas: computeDeltas(current, null) };
+      return {
+        previousAuditId: prev.id,
+        previousScore: prev.score,
+        previousAt: prev.createdAt.toISOString(),
+        // The previous run's commentary becomes this run's memory.
+        previousNarrative: prev.narrative,
+        deltas: computeDeltas(current, this.toComparable(prev)),
+      };
+    } catch (err) {
+      this.logger.warn(`Could not diff against previous audit: ${(err as Error).message}`);
+      return { ...none, deltas: [] };
+    }
+  }
+
+  /**
+   * Rehydrate a stored run into the differ's shape. `detail` and `issues` come
+   * back as JSON strings because SQLite has no JSON column; anything that
+   * fails to parse degrades to an empty value rather than throwing, since a
+   * single malformed row must not break the whole comparison.
+   */
+  private toComparable(row: {
+    id: string;
+    createdAt: Date;
+    score: number | null;
+    findings: Array<{ type: string; status: string; severity: string; detail: string }>;
+    pages: Array<{ url: string; score: number | null; issues: string | null }>;
+  }): ComparableRun {
+    const parse = <T>(raw: string | null, fallback: T): T => {
+      if (!raw) return fallback;
+      try {
+        return JSON.parse(raw) as T;
+      } catch {
+        return fallback;
+      }
+    };
+
+    return {
+      id: row.id,
+      createdAt: row.createdAt.toISOString(),
+      score: row.score,
+      findings: row.findings.map((f) => ({
+        type: f.type as AuditCheckType,
+        status: f.status as AuditFinding['status'],
+        severity: f.severity as AuditFinding['severity'],
+        detail: parse<unknown>(f.detail, {}),
+      })),
+      pages: row.pages.map((pg) => ({
+        url: pg.url,
+        score: pg.score ?? 0,
+        issues: parse<AuditPageResult['issues']>(pg.issues, []),
+      })),
+    };
+  }
+
+  /**
+   * Full comparison between a run and the one before it, for the trend view.
+   * Returns null when the audit does not belong to the project.
+   */
+  async getComparison(projectId: string, auditId: string) {
+    const current = await this.prisma.technicalAudit.findFirst({
+      where: { id: auditId, projectId },
+      include: { findings: true, pages: true },
+    });
+    if (!current) return null;
+
+    const previous = await this.prisma.technicalAudit.findFirst({
+      where: { projectId, score: { not: null }, createdAt: { lt: current.createdAt } },
+      orderBy: { createdAt: 'desc' },
+      include: { findings: true, pages: true },
+    });
+
+    return buildComparison(this.toComparable(current), previous ? this.toComparable(previous) : null);
+  }
+
+  /**
+   * The project's score history, oldest first — the series a sparkline needs.
+   */
+  async getTrend(projectId: string, limit = 30) {
+    const rows = await this.prisma.technicalAudit.findMany({
+      where: { projectId, score: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        createdAt: true,
+        score: true,
+        targetUrl: true,
+        pagesCrawled: true,
+        triggeredBy: true,
+        findings: { select: { status: true } },
+      },
+    });
+
+    return rows
+      .map((r) => ({
+        auditId: r.id,
+        at: r.createdAt.toISOString(),
+        score: r.score,
+        targetUrl: r.targetUrl,
+        pagesCrawled: r.pagesCrawled,
+        triggeredBy: r.triggeredBy,
+        failures: r.findings.filter((f) => f.status === 'fail').length,
+      }))
+      .reverse();
+  }
+
 }

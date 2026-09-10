@@ -81,59 +81,75 @@ export class SchedulingService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`Registered handler for task: ${taskName}`);
   }
 
+  /** Redis-backed BullMQ scheduling is only used when explicitly selected.
+      The default (`cron`) backend polls the ScheduleConfig row in-process, so
+      the DB write below is the source of truth and Redis is never touched. */
+  private get useBullmq(): boolean {
+    return (process.env.SCHEDULING_BACKEND ?? 'cron') === 'bullmq';
+  }
+
   async setSchedule(
     projectId: string,
-    cadence: 'weekly' | 'monthly' | 'manual-only',
+    cadence: 'daily' | 'weekly' | 'monthly' | 'manual-only',
     targetUrl: string,
     taskName: string = 'technical-audit',
   ): Promise<{ cadence: string; nextRunAt: string | null; active: boolean }> {
-    // Remove existing scheduled job
-    await this.removeExistingJobs(projectId, taskName);
+    if (this.useBullmq) await this.removeExistingJobs(projectId, taskName);
 
     if (cadence === 'manual-only') {
       await this.prisma.scheduleConfig.upsert({
         where: { projectId },
-        create: { projectId, cadence, active: false, nextRunAt: null },
+        create: { projectId, cadence, active: false, nextRunAt: null, targetUrl: null },
         update: { cadence, active: false, nextRunAt: null },
       });
       this.logger.log(`Schedule set to manual-only for project ${projectId}`);
       return { cadence, nextRunAt: null, active: false };
     }
 
-    const cronExpr = cadence === 'weekly' ? '0 0 * * 1' : '0 0 1 * *';
     const nextRunAt = this.getNextRunDate(cadence);
 
-    // Use JobScheduler for repeatable jobs (BullMQ v6 API)
-    await this.queue.upsertJobScheduler(
-      `${taskName}:${projectId}`,
-      { pattern: cronExpr },
-      { data: { taskName, projectId, targetUrl } },
-    );
+    if (this.useBullmq) {
+      // '0 0 * * *' daily · '0 0 * * 1' Monday · '0 0 1 * *' 1st of month
+      const cronExpr = cadence === 'daily' ? '0 0 * * *' : cadence === 'weekly' ? '0 0 * * 1' : '0 0 1 * *';
+      await this.queue.upsertJobScheduler(
+        `${taskName}:${projectId}`,
+        { pattern: cronExpr },
+        { data: { taskName, projectId, targetUrl } },
+      );
+    }
 
     await this.prisma.scheduleConfig.upsert({
       where: { projectId },
-      create: { projectId, cadence, active: true, nextRunAt },
-      update: { cadence, active: true, nextRunAt },
+      create: { projectId, cadence, active: true, nextRunAt, targetUrl: targetUrl || null },
+      update: { cadence, active: true, nextRunAt, targetUrl: targetUrl || null },
     });
 
     this.logger.log(`Schedule set to ${cadence} for project ${projectId}, next run: ${nextRunAt.toISOString()}`);
     return { cadence, nextRunAt: nextRunAt.toISOString(), active: true };
   }
 
-  async getSchedule(projectId: string): Promise<{ cadence: string; nextRunAt: string | null; active: boolean }> {
+  async getSchedule(projectId: string): Promise<{
+    cadence: string;
+    nextRunAt: string | null;
+    active: boolean;
+    lastRunAt: string | null;
+    lastError: string | null;
+  }> {
     const config = await this.prisma.scheduleConfig.findUnique({ where: { projectId } });
     if (!config) {
-      return { cadence: 'manual-only', nextRunAt: null, active: false };
+      return { cadence: 'manual-only', nextRunAt: null, active: false, lastRunAt: null, lastError: null };
     }
     return {
       cadence: config.cadence,
       nextRunAt: config.nextRunAt?.toISOString() || null,
       active: config.active,
+      lastRunAt: config.lastRunAt?.toISOString() || null,
+      lastError: config.lastError ?? null,
     };
   }
 
   async removeSchedule(projectId: string, taskName: string = 'technical-audit'): Promise<void> {
-    await this.removeExistingJobs(projectId, taskName);
+    if (this.useBullmq) await this.removeExistingJobs(projectId, taskName);
     await this.prisma.scheduleConfig.updateMany({
       where: { projectId },
       data: { active: false, nextRunAt: null, cadence: 'manual-only' },
@@ -148,16 +164,21 @@ export class SchedulingService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private getNextRunDate(cadence: 'weekly' | 'monthly'): Date {
+  private getNextRunDate(cadence: 'daily' | 'weekly' | 'monthly'): Date {
     const now = new Date();
+    if (cadence === 'daily') {
+      const next = new Date(now);
+      next.setDate(now.getDate() + 1);
+      next.setHours(0, 0, 0, 0);
+      return next;
+    }
     if (cadence === 'weekly') {
       const next = new Date(now);
       const daysUntilMonday = (8 - now.getDay()) % 7 || 7;
       next.setDate(now.getDate() + daysUntilMonday);
       next.setHours(0, 0, 0, 0);
       return next;
-    } else {
-      return new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
     }
+    return new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
   }
 }

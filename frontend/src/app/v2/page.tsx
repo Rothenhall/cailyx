@@ -2,7 +2,7 @@
 
 /**
  * /v2 — the Cailyx operator console. A fixed three-band canvas: the Flywheel
- * welded to the left wall, the Analytics card floating between, the Agents Feed
+ * welded to the left wall, the Audits card floating between, the Agents Feed
  * (with the Cailyx Assistant beneath it) on the right, and the Context drawer
  * welded to the right wall.
  *
@@ -13,19 +13,22 @@
  * @module app/v2/page
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import './v2.css';
 import { useConsole } from './_lib/useConsole';
 import { TopBar } from './_components/TopBar';
 import { ContextPanel, CONTEXT_NUB_W } from './_components/ContextPanel';
 import { AgentsFeed } from './_components/AgentsFeed';
-import { Analytics } from './_components/Analytics';
+import { Audits } from './_components/Audits';
+import { TechnicalAuditWorkspace } from './_components/TechnicalAuditWorkspace';
 import { ChatBot, type ChatSeed } from './_components/ChatBot';
 import { Flywheel, FLYWHEEL_VB } from './_components/Flywheel';
 import { ErrorBoundary } from './_components/ErrorBoundary';
-import { SettingsPanel } from './_components/SettingsPanel';
+import { HIDDEN_INTEGRATIONS, SettingsPanel } from './_components/SettingsPanel';
 import { NewProjectModal } from './_components/NewProjectModal';
 import { ToastStack, useToasts } from './_components/Toasts';
+import { CommandPalette, type Command } from './_components/CommandPalette';
+import { AgentIcon, LogoutIcon, PlugIcon, PlusIcon, SyncIcon, UsersIcon } from './_components/icons';
 import { API_URL } from '@/lib/api';
 
 export default function V2Console() {
@@ -35,6 +38,22 @@ export default function V2Console() {
   const [panel, setPanel] = useState<'connections' | 'users' | null>(null);
   const [newProject, setNewProject] = useState(false);
   const [seed, setSeed] = useState<ChatSeed | null>(null);
+  const [agentKey, setAgentKey] = useState<string | null>(null);
+  const [palette, setPalette] = useState(false);
+  /* the Technical tile takes over the canvas rather than opening in-card */
+  const [expanded, setExpanded] = useState<'technical' | null>(null);
+
+  /* ⌘K / Ctrl-K opens the palette from anywhere */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPalette((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   /* the id monotonically increases so handing over the same text twice still
      registers as a new event on the chat side */
@@ -52,7 +71,76 @@ export default function V2Console() {
     );
   }
 
-  const integrations = c.integrations?.integrations ?? [];
+  /* Hidden integrations are filtered here rather than at the render sites, so
+     the header's connected badge counts the same set the operator can open. */
+  const integrations = (c.integrations?.integrations ?? []).filter(
+    (i) => !HIDDEN_INTEGRATIONS.has(i.key),
+  );
+
+  const commands: Command[] = [
+    ...(c.agents?.agents ?? []).map((a) => ({
+      id: `agent:${a.key}`,
+      label: a.name,
+      group: 'Agents' as const,
+      keywords: `${a.key} ${a.category} ${a.headline}`,
+      hint: a.status,
+      icon: <AgentIcon agentKey={a.key} size={16} />,
+      run: () => setAgentKey(a.key),
+    })),
+    ...c.projects.map((p) => ({
+      id: `project:${p.id}`,
+      label: p.domain,
+      group: 'Projects' as const,
+      keywords: `${p.name} switch`,
+      hint: p.id === c.activeId ? 'current' : undefined,
+      icon: <PlusIcon className="h-4 w-4" />,
+      run: () => c.selectProject(p.id),
+    })),
+    {
+      id: 'w:connections',
+      label: 'Connections & setup gates',
+      group: 'Workspace' as const,
+      keywords: 'integrations keys api',
+      icon: <PlugIcon className="h-4 w-4" />,
+      run: () => setPanel('connections'),
+    },
+    ...(c.user?.role === 'admin'
+      ? [
+          {
+            id: 'w:team',
+            label: 'Team',
+            group: 'Workspace' as const,
+            keywords: 'users operators roles',
+            icon: <UsersIcon className="h-4 w-4" />,
+            run: () => setPanel('users'),
+          } as Command,
+        ]
+      : []),
+    {
+      id: 'w:new',
+      label: 'New project',
+      group: 'Workspace' as const,
+      keywords: 'create add domain',
+      icon: <PlusIcon className="h-4 w-4" />,
+      run: () => setNewProject(true),
+    },
+    {
+      id: 'w:refresh',
+      label: 'Refresh agents',
+      group: 'Workspace' as const,
+      keywords: 'reload poll',
+      icon: <SyncIcon className="h-4 w-4" />,
+      run: () => c.refreshAgents(),
+    },
+    {
+      id: 'w:logout',
+      label: 'Log out',
+      group: 'Workspace' as const,
+      keywords: 'sign out exit',
+      icon: <LogoutIcon className="h-4 w-4" />,
+      run: () => c.logout(),
+    },
+  ];
 
   return (
     /* `.v2` scopes the whole design system — the type scale, radius and motion
@@ -67,7 +155,8 @@ export default function V2Console() {
         onLogout={c.logout}
         onOpenConnections={() => setPanel('connections')}
         onOpenUsers={() => setPanel('users')}
-        connectedCount={c.integrations?.summary.connected ?? null}
+        onOpenPalette={() => setPalette(true)}
+        connectedCount={c.integrations ? integrations.filter((i) => i.connected).length : null}
       />
 
       {/* Left band reserved for the wall-mounted Flywheel / Context; the rest is
@@ -77,7 +166,7 @@ export default function V2Console() {
           The gutters come from the wall components' own constants (see the
           .v2-canvas rules in v2.css), so they can't drift out of sync. */}
       <main
-        className="v2-dots v2-canvas relative grid min-h-0 flex-1"
+        className={`v2-dots v2-canvas relative grid min-h-0 flex-1${expanded ? ' is-zoomed' : ''}`}
         style={{
           ['--wheel-half' as string]: `${FLYWHEEL_VB / 2}px`,
           ['--nub' as string]: `${CONTEXT_NUB_W}px`,
@@ -95,17 +184,16 @@ export default function V2Console() {
           <ContextPanel project={c.project} agents={c.agents} onSave={c.saveProject} />
         </ErrorBoundary>
 
-        {/* Analytics card, parked between the Flywheel's visible half and the feed */}
-        <section className="v2-analytics pointer-events-none flex min-h-0 items-center justify-center py-6">
-          <ErrorBoundary label="Analytics">
-            <Analytics
+        {/* Audits card, parked between the Flywheel's visible half and the feed */}
+        <section className="v2-audits pointer-events-none flex min-h-0 items-center justify-center py-6">
+          <ErrorBoundary label="Audits">
+            <Audits
               key={c.activeId ?? 'none'}
               projectId={c.activeId}
               domain={c.project?.domain ?? null}
-              integrations={integrations}
               booting={c.booting}
-              onOpenConnections={() => setPanel('connections')}
               onNotify={notify}
+              onExpand={() => setExpanded('technical')}
             />
           </ErrorBoundary>
         </section>
@@ -115,8 +203,24 @@ export default function V2Console() {
             <AgentsFeed
               data={c.agents}
               loading={c.booting || c.agentsLoading || c.projectPending}
+              projectId={c.activeId}
+              runCtx={{ integrations, querySets: c.querySets }}
+              selectedKey={agentKey}
+              onSelect={setAgentKey}
               onRefresh={c.refreshAgents}
               onAsk={(key) => handOff('agent', key)}
+              onRan={(key, error) => {
+                if (error) {
+                  notify(error, 'warn');
+                  return;
+                }
+                // the roster is the source of truth for what a run produced,
+                // so report from the refreshed card rather than guessing
+                void c.refreshAgentsAnd((next) => {
+                  const a = next.agents.find((x) => x.key === key);
+                  notify(a ? `${a.name}: ${a.headline}` : 'run complete');
+                });
+              }}
               chat={
                 <ChatBot
                   project={c.project}
@@ -129,6 +233,18 @@ export default function V2Console() {
             />
           </ErrorBoundary>
         </section>
+
+        {expanded === 'technical' && (
+          <ErrorBoundary label="Technical audit">
+            <TechnicalAuditWorkspace
+              key={c.activeId ?? 'none'}
+              projectId={c.activeId}
+              domain={c.project?.domain ?? null}
+              onClose={() => setExpanded(null)}
+              onNotify={notify}
+            />
+          </ErrorBoundary>
+        )}
       </main>
 
       <SettingsPanel
@@ -151,6 +267,8 @@ export default function V2Console() {
           }}
         />
       )}
+
+      <CommandPalette open={palette} onClose={() => setPalette(false)} commands={commands} />
 
       <ToastStack toasts={toasts} onDismiss={dismiss} />
     </div>

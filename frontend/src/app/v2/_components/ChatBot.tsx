@@ -129,7 +129,7 @@ function Bubble({ m }: { m: Msg }) {
     <div className={`v2msg-in flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
       {!isUser && (
         <div className="mb-1 flex items-center gap-1.5 pl-0.5">
-          <span className="grid h-4 w-4 place-items-center rounded-full bg-accent-dim/40 text-caption font-semibold text-accent">
+          <span className="grid h-4 w-4 place-items-center rounded-full bg-accent-dim/[0.4] text-caption font-semibold text-accent">
             C
           </span>
           <span className="text-eyebrow font-semibold uppercase tracking-eyebrow text-faint">Assistant</span>
@@ -257,12 +257,12 @@ export function ChatBot({
     <div className="flex h-full w-full flex-col overflow-hidden rounded-r4 bg-bg-raised/25 backdrop-blur-[1.5px]">
       {/* header */}
       <div className="flex items-center gap-2 px-3 pb-2.5 pt-3">
-        <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-accent-dim/30 text-body font-semibold text-accent ring-1 ring-accent-dim/40">
+        <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-accent-dim/24 text-body font-semibold text-accent ring-1 ring-accent-dim/[0.4]">
           C
         </span>
         <div className="min-w-0 flex-1 leading-tight">
-          <div className="truncate text-body font-semibold text-text">Cailyx Assistant</div>
-          <div className="flex items-center gap-1 truncate text-caption text-faint">
+          <div className="truncate font-display text-body font-semibold text-text">Cailyx Assistant</div>
+          <div className="flex items-center gap-1 truncate font-display text-caption text-faint">
             <span className="h-1 w-1 shrink-0 rounded-full bg-accent" />
             <span className="truncate">
               {project ? `answers from ${project.domain}` : 'no project selected'}
@@ -298,7 +298,7 @@ export function ChatBot({
           {pending && (
             <div className="v2msg-in flex flex-col items-start">
               <div className="mb-1 flex items-center gap-1.5 pl-0.5">
-                <span className="grid h-4 w-4 place-items-center rounded-full bg-accent-dim/40 text-caption font-semibold text-accent">
+                <span className="grid h-4 w-4 place-items-center rounded-full bg-accent-dim/[0.4] text-caption font-semibold text-accent">
                   C
                 </span>
                 <span className="text-eyebrow font-semibold uppercase tracking-eyebrow text-faint">Assistant</span>

@@ -38,6 +38,8 @@ export class AgentsService {
       serpTrackers,
       serpSnapshot,
       alerts,
+      attributionRows,
+      observations,
     ] = await Promise.all([
       this.prisma.technicalAudit.findFirst({
         where: { projectId },
@@ -75,6 +77,17 @@ export class AgentsService {
         select: { capturedAt: true, queriesRun: true, status: true },
       }),
       this.prisma.alert.findMany({ where: { projectId }, orderBy: { createdAt: 'desc' }, take: 10, select: { createdAt: true, kind: true, severity: true } }),
+      this.prisma.attributionResponse.findMany({
+        where: { projectId },
+        orderBy: { createdAt: 'desc' },
+        select: { source: true, prompt: true, createdAt: true },
+        take: 500,
+      }),
+      this.prisma.observation.findMany({
+        where: { run: { projectId } },
+        select: { mentioned: true, competitors: true },
+        take: 1000,
+      }),
     ]);
 
     const cards: AgentCard[] = [];
@@ -335,6 +348,99 @@ export class AgentsService {
         lastActivityAt: alerts[0]?.createdAt.toISOString() ?? null,
         href: `/projects/${projectId}/monitoring`,
         cta: alerts.length ? 'Review' : 'Open',
+      });
+    }
+
+    // ── Attribution Agent (self-report) ─────────────────────
+    // Layer 4 of the GEO measurement stack: what the buyer says, not what
+    // analytics infers. AI referrals land as Direct and agentic browsers look
+    // like Chrome, so this is the only channel that survives.
+    {
+      const AI = ['chatgpt', 'claude', 'perplexity', 'gemini', 'copilot', 'other-ai'];
+      const total = attributionRows.length;
+      const ai = attributionRows.filter((r) => AI.includes(r.source)).length;
+      const share = total ? Math.round((ai / total) * 100) : 0;
+      const withPrompt = attributionRows.filter((r) => r.prompt && r.prompt.trim()).length;
+      cards.push({
+        key: 'attribution',
+        name: 'Attribution Agent',
+        category: 'attribution',
+        status: total === 0 ? 'idle' : ai > 0 ? 'ready' : 'idle',
+        headline:
+          total === 0
+            ? 'Ask buyers where they came from'
+            : `${share}% of ${total} said an AI assistant`,
+        count: total,
+        metric: total ? `${ai} of ${total} AI-sourced · ${withPrompt} shared their prompt` : null,
+        activity:
+          total === 0
+            ? ['No responses yet — add the form to your site.', 'Inferred analytics cannot see AI referrals; asking can.']
+            : [
+                `${ai} of ${total} named an AI assistant.`,
+                withPrompt ? `${withPrompt} reported the prompt they used.` : 'No prompts reported yet.',
+              ],
+        lastActivityAt: attributionRows[0]?.createdAt.toISOString() ?? null,
+        href: `/projects/${projectId}/attribution`,
+        cta: total === 0 ? 'Install the form' : 'Review responses',
+      });
+    }
+
+    // ── Rivals Agent (competitive benchmark) ────────────────
+    // Share of voice only scores names on the project's list, so an empty
+    // list silently disables the whole competitive comparison. This card
+    // makes that visible instead of leaving it a blank chart elsewhere.
+    {
+      let rivalCount = 0;
+      try {
+        const parsed: unknown = JSON.parse(project?.competitors ?? '[]');
+        rivalCount = Array.isArray(parsed) ? parsed.length : 0;
+      } catch {
+        rivalCount = 0;
+      }
+      const seen = new Set<string>();
+      let lost = 0;
+      for (const o of observations) {
+        let list: string[] = [];
+        try {
+          const v: unknown = JSON.parse(o.competitors);
+          list = Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+        } catch {
+          list = [];
+        }
+        for (const n of list) seen.add(n);
+        if (!o.mentioned && list.length > 0) lost += 1;
+      }
+
+      const headline =
+        rivalCount === 0
+          ? 'No rivals named — benchmarking is off'
+          : observations.length === 0
+            ? `${rivalCount} rival${rivalCount === 1 ? '' : 's'} tracked · no answers measured yet`
+            : `${lost} prompt${lost === 1 ? '' : 's'} lost to a rival`;
+
+      cards.push({
+        key: 'rivals',
+        name: 'Rivals Agent',
+        category: 'competitive',
+        status: rivalCount === 0 ? 'attention' : lost > 0 ? 'ready' : 'idle',
+        count: rivalCount,
+        headline,
+        metric: observations.length ? `${seen.size} seen across ${observations.length} answers` : null,
+        activity:
+          rivalCount === 0
+            ? [
+                'Share of voice only counts names on the list — it is empty.',
+                'Name a rival to switch the competitive benchmark on.',
+              ]
+            : [
+                `${rivalCount} on the benchmark list.`,
+                observations.length
+                  ? `${seen.size} actually appeared across ${observations.length} measured answers.`
+                  : 'Run a measurement to see who wins your prompts.',
+              ],
+        lastActivityAt: null,
+        href: `/projects/${projectId}/competitors`,
+        cta: rivalCount === 0 ? 'Name a rival' : observations.length === 0 ? 'Run measurement' : 'Review head-to-head',
       });
     }
 
