@@ -16,9 +16,13 @@ import { ApiError } from '@/lib/api';
 import {
   getSeoAudit,
   getSeoComparison,
+  getSeoSchedule,
   listSeoAudits,
   runSeoAudit,
+  setSeoSchedule,
   submitSeoSitemaps,
+  type AuditCadence,
+  type AuditSchedule,
 } from '@/lib/terminal-api';
 import type { AuditDelta, SeoAudit, SeoComparison } from '@/types/terminal';
 import { band, rel } from '@/app/v2/_lib/audit';
@@ -54,6 +58,8 @@ export function SeoAuditWorkspace({
   const [tab, setTab] = useState<Tab>('overview');
   /** null = still loading; 'ok' = have data or can run; string = a blocking reason */
   const [gate, setGate] = useState<string | null | 'ok'>(null);
+  const [schedule, setSchedule] = useState<AuditSchedule | null>(null);
+  const [savingSchedule, setSavingSchedule] = useState(false);
 
   const load = useCallback(async () => {
     if (!projectId) {
@@ -61,6 +67,7 @@ export function SeoAuditWorkspace({
       return;
     }
     setLoading(true);
+    getSeoSchedule(projectId).then(setSchedule).catch(() => setSchedule(null));
     try {
       const list = await listSeoAudits(projectId);
       if (list[0]) {
@@ -99,6 +106,27 @@ export function SeoAuditWorkspace({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  const changeCadence = async (cadence: AuditCadence) => {
+    if (!projectId || savingSchedule) return;
+    setSavingSchedule(true);
+    try {
+      setSchedule(await setSeoSchedule(projectId, cadence));
+      onNotify(cadence === 'manual-only' ? 'SEO monitoring off' : `SEO monitoring: ${cadence}`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'could not update the schedule', 'warn');
+    } finally {
+      setSavingSchedule(false);
+    }
+  };
+
+  const until = (iso: string | null): string => {
+    if (!iso) return 'soon';
+    const ms = new Date(iso).getTime() - Date.now();
+    if (!Number.isFinite(ms) || ms <= 0) return 'due now';
+    const h = Math.round(ms / 3_600_000);
+    return h < 24 ? `in ${h}h` : `in ${Math.round(h / 24)}d`;
+  };
 
   const doRun = async () => {
     if (!projectId || busy) return;
@@ -169,6 +197,38 @@ export function SeoAuditWorkspace({
           )}
           <span>{audit ? `audited ${rel(audit.createdAt)}` : 'never audited'}</span>
         </span>
+
+        <label
+          className="flex shrink-0 items-center gap-1.5"
+          title={
+            !schedule
+              ? 'Recurring SEO audits'
+              : schedule.lastError
+                ? `Last scheduled run failed: ${schedule.lastError}`
+                : schedule.active
+                  ? `Next run ${until(schedule.nextRunAt)}${schedule.lastRunAt ? ` · last ran ${rel(schedule.lastRunAt)}` : ''}`
+                  : 'Monitoring off — runs only when you press Re-run'
+          }
+        >
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              schedule?.lastError ? 'bg-a-bad' : schedule?.active ? 'bg-a-ok' : 'bg-faint/40'
+            }`}
+          />
+          <span className="text-eyebrow uppercase tracking-eyebrow text-faint">Auto</span>
+          <select
+            value={schedule?.cadence ?? 'manual-only'}
+            disabled={savingSchedule || !projectId || gate !== 'ok'}
+            onChange={(e) => void changeCadence(e.target.value as AuditCadence)}
+            className="rounded-r2 border border-border bg-bg-raised px-1.5 py-1 text-caption text-dim outline-none focus:border-border-strong disabled:opacity-50"
+          >
+            <option value="manual-only">off</option>
+            <option value="daily">daily</option>
+            <option value="weekly">weekly</option>
+            <option value="monthly">monthly</option>
+          </select>
+        </label>
+
         <Button type="button" variant="soft" size="sm" onClick={doRun} disabled={busy || !projectId || gate !== 'ok'} className="shrink-0">
           <SyncIcon className={`h-3 w-3 ${busy ? 'animate-spin' : ''}`} />
           {busy ? 'running...' : 'Re-run'}

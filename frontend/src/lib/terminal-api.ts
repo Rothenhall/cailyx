@@ -109,6 +109,12 @@ export const getSeoTrend = (projectId: string, limit = 30) =>
 export const submitSeoSitemaps = (projectId: string) =>
   apiFetch<{ submitted: string[] }>(`/projects/${projectId}/seo-audit/submit-sitemaps`, { method: 'POST' });
 
+export const getSeoSchedule = (projectId: string) =>
+  apiFetch<AuditSchedule>(`/projects/${projectId}/seo-audit/schedule`);
+
+export const setSeoSchedule = (projectId: string, cadence: AuditCadence) =>
+  apiFetch<AuditSchedule>(`/projects/${projectId}/seo-audit/schedule`, { method: 'PUT', json: { cadence } });
+
 export const listAudits = (projectId: string) =>
   apiFetch<{
     audits: Array<{

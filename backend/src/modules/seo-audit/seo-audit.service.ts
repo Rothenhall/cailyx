@@ -408,6 +408,45 @@ export class SeoAuditService {
     };
   }
 
+  /* ── recurring schedule (the `seo*` columns of ScheduleConfig) ───────── */
+
+  async getSchedule(projectId: string) {
+    const c = await this.prisma.scheduleConfig.findUnique({ where: { projectId } });
+    return {
+      cadence: c?.seoCadence ?? 'manual-only',
+      nextRunAt: c?.seoNextRunAt?.toISOString() ?? null,
+      active: c?.seoActive ?? false,
+      lastRunAt: c?.seoLastRunAt?.toISOString() ?? null,
+      lastError: c?.seoLastError ?? null,
+    };
+  }
+
+  async setSchedule(projectId: string, cadence: 'daily' | 'weekly' | 'monthly' | 'manual-only') {
+    if (cadence === 'manual-only') {
+      await this.prisma.scheduleConfig.upsert({
+        where: { projectId },
+        create: { projectId, seoCadence: cadence, seoActive: false, seoNextRunAt: null },
+        update: { seoCadence: cadence, seoActive: false, seoNextRunAt: null, seoLastError: null },
+      });
+      return { cadence, nextRunAt: null, active: false, lastRunAt: null, lastError: null };
+    }
+    const days = cadence === 'daily' ? 1 : cadence === 'weekly' ? 7 : 30;
+    const nextRunAt = new Date(Date.now() + days * 86_400_000);
+    await this.prisma.scheduleConfig.upsert({
+      where: { projectId },
+      create: { projectId, seoCadence: cadence, seoActive: true, seoNextRunAt: nextRunAt },
+      update: { seoCadence: cadence, seoActive: true, seoNextRunAt: nextRunAt, seoLastError: null },
+    });
+    const c = await this.prisma.scheduleConfig.findUnique({ where: { projectId } });
+    return {
+      cadence,
+      nextRunAt: nextRunAt.toISOString(),
+      active: true,
+      lastRunAt: c?.seoLastRunAt?.toISOString() ?? null,
+      lastError: null,
+    };
+  }
+
   /** The one thing this audit can *do*: re-submit the property's sitemap(s). */
   async submitSitemaps(projectId: string, userId: string): Promise<{ submitted: string[] }> {
     const site = await this.connections.requireProjectResource(projectId, 'search-console');

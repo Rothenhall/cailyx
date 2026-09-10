@@ -22,6 +22,7 @@ import {
   NotFoundException,
   Param,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -65,6 +66,22 @@ export class SeoAuditController {
   @ApiOperation({ summary: 'Re-submit the property\'s sitemap(s) to Google' })
   submit(@CurrentUser() user: AuthedRequestUser, @Param('projectId') projectId: string) {
     return this.seo.submitSitemaps(projectId, user.userId);
+  }
+
+  @Get('schedule')
+  @ApiOperation({ summary: 'Current recurring-SEO-audit schedule' })
+  getSchedule(@Param('projectId') projectId: string) {
+    return this.seo.getSchedule(projectId);
+  }
+
+  @Put('schedule')
+  @ApiOperation({ summary: 'Set the recurring SEO audit cadence (daily/weekly/monthly/manual-only)' })
+  setSchedule(@Param('projectId') projectId: string, @Body() body: { cadence?: string }) {
+    const c = body?.cadence;
+    if (c !== 'daily' && c !== 'weekly' && c !== 'monthly' && c !== 'manual-only') {
+      throw new BadRequestException('cadence must be daily, weekly, monthly or manual-only');
+    }
+    return this.seo.setSchedule(projectId, c);
   }
 
   @Get(':auditId')

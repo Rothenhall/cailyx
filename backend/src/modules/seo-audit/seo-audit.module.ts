@@ -14,12 +14,13 @@
 import { Module } from '@nestjs/common';
 import { SeoAuditController } from './seo-audit.controller';
 import { SeoAuditService } from './seo-audit.service';
+import { SeoAuditSchedulerService } from './seo-audit-scheduler.service';
 import { GoogleModule } from '../google/google.module';
 
 @Module({
   imports: [GoogleModule],
   controllers: [SeoAuditController],
-  providers: [SeoAuditService],
+  providers: [SeoAuditService, SeoAuditSchedulerService],
   exports: [SeoAuditService],
 })
 export class SeoAuditModule {}

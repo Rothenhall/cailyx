@@ -124,8 +124,17 @@ model ScheduleConfig {
   /// Set when a scheduled run throws, so a silently dead schedule is visible.
   lastError String?
 
+  /// Recurring SEO audit (Search Console) — same one-row-per-project store,
+  /// its own cadence because SEO changes slowly and GSC data lags.
+  seoCadence   String    @default("manual-only")
+  seoNextRunAt DateTime?
+  seoActive    Boolean   @default(false)
+  seoLastRunAt DateTime?
+  seoLastError String?
+
   @@index([projectId])
   @@index([active, nextRunAt])
+  @@index([seoActive, seoNextRunAt])
 }
 
 model PageMetadata {
