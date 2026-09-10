@@ -11,6 +11,25 @@ export const configuration = () => ({
     origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
   },
 
+  // Google OAuth — Search Console + Analytics (modules/google).
+  // Drop in the client id + secret from a Google Cloud project that has the
+  // "Google Search Console API" and "Google Analytics Data/Admin API" enabled,
+  // and add the redirect URI below to that OAuth client's allowed list.
+  google: {
+    clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || '',
+    clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET || '',
+    redirectUri:
+      process.env.GOOGLE_OAUTH_REDIRECT_URI ||
+      `http://localhost:${process.env.PORT || '3002'}/api/integrations/google/callback`,
+    // Where the callback sends the browser once tokens are stored.
+    successRedirect:
+      process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT ||
+      `${process.env.CORS_ORIGIN || 'http://localhost:3000'}/v2`,
+    // 32-byte key (64 hex chars or base64) for AES-256-GCM token encryption.
+    // Optional in dev — a key is derived from JWT_SECRET with a warning.
+    tokenEncKey: process.env.GOOGLE_TOKEN_ENC_KEY || '',
+  },
+
   // Database
   database: {
     url: process.env.DATABASE_URL || 'postgresql://cailyx:cailyx_dev@localhost:5436/cailyx?schema=public',

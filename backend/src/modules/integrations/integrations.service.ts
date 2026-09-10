@@ -28,30 +28,38 @@ export class IntegrationsService {
     const redisConnected = await this.pingRedis();
     const swarmLive = this.config.get<string>('SWARM_ALLOW_LIVE') === '1';
 
+    // Google OAuth is "configured" once the client id + secret are set; the
+    // per-operator connection state (who has authorised which account) lives
+    // on GET /integrations/google/connections, not here.
+    const googleOAuthReady = has('GOOGLE_OAUTH_CLIENT_ID') && has('GOOGLE_OAUTH_CLIENT_SECRET');
+    const googleRow = (key: string, name: string, api: string, doc: string): Integration => ({
+      key,
+      name,
+      category: 'analytics',
+      connected: false,
+      status: googleOAuthReady ? 'not-connected' : 'unavailable',
+      detail: googleOAuthReady
+        ? `${api}. OAuth client is configured — connect a Google account from the connections panel.`
+        : `${api}. Set GOOGLE_OAUTH_CLIENT_ID + GOOGLE_OAUTH_CLIENT_SECRET, then connect a Google account from the panel.`,
+      configHint: 'GOOGLE_OAUTH_CLIENT_ID + GOOGLE_OAUTH_CLIENT_SECRET',
+      connectUrl: null,
+      docsPath: doc,
+    });
+
     const integrations: Integration[] = [
-      // ── analytics (OAuth — not wired yet) ────────────────────
-      {
-        key: 'google-analytics',
-        name: 'Google Analytics',
-        category: 'analytics',
-        connected: false,
-        status: 'not-connected',
-        detail: 'Traffic & behaviour. OAuth connection is an external prerequisite and is not wired yet.',
-        configHint: 'Google OAuth (GA4 Data API)',
-        connectUrl: null,
-        docsPath: 'backend/src/modules/sleeper-refresh/README.md',
-      },
-      {
-        key: 'google-search-console',
-        name: 'Google Search Console',
-        category: 'analytics',
-        connected: false,
-        status: 'not-connected',
-        detail: 'Search rankings & impressions. OAuth connection is an external prerequisite; today GSC data is imported via pasted CSV in sleeper-refresh.',
-        configHint: 'Google OAuth (Search Console API)',
-        connectUrl: null,
-        docsPath: 'backend/src/modules/sleeper-refresh/README.md',
-      },
+      // ── analytics (3-legged OAuth — modules/google) ──────────
+      googleRow(
+        'google-analytics',
+        'Google Analytics',
+        'GA4 sessions, users, channels & top pages',
+        'backend/src/modules/google/README.md',
+      ),
+      googleRow(
+        'google-search-console',
+        'Google Search Console',
+        'Search clicks, impressions, CTR, position & top queries',
+        'backend/src/modules/google/README.md',
+      ),
 
       // ── AI surfaces ─────────────────────────────────────────
       {

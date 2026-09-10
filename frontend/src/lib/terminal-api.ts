@@ -8,12 +8,17 @@ import { apiFetch } from './api';
 import type { User } from '@/types/api';
 import type {
   AgentsResponse,
+  AnalyticsSummary,
   AuditComparison,
   AuditTrendPoint,
+  GoogleConnectionView,
+  GoogleResourcesView,
+  GoogleService,
   IntegrationsResponse,
   LinkGraph,
   ProjectDetail,
   SafeUser,
+  SearchConsoleSummary,
   TechnicalAudit,
 } from '@/types/terminal';
 
@@ -34,6 +39,49 @@ export const getAgents = (projectId: string) =>
   apiFetch<AgentsResponse>(`/projects/${projectId}/agents`);
 
 export const getIntegrations = () => apiFetch<IntegrationsResponse>('/integrations');
+
+/* ── Google (Search Console + Analytics) OAuth ──────────────────────────── */
+
+/** Whether the server has the OAuth client id/secret configured. */
+export const getGoogleStatus = () =>
+  apiFetch<{ configured: boolean }>('/integrations/google/status');
+
+/** Start the consent flow — returns the Google URL to open in a popup. */
+export const authorizeGoogle = (service: GoogleService, projectId?: string) =>
+  apiFetch<{ url: string }>('/integrations/google/authorize', {
+    method: 'POST',
+    json: { service, ...(projectId ? { projectId } : {}) },
+  });
+
+export const listGoogleConnections = () =>
+  apiFetch<GoogleConnectionView[]>('/integrations/google/connections');
+
+export const disconnectGoogle = (service: GoogleService) =>
+  apiFetch<{ ok: true }>(`/integrations/google/connections/${service}`, { method: 'DELETE' });
+
+/** Sites (GSC) or GA4 properties the connected account can read + current map. */
+export const getGoogleResources = (service: GoogleService, projectId: string) =>
+  apiFetch<GoogleResourcesView>(
+    `/integrations/google/resources?service=${service}&projectId=${encodeURIComponent(projectId)}`,
+  );
+
+export const setGoogleResource = (input: {
+  service: GoogleService;
+  projectId: string;
+  resourceId: string;
+  resourceLabel?: string;
+}) =>
+  apiFetch<{ ok: true }>('/integrations/google/resources', { method: 'PUT', json: input });
+
+export const getSearchConsoleSummary = (projectId: string, days = 28) =>
+  apiFetch<SearchConsoleSummary>(
+    `/integrations/google/search-console/summary?projectId=${encodeURIComponent(projectId)}&days=${days}`,
+  );
+
+export const getAnalyticsSummary = (projectId: string, days = 28) =>
+  apiFetch<AnalyticsSummary>(
+    `/integrations/google/analytics/summary?projectId=${encodeURIComponent(projectId)}&days=${days}`,
+  );
 
 export const listAudits = (projectId: string) =>
   apiFetch<{

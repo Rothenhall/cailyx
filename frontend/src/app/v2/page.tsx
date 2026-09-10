@@ -55,6 +55,24 @@ export default function V2Console() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  /* The Google OAuth callback lands the browser back here with ?google=… .
+     Surface the outcome, refresh the connection state, and clean the URL. */
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const g = p.get('google');
+    if (!g) return;
+    const status = p.get('status');
+    if (g === 'error' || status === 'error') {
+      notify(`Google connect failed: ${p.get('reason') ?? 'unknown error'}`, 'warn');
+    } else {
+      notify(`${g === 'analytics' ? 'Google Analytics' : 'Search Console'} connected`);
+      void c.refreshIntegrations();
+      setPanel('connections');
+    }
+    window.history.replaceState({}, '', window.location.pathname);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /* the id monotonically increases so handing over the same text twice still
      registers as a new event on the chat side */
   const handOff = (kind: ChatSeed['kind'], text: string) =>
@@ -252,6 +270,7 @@ export default function V2Console() {
         onClose={() => setPanel(null)}
         user={c.user}
         integrations={integrations}
+        activeProject={c.activeId ? { id: c.activeId, domain: c.project?.domain ?? c.activeId } : null}
         onRecheck={c.refreshIntegrations}
         onNotify={notify}
       />

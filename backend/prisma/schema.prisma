@@ -411,6 +411,48 @@ model RefreshToken {
   @@index([expiresAt])
 }
 
+// ─── Google integrations (Search Console + Analytics, 3-legged OAuth) ──
+// One authorisation per operator per service. Access + refresh tokens are
+// stored AES-256-GCM encrypted (modules/google/crypto.util.ts); the raw
+// values never leave GoogleConnectionService. A project is then mapped to a
+// specific GSC site / GA4 property via GoogleProjectResource.
+
+model GoogleConnection {
+  id           String   @id @default(cuid())
+  userId       String
+  service      String // "search-console" | "analytics"
+  googleEmail  String? // the Google account that granted access
+  scope        String   @default("") // granted scopes, space-joined
+  accessToken  String // encrypted — "ivB64.tagB64.ctB64"
+  refreshToken String // encrypted
+  expiresAt    DateTime // access-token expiry
+  connectedAt  DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastError    String?
+
+  resources GoogleProjectResource[]
+
+  @@unique([userId, service])
+  @@index([userId])
+}
+
+model GoogleProjectResource {
+  id            String    @id @default(cuid())
+  projectId     String
+  service       String // "search-console" | "analytics"
+  connectionId  String
+  resourceId    String // GSC siteUrl, or GA4 "properties/123456789"
+  resourceLabel String?
+  lastSyncAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  connection GoogleConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, service])
+  @@index([connectionId])
+}
+
 // ─── Measurement (Wave 1, PRD §6.6-6.7, SOP-2) ────────────────
 
 model MeasurementRun {

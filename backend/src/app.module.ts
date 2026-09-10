@@ -43,6 +43,7 @@ import { CouncilModule } from './modules/council/council.module';
 import { SerpIntelligenceModule } from './modules/serp-intelligence/serp-intelligence.module';
 import { AuthorityModule } from './modules/authority/authority.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
+import { GoogleModule } from './modules/google/google.module';
 import { AgentsModule } from './modules/agents/agents.module';
 import { UsersModule } from './modules/users/users.module';
 
@@ -128,6 +129,9 @@ import { UsersModule } from './modules/users/users.module';
 
     // Dashboard aggregation — connections + agents feed
     IntegrationsModule,
+
+    // Google Search Console + Analytics (3-legged OAuth)
+    GoogleModule,
     AgentsModule,
 
     // Operator administration (admin only)

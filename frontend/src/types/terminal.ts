@@ -63,6 +63,57 @@ export interface IntegrationsResponse {
   summary: { total: number; connected: number };
 }
 
+/* ── Google (Search Console + Analytics) OAuth ──────────────────────────── */
+
+export type GoogleService = 'search-console' | 'analytics';
+
+export interface GoogleConnectionView {
+  service: GoogleService;
+  connected: boolean;
+  googleEmail: string | null;
+  scope: string;
+  connectedAt: string | null;
+  expiresAt: string | null;
+  expired: boolean;
+  lastError: string | null;
+}
+
+export interface GoogleResourceOption {
+  id: string;
+  label: string;
+  detail?: string;
+}
+
+export interface GoogleResourcesView {
+  service: GoogleService;
+  projectId: string;
+  connected: boolean;
+  options: GoogleResourceOption[];
+  selected: { resourceId: string; resourceLabel: string | null } | null;
+}
+
+export interface SearchConsoleSummary {
+  range: { startDate: string; endDate: string; days: number };
+  site: string;
+  totals: { clicks: number; impressions: number; ctr: number; position: number };
+  topQueries: Array<{ key: string; clicks: number; impressions: number; ctr: number; position: number }>;
+  topPages: Array<{ key: string; clicks: number; impressions: number; ctr: number; position: number }>;
+}
+
+export interface AnalyticsSummary {
+  range: { startDate: string; endDate: string; days: number };
+  property: string;
+  totals: {
+    sessions: number;
+    totalUsers: number;
+    screenPageViews: number;
+    engagementRate: number;
+    averageSessionDuration: number;
+  };
+  channels: Array<{ key: string; sessions: number; totalUsers: number }>;
+  topPages: Array<{ key: string; screenPageViews: number; sessions: number }>;
+}
+
 /** technical-audit finding (subset the Analytics pane renders). */
 export interface AuditFinding {
   id: string;
