@@ -208,6 +208,15 @@ export class SeoAuditService {
       p.issues.some((i) => i.code.startsWith('not-indexed') || i.code === 'noindex' || i.code === 'blocked-robots'),
     ).length;
     const strikingCount = queryRows.filter((q) => q.opportunities.includes('striking-distance')).length;
+    const page1Queries = queryRows.filter((q) => q.position > 0 && q.position <= 10).length;
+    const top3Queries = queryRows.filter((q) => q.position > 0 && q.position <= 3).length;
+
+    // Previous run's page-1 count, so the delta is real over time (not the
+    // "new" placeholder). Cheap: it is a denormalised column now.
+    const prevPage1 = prevAudit
+      ? (await this.prisma.seoAudit.findUnique({ where: { id: prevAudit.id }, select: { page1Queries: true } }))
+          ?.page1Queries ?? null
+      : null;
 
     const deltas: Delta[] = prevAudit
       ? this.diff(prevAudit, {
@@ -219,6 +228,8 @@ export class SeoAuditService {
           criticalCount,
           notIndexed,
           strikingCount,
+          page1Queries,
+          prevPage1,
         })
       : [];
 
@@ -237,6 +248,8 @@ export class SeoAuditService {
         impressions: t.impressions,
         ctr: t.ctr,
         position: round(t.position, 1),
+        page1Queries,
+        top3Queries,
         metrics: JSON.stringify({
           prev: tp ? { clicks: tp.clicks, impressions: tp.impressions, ctr: tp.ctr, position: round(tp.position, 1) } : null,
           timeseries,
@@ -366,24 +379,110 @@ export class SeoAuditService {
       where: { projectId, score: { not: null }, createdAt: { lt: current.createdAt } },
       orderBy: { createdAt: 'desc' },
     });
+
+    const deltas = previous
+      ? this.diff(previous, {
+          score: current.score ?? 0,
+          clicks: current.clicks,
+          impressions: current.impressions,
+          ctr: current.ctr,
+          position: current.position,
+          criticalCount: 0,
+          notIndexed: 0,
+          strikingCount: 0,
+          page1Queries: current.page1Queries,
+          prevPage1: previous.page1Queries,
+        }).filter((d) => d.previous !== null || d.current !== null)
+      : [];
+
     return {
       currentAuditId: current.id,
       previousAuditId: previous?.id ?? null,
       currentAt: current.createdAt.toISOString(),
       previousAt: previous?.createdAt.toISOString() ?? null,
-      deltas: previous
-        ? this.diff(previous, {
-            score: current.score ?? 0,
-            clicks: current.clicks,
-            impressions: current.impressions,
-            ctr: current.ctr,
-            position: current.position,
-            criticalCount: 0,
-            notIndexed: 0,
-            strikingCount: 0,
-          }).filter((d) => d.previous !== null || d.current !== null)
-        : [],
+      deltas,
+      pageChanges: previous ? await this.pageChanges(current.id, previous.id) : emptyPageChanges(),
+      queryChanges: previous ? await this.queryChanges(current.id, previous.id) : { enteredPage1: [], leftPage1: [] },
     };
+  }
+
+  /** How individual URLs moved between two runs — the "how your pages evolved" view. */
+  private async pageChanges(curId: string, prevId: string) {
+    const [cur, prev] = await Promise.all([
+      this.prisma.seoPage.findMany({
+        where: { auditId: curId },
+        select: { url: true, position: true, clicks: true, impressions: true, coverageState: true, issues: true },
+      }),
+      this.prisma.seoPage.findMany({
+        where: { auditId: prevId },
+        select: { url: true, position: true, coverageState: true, issues: true },
+      }),
+    ]);
+    const prevBy = new Map(prev.map((p) => [normUrl(p.url), p]));
+    const isIndexed = (cov: string | null) => !!cov && /indexed/i.test(cov) && !/not indexed/i.test(cov);
+    const hadIssue = (raw: string | null) => {
+      try {
+        return (JSON.parse(raw ?? '[]') as unknown[]).length > 0;
+      } catch {
+        return false;
+      }
+    };
+
+    const improved: Array<{ url: string; from: number; to: number }> = [];
+    const regressed: Array<{ url: string; from: number; to: number }> = [];
+    const nowIndexed: string[] = [];
+    const lostIndex: string[] = [];
+    const nowClean: string[] = [];
+    const added: string[] = [];
+
+    for (const c of cur) {
+      const p = prevBy.get(normUrl(c.url));
+      if (!p) {
+        added.push(c.url);
+        continue;
+      }
+      const from = p.position || 0;
+      const to = c.position || 0;
+      if (from > 0 && to > 0 && from - to >= 3) improved.push({ url: c.url, from: round(from, 1), to: round(to, 1) });
+      else if (from > 0 && to > 0 && to - from >= 3) regressed.push({ url: c.url, from: round(from, 1), to: round(to, 1) });
+      // index-status transitions only mean something when both runs actually
+      // URL-inspected this page — an un-inspected row (outside the budget this
+      // run) has a null coverageState and must not read as "fell out of index".
+      const bothInspected = !!p.coverageState && !!c.coverageState;
+      if (bothInspected && !isIndexed(p.coverageState) && isIndexed(c.coverageState)) nowIndexed.push(c.url);
+      if (bothInspected && isIndexed(p.coverageState) && !isIndexed(c.coverageState)) lostIndex.push(c.url);
+      if (bothInspected && hadIssue(p.issues) && !hadIssue(c.issues)) nowClean.push(c.url);
+    }
+    const curUrls = new Set(cur.map((c) => normUrl(c.url)));
+    const dropped = prev.filter((p) => !curUrls.has(normUrl(p.url))).map((p) => p.url);
+
+    improved.sort((a, b) => b.from - b.to - (a.from - a.to));
+    regressed.sort((a, b) => b.to - b.from - (a.to - a.from));
+    return { improved, regressed, nowIndexed, lostIndex, nowClean, added, dropped };
+  }
+
+  /** Which keywords entered / left page 1 since the previous run. */
+  private async queryChanges(curId: string, prevId: string) {
+    const [cur, prev] = await Promise.all([
+      this.prisma.seoQuery.findMany({ where: { auditId: curId }, select: { query: true, position: true } }),
+      this.prisma.seoQuery.findMany({ where: { auditId: prevId }, select: { query: true, position: true } }),
+    ]);
+    const prevBy = new Map(prev.map((q) => [q.query, q.position]));
+    const enteredPage1: Array<{ query: string; from: number | null; to: number }> = [];
+    const leftPage1: Array<{ query: string; from: number; to: number | null }> = [];
+    for (const c of cur) {
+      const p = prevBy.get(c.query) ?? null;
+      const onNow = c.position > 0 && c.position <= 10;
+      const wasThen = p !== null && p > 0 && p <= 10;
+      if (onNow && !wasThen) enteredPage1.push({ query: c.query, from: p, to: round(c.position, 1) });
+    }
+    for (const p of prev) {
+      const c = cur.find((x) => x.query === p.query)?.position ?? null;
+      const wasOn = p.position > 0 && p.position <= 10;
+      const onNow = c !== null && c > 0 && c <= 10;
+      if (wasOn && !onNow) leftPage1.push({ query: p.query, from: round(p.position, 1), to: c });
+    }
+    return { enteredPage1: enteredPage1.slice(0, 20), leftPage1: leftPage1.slice(0, 20) };
   }
 
   async trend(projectId: string, limit = 30) {
@@ -391,7 +490,16 @@ export class SeoAuditService {
       where: { projectId, score: { not: null } },
       orderBy: { createdAt: 'desc' },
       take: limit,
-      select: { id: true, createdAt: true, score: true, clicks: true, impressions: true, position: true, triggeredBy: true },
+      select: {
+        id: true,
+        createdAt: true,
+        score: true,
+        clicks: true,
+        impressions: true,
+        position: true,
+        page1Queries: true,
+        triggeredBy: true,
+      },
     });
     return {
       history: rows
@@ -402,6 +510,7 @@ export class SeoAuditService {
           clicks: r.clicks,
           impressions: r.impressions,
           position: r.position,
+          page1Queries: r.page1Queries,
           triggeredBy: r.triggeredBy,
         }))
         .reverse(),
@@ -477,6 +586,8 @@ export class SeoAuditService {
       criticalCount: number;
       notIndexed: number;
       strikingCount: number;
+      page1Queries: number;
+      prevPage1: number | null;
     },
   ): Delta[] {
     const mk = (metric: string, label: string, p: number | null, c: number | null, higherIsBetter: boolean): Delta => {
@@ -494,6 +605,7 @@ export class SeoAuditService {
       mk('impressions', 'Impressions', prev.impressions, cur.impressions, true),
       mk('ctr', 'CTR', round(prev.ctr * 100, 2), round(cur.ctr * 100, 2), true),
       mk('position', 'Avg position', round(prev.position, 1), round(cur.position, 1), false),
+      mk('page1', 'Keywords on page 1', cur.prevPage1, cur.page1Queries, true),
       mk('criticalIssues', 'Critical / high issues', null, cur.criticalCount, false),
       mk('notIndexed', 'Pages not indexed', null, cur.notIndexed, false),
       mk('strikingDistance', 'Striking-distance queries', null, cur.strikingCount, false),
@@ -507,6 +619,9 @@ export class SeoAuditService {
   }
 }
 
+function emptyPageChanges() {
+  return { improved: [], regressed: [], nowIndexed: [], lostIndex: [], nowClean: [], added: [], dropped: [] };
+}
 function emptyRow(): SaRow {
   return { keys: [], clicks: 0, impressions: 0, ctr: 0, position: 0 };
 }

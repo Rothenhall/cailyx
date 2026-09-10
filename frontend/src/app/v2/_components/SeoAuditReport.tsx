@@ -20,7 +20,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import type { AuditDelta, SeoAudit, SeoFinding, SeoPageRow, SeoTrendPoint } from '@/types/terminal';
+import type { AuditDelta, SeoAudit, SeoComparison, SeoFinding, SeoPageRow, SeoTrendPoint } from '@/types/terminal';
 import { band, fmtChange, rel, scoreKind, tone as toneOf, type ToneKind } from '@/app/v2/_lib/audit';
 import { Gauge, Pill } from './TechnicalAuditReport';
 import { SectionLabel } from './panel';
@@ -163,6 +163,7 @@ const OPP_LABEL: Record<string, { label: string; tone: ToneKind }> = {
 export function SeoOverview({
   audit,
   deltas,
+  trend,
 }: {
   audit: SeoAudit;
   deltas: AuditDelta[];
@@ -178,6 +179,14 @@ export function SeoOverview({
     return iss.some((i) => i.code.startsWith('not-indexed') || i.code === 'noindex' || i.code === 'blocked-robots');
   });
   const topFixes = [...audit.findings].slice(0, 4);
+
+  const focus = useMemo(() => {
+    return audit.queries
+      .map((q) => ({ ...q, opps: parse<string[]>(q.opportunities, []) }))
+      .filter((q) => q.opps.includes('striking-distance') || q.opps.includes('ctr-gap'))
+      .sort((a, c) => c.impressions - a.impressions)
+      .slice(0, 6);
+  }, [audit.queries]);
 
   const stat = (label: string, value: string, dk: string, unit = '') => (
     <div className="rounded-r3 border border-border/60 bg-bg-inset/40 px-3 py-2.5">
@@ -226,33 +235,191 @@ export function SeoOverview({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         {stat('Clicks', nf(audit.clicks), 'clicks')}
         {stat('Impressions', nf(audit.impressions), 'impressions')}
         {stat('CTR', pct(audit.ctr), 'ctr', 'pp')}
         {stat('Avg position', audit.position.toFixed(1), 'position')}
+        {stat('On page 1', String(audit.page1Queries), 'page1')}
+        {stat('Top 3', String(audit.top3Queries), 'top3')}
       </div>
 
-      <Card title="Fix these first" right={<span className="text-eyebrow tabular-nums text-faint">{audit.findings.length} total</span>}>
-        {topFixes.length === 0 ? (
-          <Empty>No issues or opportunities flagged this run — Search Console is clean.</Empty>
-        ) : (
-          <ul className="flex flex-col gap-1.5">
-            {topFixes.map((f) => (
-              <li key={f.id} className={`rounded-r3 border px-3 py-2 ${toneOf(sevKind(f.severity)).line} ${toneOf(sevKind(f.severity)).soft}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-body font-semibold text-text">{f.title}</span>
-                  <span className={`shrink-0 text-eyebrow font-bold uppercase tracking-wide2 ${toneOf(sevKind(f.severity)).text}`}>
-                    {f.severity}
-                  </span>
-                </div>
-                <p className="mt-0.5 text-caption leading-snug text-faint">{f.recommendedFix}</p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
+      <RunTrend points={trend ?? []} />
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card title="Fix these first" right={<span className="text-eyebrow tabular-nums text-faint">{audit.findings.length} total</span>}>
+          {topFixes.length === 0 ? (
+            <Empty>No issues or opportunities flagged this run — Search Console is clean.</Empty>
+          ) : (
+            <ul className="flex flex-col gap-1.5">
+              {topFixes.map((f) => (
+                <li key={f.id} className={`rounded-r3 border px-3 py-2 ${toneOf(sevKind(f.severity)).line} ${toneOf(sevKind(f.severity)).soft}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-body font-semibold text-text">{f.title}</span>
+                    <span className={`shrink-0 text-eyebrow font-bold uppercase tracking-wide2 ${toneOf(sevKind(f.severity)).text}`}>
+                      {f.severity}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-caption leading-snug text-faint">{f.recommendedFix}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+
+        <Card
+          title="Where to focus next"
+          right={<span className="text-eyebrow tabular-nums text-faint">{focus.length} keyword{focus.length === 1 ? '' : 's'}</span>}
+        >
+          {focus.length === 0 ? (
+            <Empty>
+              No page-2 keywords with enough impressions to chase yet. The lever here is more ranking pages, not on-page
+              tweaks — see the Fixes tab.
+            </Empty>
+          ) : (
+            <ul className="flex flex-col gap-1.5">
+              {focus.map((q) => {
+                const near = q.opps.includes('striking-distance');
+                return (
+                  <li key={q.id} className="rounded-r3 border border-border/60 bg-bg-inset/30 px-3 py-2">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="truncate text-body font-medium text-dim" title={q.topPage ?? q.query}>{q.query}</span>
+                      <span className="shrink-0 text-caption tabular-nums text-faint">
+                        pos {q.position.toFixed(1)} · {nf(q.impressions)} impr
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-caption leading-snug text-faint">
+                      {near
+                        ? 'Just off page 1 — tighten the page for this phrase and add internal links pointing at it.'
+                        : 'Lots of impressions, few clicks — rewrite the title tag and meta description to match this query.'}
+                    </p>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Card>
+      </div>
     </Panel>
+  );
+}
+
+type RunMetric = 'clicks' | 'impressions' | 'position' | 'page1Queries' | 'score';
+const RUN_METRICS: { k: RunMetric; label: string; invert?: boolean; fmt: (n: number) => string }[] = [
+  { k: 'clicks', label: 'Clicks', fmt: nf },
+  { k: 'impressions', label: 'Impressions', fmt: nf },
+  { k: 'position', label: 'Avg position', invert: true, fmt: (n) => n.toFixed(1) },
+  { k: 'page1Queries', label: 'Page-1 keywords', fmt: (n) => String(Math.round(n)) },
+  { k: 'score', label: 'Health score', fmt: (n) => String(Math.round(n)) },
+];
+
+/** How the site has moved across every stored audit run. */
+function RunTrend({ points }: { points: SeoTrendPoint[] }) {
+  const [metric, setMetric] = useState<RunMetric>('clicks');
+  const pts = points; // API already returns oldest → newest
+  const m = RUN_METRICS.find((x) => x.k === metric) ?? RUN_METRICS[0];
+  const vals = pts.map((p) => {
+    const raw = p[metric];
+    return raw == null ? 0 : Number(raw);
+  });
+  const enough = pts.length >= 2;
+
+  const W = 640;
+  const H = 150;
+  const padX = 10;
+  const padTop = 14;
+  const padBot = 22;
+  const min = enough ? Math.min(...vals) : 0;
+  const max = enough ? Math.max(...vals) : 1;
+  const span = max - min || 1;
+  const x = (i: number) => padX + (i / Math.max(1, pts.length - 1)) * (W - padX * 2);
+  const y = (v: number) => {
+    const t = (v - min) / span;
+    return padTop + (m.invert ? t : 1 - t) * (H - padTop - padBot);
+  };
+  const line = vals.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const area = `${line} L${x(vals.length - 1).toFixed(1)},${H - padBot} L${x(0).toFixed(1)},${H - padBot} Z`;
+  const first = vals[0] ?? 0;
+  const last = vals[vals.length - 1] ?? 0;
+  const better = m.invert ? last <= first : last >= first;
+  const col = better ? 'var(--a-ok)' : 'var(--a-bad)';
+  const dfmt = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+  return (
+    <Card
+      title="Since you started"
+      right={
+        <span className="text-eyebrow tabular-nums text-faint">
+          {pts.length} run{pts.length === 1 ? '' : 's'}
+        </span>
+      }
+    >
+      <div className="flex flex-wrap gap-1.5">
+        {RUN_METRICS.map((x2) => (
+          <button
+            key={x2.k}
+            type="button"
+            onClick={() => setMetric(x2.k)}
+            className={`rounded-full px-2.5 py-0.5 text-eyebrow font-bold uppercase tracking-wide2 transition-colors ${
+              metric === x2.k ? 'bg-accent text-bg-raised' : 'bg-bg-inset text-faint hover:text-dim'
+            }`}
+          >
+            {x2.label}
+          </button>
+        ))}
+      </div>
+
+      {!enough ? (
+        <p className="mt-3 text-[13px] leading-relaxed text-faint">
+          One run stored so far. This charts how {m.label.toLowerCase()} moves once the audit has run a few times — it
+          re-runs on the schedule set in the header, and every run is kept.
+        </p>
+      ) : (
+        <>
+          <svg viewBox={`0 0 ${W} ${H}`} className="mt-3 w-full overflow-visible" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="seo-run-tr" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={col} stopOpacity={0.2} />
+                <stop offset="100%" stopColor={col} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <path d={area} fill="url(#seo-run-tr)" />
+            <path
+              d={line}
+              fill="none"
+              stroke={col}
+              strokeWidth={1.75}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+            />
+            {pts.map((p, i) => (
+              <circle key={p.auditId} cx={x(i)} cy={y(vals[i])} r={i === pts.length - 1 ? 3.2 : 1.9} fill={col}>
+                <title>
+                  {dfmt(p.at)} · {m.fmt(vals[i])}
+                  {p.triggeredBy === 'scheduled' ? ' (auto)' : ''}
+                </title>
+              </circle>
+            ))}
+            <text x={padX} y={H - 6} className="fill-faint" style={{ fontSize: 9 }}>
+              {dfmt(pts[0].at)}
+            </text>
+            <text x={W - padX} y={H - 6} textAnchor="end" className="fill-faint" style={{ fontSize: 9 }}>
+              {dfmt(pts[pts.length - 1].at)}
+            </text>
+          </svg>
+          <div className="flex flex-wrap items-center justify-between gap-x-4 text-caption">
+            <span className="text-faint">
+              {m.label}: <span className="font-semibold tabular-nums text-dim">{m.fmt(first)}</span> →{' '}
+              <span className={`font-semibold tabular-nums ${better ? 'text-a-ok' : 'text-a-bad'}`}>{m.fmt(last)}</span>
+            </span>
+            <span className="text-eyebrow uppercase tracking-eyebrow text-faint">
+              range {m.fmt(min)}–{m.fmt(max)}
+            </span>
+          </div>
+        </>
+      )}
+    </Card>
   );
 }
 
@@ -272,7 +439,9 @@ export function SeoQueries({ audit }: { audit: SeoAudit }) {
 
   const rows = useMemo(() => {
     let r = audit.queries.map((q) => ({ ...q, opps: parse<string[]>(q.opportunities, []) }));
-    if (filter !== 'all') r = r.filter((q) => q.opps.includes(filter));
+    if (filter === 'page1') r = r.filter((q) => q.position > 0 && q.position <= 10);
+    else if (filter === 'top3') r = r.filter((q) => q.position > 0 && q.position <= 3);
+    else if (filter !== 'all') r = r.filter((q) => q.opps.includes(filter));
     r.sort((a, b) => {
       switch (sort) {
         case 'clicks':
@@ -293,6 +462,8 @@ export function SeoQueries({ audit }: { audit: SeoAudit }) {
   const oppCounts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const q of audit.queries) for (const o of parse<string[]>(q.opportunities, [])) c[o] = (c[o] ?? 0) + 1;
+    c.page1 = audit.queries.filter((q) => q.position > 0 && q.position <= 10).length;
+    c.top3 = audit.queries.filter((q) => q.position > 0 && q.position <= 3).length;
     return c;
   }, [audit.queries]);
 
@@ -317,6 +488,8 @@ export function SeoQueries({ audit }: { audit: SeoAudit }) {
         <div className="flex flex-wrap gap-1.5">
           {[
             ['all', 'all'],
+            ['page1', `on page 1 ${oppCounts.page1 ?? 0}`],
+            ['top3', `top 3 ${oppCounts.top3 ?? 0}`],
             ['striking-distance', `striking distance ${oppCounts['striking-distance'] ?? 0}`],
             ['ctr-gap', `under-clicked ${oppCounts['ctr-gap'] ?? 0}`],
             ['ranking-drop', `dropped ${oppCounts['ranking-drop'] ?? 0}`],
@@ -480,7 +653,108 @@ function KV({ k, v, t }: { k: string; v: React.ReactNode; t?: ReturnType<typeof 
   );
 }
 
-export function SeoPages({ audit }: { audit: SeoAudit }) {
+function MoveList({ title, tone, items }: { title: string; tone: ToneKind; items: string[] }) {
+  if (!items.length) return null;
+  const t = toneOf(tone);
+  return (
+    <div className={`rounded-r3 border px-3 py-2 ${t.line} ${t.soft}`}>
+      <p className={`text-eyebrow font-bold uppercase tracking-eyebrow ${t.text}`}>
+        {title} · {items.length}
+      </p>
+      <ul className="mt-1 space-y-0.5">
+        {items.slice(0, 8).map((u, i) => (
+          <li key={i} className="truncate text-caption text-dim" title={u}>
+            {u.startsWith('http') ? pathOf(u) : u}
+          </li>
+        ))}
+        {items.length > 8 && <li className="text-eyebrow text-faint">+{items.length - 8} more</li>}
+      </ul>
+    </div>
+  );
+}
+
+function RankMoveList({
+  title,
+  tone,
+  items,
+}: {
+  title: string;
+  tone: ToneKind;
+  items: Array<{ url: string; from: number; to: number }>;
+}) {
+  if (!items.length) return null;
+  const t = toneOf(tone);
+  return (
+    <div className={`rounded-r3 border px-3 py-2 ${t.line} ${t.soft}`}>
+      <p className={`text-eyebrow font-bold uppercase tracking-eyebrow ${t.text}`}>
+        {title} · {items.length}
+      </p>
+      <ul className="mt-1 space-y-0.5">
+        {items.slice(0, 8).map((r, i) => (
+          <li key={i} className="flex items-baseline justify-between gap-2 text-caption text-dim">
+            <span className="min-w-0 truncate" title={r.url}>
+              {pathOf(r.url)}
+            </span>
+            <span className="shrink-0 tabular-nums text-faint">
+              {r.from.toFixed(1)} → {r.to.toFixed(1)}
+            </span>
+          </li>
+        ))}
+        {items.length > 8 && <li className="text-eyebrow text-faint">+{items.length - 8} more</li>}
+      </ul>
+    </div>
+  );
+}
+
+/** Concrete page + query movement between this run and the one before it. */
+function SinceLastRun({ cmp }: { cmp: SeoComparison }) {
+  const pc = cmp.pageChanges;
+  const qc = cmp.queryChanges;
+  const nothing =
+    !pc.improved.length &&
+    !pc.regressed.length &&
+    !pc.nowIndexed.length &&
+    !pc.lostIndex.length &&
+    !pc.nowClean.length &&
+    !pc.added.length &&
+    !pc.dropped.length &&
+    !qc.enteredPage1.length &&
+    !qc.leftPage1.length;
+  return (
+    <Card
+      title="Since last run"
+      right={<span className="text-eyebrow text-faint">{cmp.previousAt ? `vs ${rel(cmp.previousAt)}` : 'first run'}</span>}
+    >
+      {!cmp.previousAt ? (
+        <Empty>First stored run — page-by-page movement shows here from the next run on.</Empty>
+      ) : nothing ? (
+        <Empty>No index-status, ranking, or page-1 changes since the previous run.</Empty>
+      ) : (
+        <div className="grid gap-2 sm:grid-cols-2">
+          <RankMoveList title="Moved up" tone="ok" items={pc.improved} />
+          <RankMoveList title="Slipped" tone="bad" items={pc.regressed} />
+          <MoveList
+            title="Entered page 1"
+            tone="ok"
+            items={qc.enteredPage1.map((q) => `${q.query} — ${q.to.toFixed(1)}`)}
+          />
+          <MoveList
+            title="Left page 1"
+            tone="bad"
+            items={qc.leftPage1.map((q) => `${q.query}${q.to != null ? ` — ${q.to.toFixed(1)}` : ''}`)}
+          />
+          <MoveList title="Now indexed" tone="ok" items={pc.nowIndexed} />
+          <MoveList title="Fell out of the index" tone="bad" items={pc.lostIndex} />
+          <MoveList title="Issues cleared" tone="ok" items={pc.nowClean} />
+          <MoveList title="New ranking URLs" tone="neutral" items={pc.added} />
+          <MoveList title="Stopped ranking" tone="neutral" items={pc.dropped} />
+        </div>
+      )}
+    </Card>
+  );
+}
+
+export function SeoPages({ audit, comparison }: { audit: SeoAudit; comparison?: SeoComparison | null }) {
   const [onlyIssues, setOnlyIssues] = useState(audit.pages.length > 25);
   const rows = onlyIssues
     ? audit.pages.filter((p) => parse<unknown[]>(p.issues, []).length > 0 || indexKind(p) === 'bad')
@@ -489,6 +763,7 @@ export function SeoPages({ audit }: { audit: SeoAudit }) {
 
   return (
     <Panel>
+      {comparison && <SinceLastRun cmp={comparison} />}
       <Card
         title="Indexing coverage"
         right={

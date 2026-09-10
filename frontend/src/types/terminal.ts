@@ -110,6 +110,8 @@ export interface SeoAuditSummary {
   impressions: number;
   ctr: number;
   position: number;
+  page1Queries: number;
+  top3Queries: number;
   windowDays: number;
   previousAuditId: string | null;
   triggeredBy: string;
@@ -183,12 +185,29 @@ export interface SeoAudit extends SeoAuditSummary {
   pages: SeoPageRow[];
 }
 
+export interface SeoPageChanges {
+  improved: Array<{ url: string; from: number; to: number }>;
+  regressed: Array<{ url: string; from: number; to: number }>;
+  nowIndexed: string[];
+  lostIndex: string[];
+  nowClean: string[];
+  added: string[];
+  dropped: string[];
+}
+
+export interface SeoQueryChanges {
+  enteredPage1: Array<{ query: string; from: number | null; to: number }>;
+  leftPage1: Array<{ query: string; from: number; to: number | null }>;
+}
+
 export interface SeoComparison {
   currentAuditId: string;
   previousAuditId: string | null;
   currentAt: string;
   previousAt: string | null;
   deltas: AuditDelta[];
+  pageChanges: SeoPageChanges;
+  queryChanges: SeoQueryChanges;
 }
 
 export interface SeoTrendPoint {
@@ -198,6 +217,7 @@ export interface SeoTrendPoint {
   clicks: number;
   impressions: number;
   position: number;
+  page1Queries: number;
   triggeredBy: string;
 }
 

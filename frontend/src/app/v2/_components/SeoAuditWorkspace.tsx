@@ -17,6 +17,7 @@ import {
   getSeoAudit,
   getSeoComparison,
   getSeoSchedule,
+  getSeoTrend,
   listSeoAudits,
   runSeoAudit,
   setSeoSchedule,
@@ -24,7 +25,7 @@ import {
   type AuditCadence,
   type AuditSchedule,
 } from '@/lib/terminal-api';
-import type { AuditDelta, SeoAudit, SeoComparison } from '@/types/terminal';
+import type { AuditDelta, SeoAudit, SeoComparison, SeoTrendPoint } from '@/types/terminal';
 import { band, rel } from '@/app/v2/_lib/audit';
 import { SeoFixes, SeoOverview, SeoPages, SeoQueries } from './SeoAuditReport';
 import { Button } from './Button';
@@ -53,6 +54,7 @@ export function SeoAuditWorkspace({
 }) {
   const [audit, setAudit] = useState<SeoAudit | null>(null);
   const [comparison, setComparison] = useState<SeoComparison | null>(null);
+  const [trend, setTrend] = useState<SeoTrendPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<Tab>('overview');
@@ -68,6 +70,7 @@ export function SeoAuditWorkspace({
     }
     setLoading(true);
     getSeoSchedule(projectId).then(setSchedule).catch(() => setSchedule(null));
+    getSeoTrend(projectId).then(setTrend).catch(() => setTrend([]));
     try {
       const list = await listSeoAudits(projectId);
       if (list[0]) {
@@ -94,6 +97,7 @@ export function SeoAuditWorkspace({
   useEffect(() => {
     setAudit(null);
     setComparison(null);
+    setTrend([]);
     setTab('overview');
     setGate(null);
     void load();
@@ -287,9 +291,9 @@ export function SeoAuditWorkspace({
           </div>
 
           <div className="min-h-0 flex-1">
-            {tab === 'overview' && <SeoOverview audit={audit} deltas={deltas} />}
+            {tab === 'overview' && <SeoOverview audit={audit} deltas={deltas} trend={trend} />}
             {tab === 'queries' && <SeoQueries audit={audit} />}
-            {tab === 'pages' && <SeoPages audit={audit} />}
+            {tab === 'pages' && <SeoPages audit={audit} comparison={comparison} />}
             {tab === 'fixes' && <SeoFixes audit={audit} onSubmitSitemaps={submitSitemaps} />}
           </div>
         </div>
