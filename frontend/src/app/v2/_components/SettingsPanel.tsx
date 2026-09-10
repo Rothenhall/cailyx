@@ -71,11 +71,6 @@ const CAT_ORDER: IntegrationCategory[] = [
 /** Features gated by missing CODE, not just a missing env value (v1 GatesCard). */
 const NOT_WIRED = [
   {
-    name: 'Google Analytics / Search Console OAuth',
-    detail: 'Connect buttons report not-connected — the 3-legged OAuth flow + token storage is not built.',
-    ref: 'READINESS §3.1',
-  },
-  {
     name: 'Redis-backed rate-limit store',
     detail: 'Throttler uses an in-memory store — fine for one instance, wrong for several.',
     ref: '§5.7',
@@ -338,7 +333,12 @@ export function SettingsPanel({
 
               {/* Google — the one connector with a real OAuth action, so it
                   leads rather than sitting in the env-var list below */}
-              <GoogleConnections activeProject={activeProject ?? null} onNotify={onNotify} onRecheck={onRecheck} />
+              <GoogleConnections
+                activeProject={activeProject ?? null}
+                psi={integrations.find((i) => i.key === 'pagespeed')}
+                onNotify={onNotify}
+                onRecheck={onRecheck}
+              />
 
               {total === 0 && (
                 <p className="text-body text-faint">Integration list unavailable — is the backend reachable?</p>
@@ -347,7 +347,8 @@ export function SettingsPanel({
               {/* integrations by category (unknown categories fall through last) */}
               {[...CAT_ORDER, ...new Set(configurable.map((i) => i.category).filter((c) => !CAT_ORDER.includes(c)))].map(
                 (cat) => {
-                  const items = configurable.filter((i) => i.category === cat);
+                  // pagespeed is rendered inside the Google block, not here
+                  const items = configurable.filter((i) => i.category === cat && i.key !== 'pagespeed');
                   if (!items.length) return null;
                   return (
                     <div key={cat} className="mb-4">
@@ -713,10 +714,13 @@ const compact = (n: number) =>
 
 function GoogleConnections({
   activeProject,
+  psi,
   onNotify,
   onRecheck,
 }: {
   activeProject: { id: string; domain: string } | null;
+  /** PageSpeed Insights — a Google product, but an API key rather than OAuth */
+  psi?: Integration;
   onNotify: (msg: string, tone?: 'ok' | 'warn') => void;
   onRecheck: () => Promise<void>;
 }) {
@@ -744,13 +748,16 @@ function GoogleConnections({
     void load();
   }, [load]);
 
-  const nConnected = (conns ?? []).filter((c) => c.connected && !c.expired).length;
+  const oauthConnected = (conns ?? []).filter((c) => c.connected && !c.expired).length;
+  const nConnected = oauthConnected + (psi?.connected ? 1 : 0);
 
   return (
     <div className="mb-4 overflow-hidden rounded-r3 border border-border bg-bg-raised">
       <div className="flex items-center gap-2.5 border-b border-border bg-bg-inset/50 px-3 py-2.5">
         <GoogleGlyph className="h-4 w-4" />
-        <span className="text-body font-semibold text-text">Google · Search Console &amp; Analytics</span>
+        <span className="text-body font-semibold text-text">
+          Google · Search Console, Analytics &amp; PageSpeed
+        </span>
         <span
           className={`ml-auto shrink-0 rounded-full border px-1.5 py-0.5 text-eyebrow font-semibold uppercase tracking-wide2 ${
             nConnected > 0 ? 'border-accent-dim text-accent' : 'border-border text-faint'
@@ -784,11 +791,44 @@ function GoogleConnections({
             }}
           />
         ))}
+        {psi && <PsiRow psi={psi} />}
       </div>
 
       <p className="border-t border-border/70 px-3 py-2 text-caption text-faint">
-        Connects your own Google account, read-only. Tokens are encrypted at rest; disconnect revokes them at Google.
+        Search Console &amp; Analytics connect your own Google account (read-only, tokens encrypted at rest).
+        PageSpeed is an API key on the server, shared across the workspace.
       </p>
+    </div>
+  );
+}
+
+/** PageSpeed Insights row — Google, but keyed by PSI_API_KEY on the server,
+    so it is status-only (no per-operator connect). */
+function PsiRow({ psi }: { psi: Integration }) {
+  const ok = psi.connected;
+  return (
+    <div className="p-3">
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-r2 bg-bg-inset">
+          <GoogleGlyph className="h-3.5 w-3.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-body font-semibold text-dim">PageSpeed Insights</span>
+            <span
+              className={`ml-auto shrink-0 rounded-full border px-1.5 py-0.5 text-eyebrow font-semibold uppercase tracking-wide2 ${
+                ok ? 'border-accent-dim text-accent' : 'border-border text-faint'
+              }`}
+            >
+              {ok ? 'connected' : 'not set'}
+            </span>
+          </div>
+          <p className="mt-0.5 text-caption leading-snug text-faint">{psi.detail}</p>
+          <div className="mt-1.5">
+            <code className="rounded-r1 bg-bg-inset px-1.5 py-0.5 text-caption text-dim">PSI_API_KEY</code>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
