@@ -15,13 +15,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/lib/api';
 import { useFocusTrap } from '../_lib/useFocusTrap';
-import { BoltIcon, CloseIcon } from './icons';
+import { BoltIcon, CloseIcon, GoogleGlyph } from './icons';
 import {
   authorizeGoogle,
   createUser,
   deleteUser,
   disconnectGoogle,
+  getAnalyticsSummary,
   getGoogleResources,
+  getGoogleStatus,
+  getSearchConsoleSummary,
   listGoogleConnections,
   listUsers,
   resetUserPassword,
@@ -39,12 +42,12 @@ import type {
 } from '@/types/terminal';
 
 /**
- * No integrations are hidden any more — the Google Search Console / Analytics
- * OAuth flow is wired (see the "Google · Search Console & Analytics" block in
- * the connections tab). Kept as an (empty) export so `page.tsx` can keep
- * filtering against it without a churny import change.
+ * The two Google surfaces are rendered by the dedicated <GoogleConnections>
+ * block (an OAuth connect/disconnect flow with a per-project resource picker),
+ * not as plain env-var rows — so they are filtered out of the category list.
+ * `page.tsx` also excludes them from the header's connected count.
  */
-export const HIDDEN_INTEGRATIONS = new Set<string>();
+export const HIDDEN_INTEGRATIONS = new Set(['google-analytics', 'google-search-console']);
 
 const CAT_LABEL: Partial<Record<IntegrationCategory, string>> = {
   analytics: 'Analytics · Google',
@@ -333,6 +336,10 @@ export function SettingsPanel({
                 </div>
               </div>
 
+              {/* Google — the one connector with a real OAuth action, so it
+                  leads rather than sitting in the env-var list below */}
+              <GoogleConnections activeProject={activeProject ?? null} onNotify={onNotify} onRecheck={onRecheck} />
+
               {total === 0 && (
                 <p className="text-body text-faint">Integration list unavailable — is the backend reachable?</p>
               )}
@@ -354,9 +361,6 @@ export function SettingsPanel({
                   );
                 },
               )}
-
-              {/* Google OAuth — 3-legged, per operator */}
-              <GoogleConnections activeProject={activeProject ?? null} onNotify={onNotify} onRecheck={onRecheck} />
 
               {/* setup gates — folded into connections */}
               <div className="mt-5 rounded-r3 border border-warn/40 bg-warn/[0.08] p-3">
@@ -682,11 +686,16 @@ function CreateForm({ onCreate }: { onCreate: (o: { email: string; password: str
   );
 }
 
-/* ── Google Search Console + Analytics (3-legged OAuth) ──────────────────
-   One authorisation per operator per service. Once connected, a GSC site /
-   GA4 property is mapped to the active project so its data reads resolve. */
 
-const GOOGLE_META: Record<GoogleService, { name: string; noun: string; blurb: string }> = {
+/* ── Google Search Console + Analytics ──────────────────────────────────
+   The one connector in this panel with a real action: a 3-legged OAuth
+   connect per operator, then a per-project site / property mapping and a
+   live data preview so it is obvious the link works. */
+
+const GOOGLE_META: Record<
+  GoogleService,
+  { name: string; noun: string; blurb: string }
+> = {
   'search-console': {
     name: 'Search Console',
     noun: 'site',
@@ -699,6 +708,9 @@ const GOOGLE_META: Record<GoogleService, { name: string; noun: string; blurb: st
   },
 };
 
+const compact = (n: number) =>
+  n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(Math.round(n));
+
 function GoogleConnections({
   activeProject,
   onNotify,
@@ -708,16 +720,22 @@ function GoogleConnections({
   onNotify: (msg: string, tone?: 'ok' | 'warn') => void;
   onRecheck: () => Promise<void>;
 }) {
+  const [configured, setConfigured] = useState<boolean | null>(null);
   const [conns, setConns] = useState<GoogleConnectionView[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState<GoogleService | null>(null);
 
   const load = useCallback(async () => {
     setErr(null);
     try {
-      setConns(await listGoogleConnections());
+      const [st, list] = await Promise.all([
+        getGoogleStatus().catch(() => ({ configured: false })),
+        listGoogleConnections(),
+      ]);
+      setConfigured(st.configured);
+      setConns(list);
     } catch (e) {
       setConns([]);
+      setConfigured(null);
       setErr(e instanceof ApiError ? e.message : 'could not load Google connections');
     }
   }, []);
@@ -726,11 +744,80 @@ function GoogleConnections({
     void load();
   }, [load]);
 
-  const connect = async (service: GoogleService) => {
-    setBusy(service);
+  const nConnected = (conns ?? []).filter((c) => c.connected && !c.expired).length;
+
+  return (
+    <div className="mb-4 overflow-hidden rounded-r3 border border-border bg-bg-raised">
+      <div className="flex items-center gap-2.5 border-b border-border bg-bg-inset/50 px-3 py-2.5">
+        <GoogleGlyph className="h-4 w-4" />
+        <span className="text-body font-semibold text-text">Google · Search Console &amp; Analytics</span>
+        <span
+          className={`ml-auto shrink-0 rounded-full border px-1.5 py-0.5 text-eyebrow font-semibold uppercase tracking-wide2 ${
+            nConnected > 0 ? 'border-accent-dim text-accent' : 'border-border text-faint'
+          }`}
+        >
+          {conns === null ? '…' : nConnected > 0 ? `${nConnected} connected` : 'not connected'}
+        </span>
+      </div>
+
+      {err && <p className="px-3 pt-2 text-caption text-danger">{err}</p>}
+
+      {configured === false && (
+        <p className="px-3 pt-2.5 text-caption leading-snug text-warn">
+          The OAuth client is not set on the server. An admin needs{' '}
+          <code className="rounded-r1 bg-bg-inset px-1 text-dim">GOOGLE_OAUTH_CLIENT_ID</code> +{' '}
+          <code className="rounded-r1 bg-bg-inset px-1 text-dim">GOOGLE_OAUTH_CLIENT_SECRET</code> in the backend env.
+        </p>
+      )}
+
+      <div className="divide-y divide-border/70">
+        {(['search-console', 'analytics'] as GoogleService[]).map((service) => (
+          <GoogleServiceCard
+            key={service}
+            service={service}
+            conn={conns?.find((c) => c.service === service) ?? null}
+            configured={configured !== false}
+            activeProject={activeProject}
+            onNotify={onNotify}
+            onChanged={async () => {
+              await Promise.all([load(), onRecheck()]);
+            }}
+          />
+        ))}
+      </div>
+
+      <p className="border-t border-border/70 px-3 py-2 text-caption text-faint">
+        Connects your own Google account, read-only. Tokens are encrypted at rest; disconnect revokes them at Google.
+      </p>
+    </div>
+  );
+}
+
+function GoogleServiceCard({
+  service,
+  conn,
+  configured,
+  activeProject,
+  onNotify,
+  onChanged,
+}: {
+  service: GoogleService;
+  conn: GoogleConnectionView | null;
+  configured: boolean;
+  activeProject: { id: string; domain: string } | null;
+  onNotify: (msg: string, tone?: 'ok' | 'warn') => void;
+  onChanged: () => Promise<void>;
+}) {
+  const meta = GOOGLE_META[service];
+  const [busy, setBusy] = useState<null | 'connect' | 'disconnect'>(null);
+  const connected = Boolean(conn?.connected);
+  const expired = Boolean(conn?.expired);
+
+  const connect = async () => {
+    setBusy('connect');
     try {
       const { url } = await authorizeGoogle(service, activeProject?.id);
-      const popup = window.open(url, 'cailyx-google-oauth', 'width=520,height=680');
+      const popup = window.open(url, 'cailyx-google-oauth', 'width=520,height=700');
       if (!popup) {
         onNotify('Allow pop-ups for this site, then try connecting again', 'warn');
         return;
@@ -743,7 +830,7 @@ function GoogleConnections({
           }
         }, 700);
       });
-      await Promise.all([load(), onRecheck()]);
+      await onChanged();
     } catch (e) {
       onNotify(e instanceof ApiError ? e.message : 'could not start the Google connect', 'warn');
     } finally {
@@ -751,12 +838,12 @@ function GoogleConnections({
     }
   };
 
-  const disconnect = async (service: GoogleService) => {
-    setBusy(service);
+  const disconnect = async () => {
+    setBusy('disconnect');
     try {
       await disconnectGoogle(service);
-      onNotify(`${GOOGLE_META[service].name} disconnected`);
-      await Promise.all([load(), onRecheck()]);
+      onNotify(`${meta.name} disconnected`);
+      await onChanged();
     } catch (e) {
       onNotify(e instanceof ApiError ? e.message : 'could not disconnect', 'warn');
     } finally {
@@ -764,87 +851,73 @@ function GoogleConnections({
     }
   };
 
+  const statusPill = expired
+    ? { label: 'reauthorise', cls: 'border-warn/50 text-warn' }
+    : connected
+      ? { label: 'connected', cls: 'border-accent-dim text-accent' }
+      : { label: 'not connected', cls: 'border-border text-faint' };
+
   return (
-    <div className="mb-4">
-      <Label>Google · Search Console &amp; Analytics</Label>
-      {err && <p className="mb-1.5 text-caption text-danger">{err}</p>}
-      <ul className="space-y-1.5">
-        {(['search-console', 'analytics'] as GoogleService[]).map((service) => {
-          const c = conns?.find((x) => x.service === service);
-          const meta = GOOGLE_META[service];
-          const working = busy === service;
-          return (
-            <li
-              key={service}
-              className="rounded-r3 border border-border bg-bg-inset/60 p-2.5 transition-colors hover:border-border-strong"
+    <div className="p-3">
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-r2 bg-bg-inset">
+          <GoogleGlyph className="h-3.5 w-3.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-body font-semibold text-dim">{meta.name}</span>
+            <span
+              className={`ml-auto shrink-0 rounded-full border px-1.5 py-0.5 text-eyebrow font-semibold uppercase tracking-wide2 ${statusPill.cls}`}
             >
-              <div className="flex items-center gap-2">
-                <Dot ok={Boolean(c?.connected)} />
-                <span className="text-body font-semibold text-dim">{meta.name}</span>
-                <span
-                  className={`ml-auto shrink-0 rounded-full border px-1.5 py-0.5 text-eyebrow font-semibold uppercase tracking-wide2 ${
-                    c?.connected
-                      ? c.expired
-                        ? 'border-warn/50 text-warn'
-                        : 'border-accent-dim text-accent'
-                      : 'border-border text-faint'
-                  }`}
+              {statusPill.label}
+            </span>
+          </div>
+          <p className="mt-0.5 text-caption leading-snug text-faint">
+            {connected ? (
+              <>
+                {conn?.googleEmail ?? 'Google account'}
+                {conn?.lastError ? <span className="text-danger"> · {conn.lastError}</span> : null}
+              </>
+            ) : (
+              meta.blurb
+            )}
+          </p>
+
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {!connected && (
+              <button
+                onClick={() => void connect()}
+                disabled={!configured || busy !== null}
+                className="inline-flex items-center gap-1.5 rounded-r2 border border-accent-dim bg-accent-dim/14 px-2.5 py-1 text-caption font-semibold text-accent transition-colors duration-micro hover:bg-accent-dim/24 disabled:opacity-40"
+              >
+                {busy === 'connect' ? 'opening Google…' : `Connect ${meta.name} ↗`}
+              </button>
+            )}
+            {connected && (
+              <>
+                <button
+                  onClick={() => void connect()}
+                  disabled={busy !== null}
+                  className="rounded-r1 border border-border px-2 py-0.5 text-caption text-faint transition-colors duration-micro hover:text-dim disabled:opacity-40"
                 >
-                  {c?.connected ? (c.expired ? 'reconnect' : 'connected') : 'not connected'}
-                </span>
-              </div>
-              <p className="mt-1 text-body leading-snug text-faint">
-                {c?.connected ? (
-                  <>
-                    {c.googleEmail ?? 'Google account'} · {meta.blurb}
-                    {c.lastError ? ` · last error: ${c.lastError}` : ''}
-                  </>
-                ) : (
-                  meta.blurb
-                )}
-              </p>
+                  {busy === 'connect' ? 'opening…' : expired ? 'reconnect ↗' : 're-authorise'}
+                </button>
+                <button
+                  onClick={() => void disconnect()}
+                  disabled={busy !== null}
+                  className="rounded-r1 border border-border px-2 py-0.5 text-caption text-faint transition-colors duration-micro hover:text-danger disabled:opacity-40"
+                >
+                  {busy === 'disconnect' ? 'working…' : 'disconnect'}
+                </button>
+              </>
+            )}
+          </div>
 
-              <div className="mt-1.5 flex items-center gap-2">
-                {c?.connected ? (
-                  <button
-                    onClick={() => void disconnect(service)}
-                    disabled={working}
-                    className="rounded-r1 border border-border px-1.5 py-0.5 text-caption text-faint transition-colors duration-micro hover:text-dim disabled:opacity-40"
-                  >
-                    {working ? 'working…' : 'disconnect'}
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => void connect(service)}
-                    disabled={working}
-                    className="rounded-r1 border border-accent-dim bg-accent-dim/14 px-2 py-0.5 text-caption font-medium text-accent transition-colors duration-micro hover:bg-accent-dim/24 disabled:opacity-40"
-                  >
-                    {working ? 'opening…' : 'connect ↗'}
-                  </button>
-                )}
-                {(c?.connected || c?.expired) && (
-                  <button
-                    onClick={() => void connect(service)}
-                    disabled={working}
-                    className="text-caption text-faint transition-colors hover:text-dim disabled:opacity-40"
-                  >
-                    re-authorise
-                  </button>
-                )}
-              </div>
-
-              {c?.connected && !c.expired && (
-                <GoogleResourcePicker service={service} activeProject={activeProject} onNotify={onNotify} />
-              )}
-            </li>
-          );
-        })}
-      </ul>
-      <p className="mt-1.5 text-caption text-faint">
-        {conns === null
-          ? 'loading…'
-          : 'Connects your own Google account (read-only). Tokens are encrypted at rest; disconnect revokes them at Google.'}
-      </p>
+          {connected && !expired && (
+            <GoogleResourcePicker service={service} activeProject={activeProject} onNotify={onNotify} />
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -859,42 +932,48 @@ function GoogleResourcePicker({
   onNotify: (msg: string, tone?: 'ok' | 'warn') => void;
 }) {
   const [data, setData] = useState<GoogleResourcesView | null>(null);
+  const [failed, setFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const noun = GOOGLE_META[service].noun;
 
   useEffect(() => {
     if (!activeProject) return;
     let alive = true;
+    setData(null);
+    setFailed(false);
     getGoogleResources(service, activeProject.id)
       .then((r) => alive && setData(r))
-      .catch(() => alive && setData(null));
+      .catch(() => alive && setFailed(true));
     return () => {
       alive = false;
     };
   }, [service, activeProject]);
 
   if (!activeProject) {
-    return <p className="mt-1.5 text-caption text-faint">Select a project to map a {noun} to it.</p>;
-  }
-  if (!data) return <p className="mt-1.5 text-caption text-faint">loading {noun} list…</p>;
-  if (!data.connected || data.options.length === 0) {
     return (
-      <p className="mt-1.5 text-caption text-faint">
-        No {noun} is readable by this account{data.connected ? '' : ' (re-authorise?)'}.
+      <p className="mt-2 rounded-r2 bg-bg-inset/60 px-2.5 py-1.5 text-caption text-faint">
+        Select a project (top bar) to map a {noun} to it.
+      </p>
+    );
+  }
+  if (failed) {
+    return <p className="mt-2 text-caption text-faint">Could not list {noun}s — re-authorise?</p>;
+  }
+  if (!data) return <p className="mt-2 text-caption text-faint">loading {noun} list…</p>;
+  if (data.options.length === 0) {
+    return (
+      <p className="mt-2 text-caption text-faint">
+        This Google account can&rsquo;t read any {noun}. Add it in {GOOGLE_META[service].name} first.
       </p>
     );
   }
 
   const choose = async (resourceId: string) => {
+    if (!resourceId) return;
     const opt = data.options.find((o) => o.id === resourceId);
     setSaving(true);
     try {
-      await setGoogleResource({
-        service,
-        projectId: activeProject.id,
-        resourceId,
-        resourceLabel: opt?.label,
-      });
+      await setGoogleResource({ service, projectId: activeProject.id, resourceId, resourceLabel: opt?.label });
       setData({ ...data, selected: { resourceId, resourceLabel: opt?.label ?? null } });
       onNotify(`${GOOGLE_META[service].name} ${noun} mapped to ${activeProject.domain}`);
     } catch (e) {
@@ -905,24 +984,70 @@ function GoogleResourcePicker({
   };
 
   return (
-    <div className="mt-2 flex items-center gap-2">
-      <span className="shrink-0 text-caption text-faint">{activeProject.domain} →</span>
-      <select
-        value={data.selected?.resourceId ?? ''}
-        disabled={saving}
-        onChange={(e) => void choose(e.target.value)}
-        className="min-w-0 flex-1 rounded-r2 border border-border bg-bg-raised px-1.5 py-1 text-caption text-dim outline-none focus:border-border-strong disabled:opacity-50"
-      >
-        <option value="" disabled>
-          choose a {noun}…
-        </option>
-        {data.options.map((o) => (
-          <option key={o.id} value={o.id}>
-            {o.label}
-            {o.detail ? ` — ${o.detail}` : ''}
+    <div className="mt-2 rounded-r2 border border-border/70 bg-bg-inset/40 p-2">
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 text-caption text-faint">{activeProject.domain} →</span>
+        <select
+          value={data.selected?.resourceId ?? ''}
+          disabled={saving}
+          onChange={(e) => void choose(e.target.value)}
+          className="min-w-0 flex-1 rounded-r2 border border-border bg-bg-raised px-1.5 py-1 text-caption text-dim outline-none focus:border-border-strong disabled:opacity-50"
+        >
+          <option value="" disabled>
+            choose a {noun}…
           </option>
-        ))}
-      </select>
+          {data.options.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.label}
+              {o.detail ? ` — ${o.detail}` : ''}
+            </option>
+          ))}
+        </select>
+      </div>
+      {data.selected && (
+        <GoogleDataPreview service={service} projectId={activeProject.id} key={data.selected.resourceId} />
+      )}
     </div>
   );
+}
+
+function GoogleDataPreview({
+  service,
+  projectId,
+}: {
+  service: GoogleService;
+  projectId: string;
+}) {
+  const [text, setText] = useState<string>('loading last 28 days…');
+
+  useEffect(() => {
+    let alive = true;
+    const run = async () => {
+      try {
+        if (service === 'search-console') {
+          const s = await getSearchConsoleSummary(projectId, 28);
+          if (alive)
+            setText(
+              `${compact(s.totals.clicks)} clicks · ${compact(s.totals.impressions)} impressions · ` +
+                `${(s.totals.ctr * 100).toFixed(1)}% CTR · pos ${s.totals.position.toFixed(1)}`,
+            );
+        } else {
+          const s = await getAnalyticsSummary(projectId, 28);
+          if (alive)
+            setText(
+              `${compact(s.totals.sessions)} sessions · ${compact(s.totals.totalUsers)} users · ` +
+                `${compact(s.totals.screenPageViews)} views · ${(s.totals.engagementRate * 100).toFixed(0)}% engaged`,
+            );
+        }
+      } catch (e) {
+        if (alive) setText(e instanceof ApiError ? e.message : 'no data yet');
+      }
+    };
+    void run();
+    return () => {
+      alive = false;
+    };
+  }, [service, projectId]);
+
+  return <p className="mt-1.5 text-caption tabular-nums text-dim">{text}</p>;
 }

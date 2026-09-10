@@ -29,6 +29,7 @@ import { NewProjectModal } from './_components/NewProjectModal';
 import { ToastStack, useToasts } from './_components/Toasts';
 import { CommandPalette, type Command } from './_components/CommandPalette';
 import { AgentIcon, LogoutIcon, PlugIcon, PlusIcon, SyncIcon, UsersIcon } from './_components/icons';
+import { listGoogleConnections } from '@/lib/terminal-api';
 import { API_URL } from '@/lib/api';
 
 export default function V2Console() {
@@ -42,6 +43,15 @@ export default function V2Console() {
   const [palette, setPalette] = useState(false);
   /* the Technical tile takes over the canvas rather than opening in-card */
   const [expanded, setExpanded] = useState<'technical' | null>(null);
+  /* live Google (GSC + GA) connections — folded into the header count */
+  const [googleConnected, setGoogleConnected] = useState<number | null>(null);
+  const refreshGoogle = () =>
+    listGoogleConnections()
+      .then((rows) => setGoogleConnected(rows.filter((r) => r.connected && !r.expired).length))
+      .catch(() => setGoogleConnected(0));
+  useEffect(() => {
+    void refreshGoogle();
+  }, []);
 
   /* ⌘K / Ctrl-K opens the palette from anywhere */
   useEffect(() => {
@@ -67,6 +77,7 @@ export default function V2Console() {
     } else {
       notify(`${g === 'analytics' ? 'Google Analytics' : 'Search Console'} connected`);
       void c.refreshIntegrations();
+      void refreshGoogle();
       setPanel('connections');
     }
     window.history.replaceState({}, '', window.location.pathname);
@@ -174,7 +185,11 @@ export default function V2Console() {
         onOpenConnections={() => setPanel('connections')}
         onOpenUsers={() => setPanel('users')}
         onOpenPalette={() => setPalette(true)}
-        connectedCount={c.integrations ? integrations.filter((i) => i.connected).length : null}
+        connectedCount={
+          c.integrations
+            ? integrations.filter((i) => i.connected).length + (googleConnected ?? 0)
+            : null
+        }
       />
 
       {/* Left band reserved for the wall-mounted Flywheel / Context; the rest is
