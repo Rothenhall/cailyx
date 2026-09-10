@@ -11,6 +11,25 @@ export const configuration = () => ({
     origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
   },
 
+  // Google OAuth — Search Console + Analytics (modules/google).
+  // Drop in the client id + secret from a Google Cloud project that has the
+  // "Google Search Console API" and "Google Analytics Data/Admin API" enabled,
+  // and add the redirect URI below to that OAuth client's allowed list.
+  google: {
+    clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || '',
+    clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET || '',
+    redirectUri:
+      process.env.GOOGLE_OAUTH_REDIRECT_URI ||
+      `http://localhost:${process.env.PORT || '3002'}/api/integrations/google/callback`,
+    // Where the callback sends the browser once tokens are stored.
+    successRedirect:
+      process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT ||
+      `${process.env.CORS_ORIGIN || 'http://localhost:3000'}/v2`,
+    // 32-byte key (64 hex chars or base64) for AES-256-GCM token encryption.
+    // Optional in dev — a key is derived from JWT_SECRET with a warning.
+    tokenEncKey: process.env.GOOGLE_TOKEN_ENC_KEY || '',
+  },
+
   // Database
   database: {
     url: process.env.DATABASE_URL || 'postgresql://cailyx:cailyx_dev@localhost:5436/cailyx?schema=public',
@@ -39,7 +58,14 @@ export const configuration = () => ({
       clsNeedsImprovement: parseFloat(process.env.TA_CLS_NEEDS_IMPROVEMENT || '0.25'),
       inpGoodMs: parseInt(process.env.TA_INP_GOOD_MS || '200', 10),
       inpNeedsImprovementMs: parseInt(process.env.TA_INP_NEEDS_IMPROVEMENT_MS || '500', 10),
+      // A sitemap whose newest <lastmod> is older than this is treated as
+      // unmaintained — the "is it being updated?" half of the sitemap check.
+      sitemapStaleDays: parseInt(process.env.TA_SITEMAP_STALE_DAYS || '90', 10),
     },
+    // Site-wide page crawl. "Every page in the sitemap" is unbounded, so the
+    // budget caps a run and pages are taken newest-<lastmod>-first.
+    pageCrawlBudget: parseInt(process.env.TA_PAGE_CRAWL_BUDGET || '150', 10),
+    pageCrawlConcurrency: parseInt(process.env.TA_PAGE_CRAWL_CONCURRENCY || '6', 10),
     // Cost governance (P2 #15) — per-run cost budget in USD
     maxCostPerRunUsd: parseFloat(process.env.TA_MAX_COST_PER_RUN || '5.00'),
   },

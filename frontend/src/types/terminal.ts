@@ -63,6 +63,178 @@ export interface IntegrationsResponse {
   summary: { total: number; connected: number };
 }
 
+/* ── Google (Search Console + Analytics) OAuth ──────────────────────────── */
+
+export type GoogleService = 'search-console' | 'analytics';
+
+export interface GoogleConnectionView {
+  service: GoogleService;
+  connected: boolean;
+  googleEmail: string | null;
+  scope: string;
+  connectedAt: string | null;
+  expiresAt: string | null;
+  expired: boolean;
+  lastError: string | null;
+}
+
+export interface GoogleResourceOption {
+  id: string;
+  label: string;
+  detail?: string;
+}
+
+export interface GoogleResourcesView {
+  service: GoogleService;
+  projectId: string;
+  connected: boolean;
+  options: GoogleResourceOption[];
+  selected: { resourceId: string; resourceLabel: string | null } | null;
+}
+
+export interface SearchConsoleSummary {
+  range: { startDate: string; endDate: string; days: number };
+  site: string;
+  totals: { clicks: number; impressions: number; ctr: number; position: number };
+  topQueries: Array<{ key: string; clicks: number; impressions: number; ctr: number; position: number }>;
+  topPages: Array<{ key: string; clicks: number; impressions: number; ctr: number; position: number }>;
+}
+
+/* ── SEO audit (Search Console data + fixes) ────────────────────────────── */
+
+export interface SeoAuditSummary {
+  id: string;
+  createdAt: string;
+  score: number | null;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+  page1Queries: number;
+  top3Queries: number;
+  windowDays: number;
+  previousAuditId: string | null;
+  triggeredBy: string;
+}
+
+export interface SeoQueryRow {
+  id: string;
+  query: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+  positionDelta: number | null;
+  impressionsDelta: number | null;
+  clicksDelta: number | null;
+  topPage: string | null;
+  /** JSON string[] of opportunity codes */
+  opportunities: string;
+}
+
+export interface SeoPageRow {
+  id: string;
+  url: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+  coverageState: string | null;
+  indexVerdict: string | null;
+  indexingState: string | null;
+  robotsTxtState: string | null;
+  pageFetchState: string | null;
+  googleCanonical: string | null;
+  userCanonical: string | null;
+  lastCrawlTime: string | null;
+  /** JSON: [{ code, severity, detail, fix, fixArtifact? }] */
+  issues: string | null;
+  /** JSON string[] */
+  richResults: string | null;
+  /** JSON: [{ type, issues: [{ severity, message }] }] */
+  richIssues: string | null;
+}
+
+export interface SeoFinding {
+  id: string;
+  type: string;
+  status: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  title: string;
+  detail: string;
+  recommendedFix: string;
+  /** JSON string[] of affected URLs / queries */
+  affected: string | null;
+  count: number;
+  fixArtifact: string | null;
+  /** e.g. "submit-sitemap" — an action Cailyx can take from the report */
+  action: string | null;
+}
+
+export interface SeoAudit extends SeoAuditSummary {
+  siteUrl: string;
+  deltas?: string | AuditDelta[] | null;
+  /** JSON: { prev, timeseries: [{date,clicks,impressions,ctr,position}] } */
+  metrics: string | null;
+  pagesInspected: number;
+  observability: string | null;
+  narrative: string | null;
+  narrativeModel: string | null;
+  findings: SeoFinding[];
+  queries: SeoQueryRow[];
+  pages: SeoPageRow[];
+}
+
+export interface SeoPageChanges {
+  improved: Array<{ url: string; from: number; to: number }>;
+  regressed: Array<{ url: string; from: number; to: number }>;
+  nowIndexed: string[];
+  lostIndex: string[];
+  nowClean: string[];
+  added: string[];
+  dropped: string[];
+}
+
+export interface SeoQueryChanges {
+  enteredPage1: Array<{ query: string; from: number | null; to: number }>;
+  leftPage1: Array<{ query: string; from: number; to: number | null }>;
+}
+
+export interface SeoComparison {
+  currentAuditId: string;
+  previousAuditId: string | null;
+  currentAt: string;
+  previousAt: string | null;
+  deltas: AuditDelta[];
+  pageChanges: SeoPageChanges;
+  queryChanges: SeoQueryChanges;
+}
+
+export interface SeoTrendPoint {
+  auditId: string;
+  at: string;
+  score: number | null;
+  clicks: number;
+  impressions: number;
+  position: number;
+  page1Queries: number;
+  triggeredBy: string;
+}
+
+export interface AnalyticsSummary {
+  range: { startDate: string; endDate: string; days: number };
+  property: string;
+  totals: {
+    sessions: number;
+    totalUsers: number;
+    screenPageViews: number;
+    engagementRate: number;
+    averageSessionDuration: number;
+  };
+  channels: Array<{ key: string; sessions: number; totalUsers: number }>;
+  topPages: Array<{ key: string; screenPageViews: number; sessions: number }>;
+}
+
 /** technical-audit finding (subset the Analytics pane renders). */
 export interface AuditFinding {
   id: string;
@@ -81,6 +253,67 @@ export interface PageMetadata {
   positioningCopy: string | null;
 }
 
+/**
+ * One sitemap URL as the audit scored it. `jsonLdTypes` and `issues` arrive as
+ * JSON strings because the backend stores them in SQLite text columns — parse
+ * with `parseJsonArray` in lib/text.ts rather than trusting the shape.
+ */
+export interface AuditPage {
+  id: string;
+  url: string;
+  status: number;
+  lastmod: string | null;
+  title: string | null;
+  titleLength: number | null;
+  metaDescription: string | null;
+  metaDescLength: number | null;
+  h1Count: number | null;
+  canonical: string | null;
+  wordCount: number | null;
+  jsonLdTypes: string | null;
+  jsonLdValid: boolean;
+  jsonLdCount: number;
+  issues: string | null;
+  score: number | null;
+}
+
+/** One metric's movement between two runs. */
+export interface AuditDelta {
+  metric: string;
+  label: string;
+  previous: number | null;
+  current: number | null;
+  change: number | null;
+  direction: 'improved' | 'regressed' | 'unchanged' | 'new';
+  /** Needed to colour the arrow — a falling LCP is good, a falling score is not. */
+  higherIsBetter: boolean;
+}
+
+export interface AuditComparison {
+  currentAuditId: string;
+  previousAuditId: string | null;
+  currentAt: string;
+  previousAt: string | null;
+  deltas: AuditDelta[];
+  pageChanges: {
+    added: string[];
+    removed: string[];
+    improved: Array<{ url: string; from: number; to: number }>;
+    regressed: Array<{ url: string; from: number; to: number }>;
+  };
+}
+
+/** One point on the score history. */
+export interface AuditTrendPoint {
+  auditId: string;
+  at: string;
+  score: number | null;
+  targetUrl: string;
+  pagesCrawled: number;
+  triggeredBy: string;
+  failures: number;
+}
+
 export interface TechnicalAudit {
   id: string;
   projectId: string;
@@ -88,6 +321,19 @@ export interface TechnicalAudit {
   createdAt: string;
   findings: AuditFinding[];
   pageMetadata: PageMetadata | null;
+  /** 0-100 composite. Null when no check produced a score. */
+  score: number | null;
+  previousAuditId: string | null;
+  /** JSON AuditDelta[] on the list endpoint; already parsed on the detail one. */
+  deltas?: AuditDelta[] | string | null;
+  sitemapUrl: string | null;
+  pagesCrawled: number;
+  pages?: AuditPage[];
+  /** Model-written commentary comparing this run to the previous. */
+  narrative: string | null;
+  narrativeModel: string | null;
+  /** JSON: { totalCostUsd, totalLatencyMs, checksRun, probesRun, fetcherLogCount, cacheHitRate } */
+  observability?: string | null;
 }
 
 export interface LinkGraph {

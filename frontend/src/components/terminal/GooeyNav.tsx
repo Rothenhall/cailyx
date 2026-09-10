@@ -5,7 +5,7 @@
  * highlight blob that slides between them live inside an SVG goo filter (blur +
  * alpha-contrast), so the blob stretches and merges with the pills like metaball
  * liquid as it moves; the crisp icon/label buttons ride on top, outside the
- * filter. Behaviour only — it inherits the app font (Urbanist) and paints purely
+ * filter. Behaviour only — it inherits the app font (Outfit) and paints purely
  * from the Rothenhall theme tokens.
  *
  * @module components/terminal/GooeyNav

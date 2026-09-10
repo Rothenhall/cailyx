@@ -14,6 +14,7 @@
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import type { AgentsResponse, ProjectDetail } from '@/types/terminal';
+import { getCompetitors, type Competitor } from '@/lib/terminal-api';
 import { Scrim } from './Scrim';
 import { ChevronLeft, LayersIcon } from './icons';
 
@@ -43,30 +44,15 @@ function flareStyle(side: 'top' | 'bottom'): CSSProperties {
   };
 }
 
-/** competitors are stored as a JSON string on the project row */
-function parseCompetitors(json: string | null | undefined): Array<{ name: string; domain: string }> {
-  if (!json) return [];
-  try {
-    const v = JSON.parse(json) as unknown;
-    if (!Array.isArray(v)) return [];
-    return v
-      .filter((x): x is { name?: string; domain?: string } => typeof x === 'object' && x !== null)
-      .map((x) => ({ name: x.name ?? x.domain ?? '—', domain: x.domain ?? '' }))
-      .slice(0, 8);
-  } catch {
-    return [];
-  }
-}
-
 function Tag({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded-md border border-white/15 bg-white/10 px-1.5 py-0.5 text-bg-raised/75">{children}</span>
+    <span className="rounded-r2 border border-white/12 bg-white/[0.08] px-1.5 py-0.5 text-bg-raised/65">{children}</span>
   );
 }
 
 function Label({ children }: { children: React.ReactNode }) {
   return (
-    <p className="mb-2 text-eyebrow font-semibold uppercase tracking-eyebrow text-bg-raised/55">{children}</p>
+    <p className="mb-2 text-eyebrow font-semibold uppercase tracking-eyebrow text-bg-raised/65">{children}</p>
   );
 }
 
@@ -118,8 +104,6 @@ export function ContextPanel({
     { label: 'Council', count: agentCount('council') },
   ];
 
-  const comps = parseCompetitors(project?.competitors);
-
   const save = async () => {
     if (!dirty || saving) return;
     setSaving(true);
@@ -160,7 +144,7 @@ export function ContextPanel({
         <span aria-hidden className="pointer-events-none" style={flareStyle('top')} />
         <span aria-hidden className="pointer-events-none" style={flareStyle('bottom')} />
 
-        {/* brass body — flush square on the wall, rounded on the exposed side;
+        {/* brass body — flush square on the wall, rounded-r1 on the exposed side;
             clips the wide content while the shell is collapsed */}
         <div className="absolute inset-0 overflow-hidden rounded-l-r5" style={{ background: 'var(--accent)' }}>
           {/* closed nub — the toggle */}
@@ -188,11 +172,11 @@ export function ContextPanel({
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Hide context"
-                className="grid h-6 w-6 place-items-center rounded-r2 text-bg-raised/70 transition-colors hover:bg-white/12 hover:text-bg-raised"
+                className="grid h-6 w-6 place-items-center rounded-r2 text-bg-raised/65 transition-colors hover:bg-white/12 hover:text-bg-raised"
               >
                 <ChevronLeft className="h-4 w-4 rotate-180" />
               </button>
-              <span className="text-caption font-semibold uppercase tracking-eyebrow text-bg-raised/75">Context</span>
+              <span className="text-caption font-semibold uppercase tracking-eyebrow text-bg-raised/65">Context</span>
               <LayersIcon className="ml-auto h-4 w-4 text-bg-raised/90" />
             </div>
             <div className="h-px bg-gradient-to-l from-white/20 via-white/10 to-transparent" />
@@ -205,7 +189,7 @@ export function ContextPanel({
               }}
             >
               {!project ? (
-                <p className="py-8 text-center text-body text-bg-raised/60">No project selected.</p>
+                <p className="py-8 text-center text-body text-bg-raised/65">No project selected.</p>
               ) : (
                 <>
                   {/* profile */}
@@ -218,7 +202,7 @@ export function ContextPanel({
                         value={name}
                         onChange={(e) => edit(setName)(e.target.value)}
                         placeholder="project name"
-                        className="w-full bg-transparent text-title font-semibold text-bg-raised outline-none placeholder:text-bg-raised/40"
+                        className="w-full bg-transparent text-title font-semibold text-bg-raised outline-none placeholder:text-bg-raised/45"
                       />
                       <div className="mt-1.5 flex flex-wrap gap-1 text-eyebrow">
                         <Tag>{project.domain}</Tag>
@@ -234,7 +218,7 @@ export function ContextPanel({
                       value={category}
                       onChange={(e) => edit(setCategory)(e.target.value)}
                       placeholder="e.g. AI visibility diagnostics"
-                      className="w-full rounded-r3 border border-white/15 bg-white/[0.06] px-2.5 py-1.5 text-body text-bg-raised/90 outline-none transition-colors placeholder:text-bg-raised/40 focus:border-white/40 focus:bg-white/[0.09]"
+                      className="w-full rounded-r3 border border-white/12 bg-white/[0.08] px-2.5 py-1.5 text-body text-bg-raised/90 outline-none transition-colors placeholder:text-bg-raised/45 focus:border-white/40 focus:bg-white/[0.08]"
                     />
                   </div>
 
@@ -246,7 +230,7 @@ export function ContextPanel({
                       onChange={(e) => edit(setNotes)(e.target.value)}
                       rows={3}
                       placeholder="What your CMO should know before doing anything…"
-                      className="no-scrollbar w-full resize-none rounded-r3 border border-white/15 bg-white/[0.06] p-2.5 text-body leading-relaxed text-bg-raised/90 outline-none transition-colors placeholder:text-bg-raised/40 focus:border-white/40 focus:bg-white/[0.09]"
+                      className="no-scrollbar w-full resize-none rounded-r3 border border-white/12 bg-white/[0.08] p-2.5 text-body leading-relaxed text-bg-raised/90 outline-none transition-colors placeholder:text-bg-raised/45 focus:border-white/40 focus:bg-white/[0.08]"
                     />
                     <div className="mt-2 flex items-center gap-2">
                       <button
@@ -268,39 +252,24 @@ export function ContextPanel({
                       {docs.map((d, i) => (
                         <li
                           key={d.label}
-                          className={`flex items-center gap-2.5 px-3 py-2 text-body transition-colors hover:bg-white/[0.07] ${
-                            i ? 'border-t border-white/10' : ''
+                          className={`flex items-center gap-2.5 px-3 py-2 text-body transition-colors hover:bg-white/[0.08] ${
+                            i ? 'border-t border-white/12' : ''
                           }`}
                         >
                           <span className="h-1 w-1 shrink-0 rounded-full bg-bg-raised/40" />
-                          <span className="flex-1 truncate text-bg-raised/85">{d.label}</span>
+                          <span className="flex-1 truncate text-bg-raised/90">{d.label}</span>
                           {d.count > 0 ? (
-                            <span className="rounded-md bg-white/14 px-1.5 py-px text-eyebrow tabular-nums text-bg-raised">{d.count}</span>
+                            <span className="rounded-r2 bg-white/12 px-1.5 py-px text-eyebrow tabular-nums text-bg-raised">{d.count}</span>
                           ) : (
-                            <span className="text-eyebrow text-bg-raised/40">none</span>
+                            <span className="text-eyebrow text-bg-raised/45">none</span>
                           )}
                         </li>
                       ))}
                     </ul>
                   </div>
 
-                  {/* competitors */}
-                  <div>
-                    <Label>Competitors</Label>
-                    {comps.length === 0 ? (
-                      <p className="text-body text-bg-raised/50">None recorded on this project.</p>
-                    ) : (
-                      <ul className="space-y-1.5">
-                        {comps.map((c) => (
-                          <li key={`${c.name}-${c.domain}`} className="flex items-center gap-2.5 text-body">
-                            <span className="h-1 w-1 shrink-0 rounded-full bg-bg-raised/50" />
-                            <span className="text-bg-raised/85">{c.name}</span>
-                            <span className="truncate text-bg-raised/45">{c.domain}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
+                  {/* competitors — the list every benchmark reads from */}
+                  <Competitors projectId={project.id} />
 
                   <p className="mt-auto border-t border-white/12 pt-3 text-caption leading-relaxed text-bg-raised/45">
                     What your CMO reads before doing anything — edit any of it, anytime.
@@ -312,5 +281,59 @@ export function ContextPanel({
         </div>
       </div>
     </>
+  );
+}
+
+
+/* ── competitors ──────────────────────────────────────────────────────────
+   Read-only here on purpose. Managing and analysing rivals lives in the Rivals
+   agent, which has the room for the head-to-head and the losing-prompts list;
+   two editing surfaces for one list would only drift apart. */
+function Competitors({ projectId }: { projectId: string }) {
+  const [tracked, setTracked] = useState<Competitor[] | null>(null);
+  const [found, setFound] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    setTracked(null);
+    getCompetitors(projectId)
+      .then((r) => {
+        if (!live) return;
+        setTracked(r.tracked);
+        setFound(r.discovered.length);
+      })
+      .catch(() => live && setTracked([]));
+    return () => {
+      live = false;
+    };
+  }, [projectId]);
+
+  return (
+    <div>
+      <Label>Competitors</Label>
+      {tracked === null ? (
+        <p className="text-body text-bg-raised/45">loading…</p>
+      ) : tracked.length === 0 ? (
+        <p className="text-body leading-relaxed text-bg-raised/65">
+          None named. Share of voice only scores this list, so the benchmark is off — set it up in
+          the Rivals agent.
+        </p>
+      ) : (
+        <ul className="space-y-1.5">
+          {tracked.slice(0, 8).map((c) => (
+            <li key={`${c.name}-${c.domain ?? ''}`} className="flex items-center gap-2.5 text-body">
+              <span className="h-1 w-1 shrink-0 rounded-full bg-bg-raised/50" />
+              <span className="shrink-0 text-bg-raised/90">{c.name}</span>
+              <span className="min-w-0 flex-1 truncate text-bg-raised/45">{c.domain ?? ''}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {found > 0 && (
+        <p className="mt-1.5 text-caption text-bg-raised/45">
+          {found} more out-ranking you in search — review in the Rivals agent.
+        </p>
+      )}
+    </div>
   );
 }

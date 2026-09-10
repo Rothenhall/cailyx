@@ -1,16 +1,23 @@
 import type { Metadata } from "next";
-import { Urbanist } from "next/font/google";
+import { Poppins } from "next/font/google";
 import "./globals.css";
 
 /**
- * Urbanist — the single app-wide typeface, for both consoles. Exposed as
- * `--font-urbanist`, which `globals.css` feeds into the `--mono` and
- * `--font-display` tokens so every `font-mono` / `font-display` /
- * `var(--mono)` reference resolves to it with no per-component churn.
+ * Poppins — the single app-wide typeface (titles, subtitles, descriptions,
+ * data — everything).
+ *
+ * Exposed as `--font-poppins`, which globals.css feeds into `--font-sans`,
+ * `--mono` and `--font-display`, so every `font-sans` / `font-mono` /
+ * `font-display` reference across both consoles resolves to it with no
+ * per-component churn. Poppins is not a variable font, so the weights the
+ * type scale actually uses (400 body, 500 medium, 600 semibold, 700 the
+ * audit report's bold labels; 300 for the rare light caption) are loaded
+ * explicitly.
  */
-const urbanist = Urbanist({
+const poppins = Poppins({
   subsets: ["latin"],
-  variable: "--font-urbanist",
+  weight: ["300", "400", "500", "600", "700"],
+  variable: "--font-poppins",
   display: "swap",
 });
 
@@ -30,8 +37,18 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" data-theme="light" className={urbanist.variable}>
-      <body className="min-h-screen bg-bg text-text font-sans antialiased">{children}</body>
+    // suppressHydrationWarning: browser extensions (Grammarly, LanguageTool…)
+    // inject attributes onto <html>/<body> before React hydrates
+    // (`data-gr-ext-installed`, `data-new-gr-c-s-check-loaded`). This suppresses
+    // the mismatch on these two elements only — one level deep, so real
+    // mismatches inside the app still warn.
+    <html lang="en" data-theme="light" className={poppins.variable} suppressHydrationWarning>
+      <body
+        className="min-h-screen bg-bg text-text font-sans antialiased"
+        suppressHydrationWarning
+      >
+        {children}
+      </body>
     </html>
   );
 }

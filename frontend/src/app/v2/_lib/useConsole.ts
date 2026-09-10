@@ -20,6 +20,8 @@ import { ApiError, cacheGet, cacheSet, getToken, setSession } from '@/lib/api';
 import {
   createProject,
   getAgents,
+  listQuerySets,
+  type QuerySet,
   getIntegrations,
   getMe,
   getProject,
@@ -49,6 +51,11 @@ export interface ConsoleApi {
   agents: AgentsResponse | null;
   agentsLoading: boolean;
   refreshAgents: () => void;
+  /** refresh, then hand the caller the fresh roster — used after a run so the
+   *  outcome is reported from the agent card rather than guessed */
+  refreshAgentsAnd: (then: (next: AgentsResponse) => void) => Promise<void>;
+  /** query sets for the active project — null until the first fetch settles */
+  querySets: QuerySet[] | null;
   /* integrations */
   integrations: IntegrationsResponse | null;
   refreshIntegrations: () => Promise<void>;
@@ -80,6 +87,7 @@ export function useConsole(): ConsoleApi {
   const [agents, setAgents] = useState<AgentsResponse | null>(null);
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [integrations, setIntegrations] = useState<IntegrationsResponse | null>(null);
+  const [querySets, setQuerySets] = useState<QuerySet[] | null>(null);
   const [wheel, setWheel] = useState<SuggestionWheel | null>(null);
   const [wheelLoading, setWheelLoading] = useState(false);
   const [fatal, setFatal] = useState<string | null>(null);
@@ -199,6 +207,20 @@ export function useConsole(): ConsoleApi {
     return () => clearInterval(t);
   }, [activeId]);
 
+  /* query sets — needed to know whether a measurement run can be offered */
+  useEffect(() => {
+    if (!activeId) return;
+    const forId = activeId;
+    setQuerySets(null);
+    listQuerySets(forId)
+      .then((qs) => {
+        if (liveId.current === forId) setQuerySets(qs);
+      })
+      .catch(() => {
+        if (liveId.current === forId) setQuerySets([]);
+      });
+  }, [activeId]);
+
   /* suggestion wheel — one fetch per project, cache-seeded */
   useEffect(() => {
     if (!activeId) return;
@@ -229,6 +251,24 @@ export function useConsole(): ConsoleApi {
       })
       .catch(() => {})
       .finally(() => setAgentsLoading(false));
+  }, []);
+
+  const refreshAgentsAnd = useCallback(async (then: (next: AgentsResponse) => void) => {
+    const id = liveId.current;
+    if (!id) return;
+    setAgentsLoading(true);
+    try {
+      const a = await getAgents(id);
+      cacheSet(`agents.${id}`, a);
+      if (liveId.current === id) {
+        setAgents(a);
+        then(a);
+      }
+    } catch {
+      /* the run itself already succeeded — a failed refresh is not fatal */
+    } finally {
+      setAgentsLoading(false);
+    }
   }, []);
 
   const refreshIntegrations = useCallback(async () => {
@@ -275,6 +315,8 @@ export function useConsole(): ConsoleApi {
     agents,
     agentsLoading,
     refreshAgents,
+    refreshAgentsAnd,
+    querySets,
     integrations,
     refreshIntegrations,
     wheel,

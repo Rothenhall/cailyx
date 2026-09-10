@@ -133,7 +133,30 @@ export interface PsiResult {
   cls: number;
   inp: number;
   performanceScore: number;
+  /** Every Lighthouse category PSI was asked for, 0-100. */
+  categories: Record<string, number>;
+  /** Audits that did not pass, across all requested categories. */
+  failedAudits: PsiFailedAudit[];
+  /** CrUX real-user data for the origin, when Google has enough traffic to report it. */
+  fieldData: Record<string, { percentile: number; category: string }> | null;
+  /** The URL Lighthouse actually measured after redirects. */
+  finalUrl: string | null;
+  lighthouseVersion: string | null;
   raw: unknown;
+}
+
+/** One non-passing Lighthouse audit, flattened for storage and display. */
+export interface PsiFailedAudit {
+  id: string;
+  title: string;
+  /** Which category surfaced it — performance | seo | accessibility | best-practices. */
+  category: string;
+  /** 0-1 as Lighthouse scores it. Null for informational audits. */
+  score: number | null;
+  /** Lighthouse's own one-line explanation. */
+  description: string;
+  /** e.g. "Potential savings of 320 ms". Empty when the audit has no headline value. */
+  displayValue: string;
 }
 
 // ─── AI Assistant Query ─────────────────────────────────────────

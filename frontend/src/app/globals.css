@@ -60,12 +60,44 @@
   --e2: 0 1px 2px rgba(26, 23, 18, 0.05), 0 10px 26px -14px rgba(26, 23, 18, 0.18);
   --e3: 0 2px 6px rgba(26, 23, 18, 0.06), 0 30px 70px -28px rgba(26, 23, 18, 0.34);
 
-  /* Urbanist is the v1 console typeface (loaded in layout.tsx as
-     --font-urbanist). Kept on the --mono token name so existing font-mono /
-     var(--mono) references pick it up unchanged. `--font-display` defaults to
-     the body face, so `font-display` is a semantic hook rather than a second
-     typeface — repoint it here if a display face is ever introduced. */
-  --font-sans: var(--font-urbanist), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* ── shadcn / Animate UI semantic tokens ────────────────────────────────
+     Registry components are written against shadcn's names (bg-primary,
+     text-accent-foreground, bg-destructive, ring-ring…). Rather than let them
+     ship stone-grey defaults, every one is pointed at a Rothenhall value, so
+     an Animate UI button arrives in brass on paper with no per-component
+     restyling.
+
+     Note `--accent` already exists here and means BRASS, not shadcn's neutral
+     hover surface. That is deliberate: it makes `bg-accent
+     text-accent-foreground` a correct brand button. The cost is that a
+     registry component's `ghost` variant hovers brass — override that variant
+     when adopting one, rather than weakening the token. */
+  --background: var(--bg);
+  --foreground: var(--text);
+  --card: var(--bg-raised);
+  --card-foreground: var(--text);
+  --popover: var(--bg-raised);
+  --popover-foreground: var(--text);
+  --primary: var(--accent);            /* brass — the default CTA */
+  --primary-foreground: var(--bg-raised);
+  --secondary: var(--bg-inset);
+  --secondary-foreground: var(--text);
+  --muted: var(--bg-inset);
+  --muted-foreground: var(--text-faint);
+  --accent-foreground: var(--bg-raised);
+  --destructive: var(--red);           /* cognac-deep */
+  --destructive-foreground: var(--bg-raised);
+  --input: var(--border);
+  --ring: var(--accent-dim);           /* matches the console's focus ring */
+  --radius: 8px;                       /* the r2 step */
+
+  /* Poppins is the app-wide typeface — titles, subtitles, descriptions and
+     data all resolve to it (loaded in layout.tsx as --font-poppins). Kept on
+     the --mono token name so existing font-mono / var(--mono) references pick
+     it up unchanged. `--font-display` is a semantic hook that currently
+     resolves to the same face — repoint it here if a separate display face is
+     ever introduced. */
+  --font-sans: var(--font-poppins), "Poppins", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: var(--font-sans);
   --font-display: var(--font-sans);
 }

@@ -7,6 +7,7 @@
 
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { HealthModule } from './modules/health/health.module';
@@ -25,6 +26,7 @@ import { MeasurementModule } from './modules/measurement/measurement.module';
 import { ScoringModule } from './modules/scoring/scoring.module';
 import { ClaimsModule } from './modules/claims/claims.module';
 import { FindingsModule } from './modules/findings/findings.module';
+import { AttributionModule } from './modules/attribution/attribution.module';
 import { CrawlerMonitorModule } from './modules/crawler-monitor/crawler-monitor.module';
 import { MonitoringModule } from './modules/monitoring/monitoring.module';
 import { PageAnalysisModule } from './modules/page-analysis/page-analysis.module';
@@ -41,6 +43,8 @@ import { CouncilModule } from './modules/council/council.module';
 import { SerpIntelligenceModule } from './modules/serp-intelligence/serp-intelligence.module';
 import { AuthorityModule } from './modules/authority/authority.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
+import { GoogleModule } from './modules/google/google.module';
+import { SeoAuditModule } from './modules/seo-audit/seo-audit.module';
 import { AgentsModule } from './modules/agents/agents.module';
 import { UsersModule } from './modules/users/users.module';
 
@@ -49,8 +53,16 @@ import { UsersModule } from './modules/users/users.module';
     // Global configuration module — loads .env variables
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['.env'],
+      // backend/.env first, then the monorepo root — earlier entries win, so a
+      // backend-local value still overrides the shared one. The root file is
+      // where cross-cutting keys (OPENROUTER_API_KEY) live so the frontend and
+      // backend do not each keep their own copy.
+      envFilePath: ['.env', '../.env'],
     }),
+
+    // In-process cron. Drives recurring technical audits without Redis — see
+    // technical-audit/audit-scheduler.service.ts for why that matters.
+    ScheduleModule.forRoot(),
 
     // Global rate limiting — 100 requests per 60s per IP (default)
     ThrottlerModule.forRoot([
@@ -94,6 +106,7 @@ import { UsersModule } from './modules/users/users.module';
 
     // Wave 3 — AI-crawler log ingestion, health deltas + alerts
     CrawlerMonitorModule,
+    AttributionModule,
     MonitoringModule,
 
     // Wave 4 — content & outreach tools (SOP-6/7/10/8)
@@ -117,6 +130,12 @@ import { UsersModule } from './modules/users/users.module';
 
     // Dashboard aggregation — connections + agents feed
     IntegrationsModule,
+
+    // Google Search Console + Analytics (3-legged OAuth)
+    GoogleModule,
+
+    // SEO audit — Search Console data + fixes
+    SeoAuditModule,
     AgentsModule,
 
     // Operator administration (admin only)

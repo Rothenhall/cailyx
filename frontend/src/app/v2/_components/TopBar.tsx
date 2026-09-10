@@ -23,6 +23,7 @@ export function TopBar({
   onLogout,
   onOpenConnections,
   onOpenUsers,
+  onOpenPalette,
   connectedCount,
 }: {
   user: User | null;
@@ -33,6 +34,8 @@ export function TopBar({
   onLogout: () => void;
   onOpenConnections: () => void;
   onOpenUsers: () => void;
+  /** open the command palette — the affordance below is how anyone learns it exists */
+  onOpenPalette: () => void;
   connectedCount: number | null;
 }) {
   const active = projects.find((p) => p.id === activeId) ?? null;
@@ -64,7 +67,7 @@ export function TopBar({
         <>
           connections
           {connectedCount !== null && (
-            <span className="tabular-nums rounded-md bg-accent-dim/30 px-1.5 text-body font-medium text-accent">
+            <span className="tabular-nums rounded-r2 bg-accent-dim/24 px-1.5 text-body font-medium text-accent">
               {connectedCount}
             </span>
           )}
@@ -151,12 +154,25 @@ export function TopBar({
       </div>
 
       <div className="ml-auto flex items-center gap-3">
+        {/* a keyboard shortcut nobody can see is a shortcut nobody uses */}
+        <button
+          type="button"
+          onClick={onOpenPalette}
+          title="Command palette"
+          aria-label="Open command palette"
+          aria-keyshortcuts="Meta+K Control+K"
+          className="hidden items-center gap-1.5 rounded-full border border-border px-2.5 py-1.5 text-caption text-faint transition-colors duration-micro hover:border-border-strong hover:text-dim lg:inline-flex"
+        >
+          Search
+          <kbd className="rounded-r1 border border-border px-1 text-eyebrow uppercase">⌘K</kbd>
+        </button>
+
         <GooeyNav items={gooItems} />
 
         <span className="h-6 w-px bg-border" />
 
         <div className="flex items-center gap-2.5">
-          <span className="grid h-8 w-8 place-items-center rounded-full bg-accent-dim/30 text-body font-semibold text-accent">
+          <span className="grid h-8 w-8 place-items-center rounded-full bg-accent-dim/24 text-body font-semibold text-accent">
             {initials}
           </span>
           <div className="hidden leading-tight md:block">

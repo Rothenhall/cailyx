@@ -3,7 +3,7 @@
 /**
  * Cailyx top bar: brand lockup, project switcher, and a GooeyNav control group
  * (view / connections / users) that behaves as one connected liquid-pill row.
- * Restyled on Urbanist; paints only from the Rothenhall theme tokens.
+ * Restyled on Outfit; paints only from the Rothenhall theme tokens.
  *
  * @module components/terminal/TopBar
  */

@@ -15,10 +15,39 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/lib/api';
 import { useFocusTrap } from '../_lib/useFocusTrap';
-import { BoltIcon, CloseIcon } from './icons';
-import { createUser, deleteUser, listUsers, resetUserPassword, updateUser } from '@/lib/terminal-api';
+import { BoltIcon, CloseIcon, GoogleGlyph } from './icons';
+import {
+  authorizeGoogle,
+  createUser,
+  deleteUser,
+  disconnectGoogle,
+  getAnalyticsSummary,
+  getGoogleResources,
+  getGoogleStatus,
+  getSearchConsoleSummary,
+  listGoogleConnections,
+  listUsers,
+  resetUserPassword,
+  setGoogleResource,
+  updateUser,
+} from '@/lib/terminal-api';
 import type { User } from '@/types/api';
-import type { Integration, IntegrationCategory, SafeUser } from '@/types/terminal';
+import type {
+  GoogleConnectionView,
+  GoogleResourcesView,
+  GoogleService,
+  Integration,
+  IntegrationCategory,
+  SafeUser,
+} from '@/types/terminal';
+
+/**
+ * The two Google surfaces are rendered by the dedicated <GoogleConnections>
+ * block (an OAuth connect/disconnect flow with a per-project resource picker),
+ * not as plain env-var rows — so they are filtered out of the category list.
+ * `page.tsx` also excludes them from the header's connected count.
+ */
+export const HIDDEN_INTEGRATIONS = new Set(['google-analytics', 'google-search-console']);
 
 const CAT_LABEL: Partial<Record<IntegrationCategory, string>> = {
   analytics: 'Analytics · Google',
@@ -41,11 +70,6 @@ const CAT_ORDER: IntegrationCategory[] = [
 
 /** Features gated by missing CODE, not just a missing env value (v1 GatesCard). */
 const NOT_WIRED = [
-  {
-    name: 'Google Analytics / Search Console OAuth',
-    detail: 'Connect buttons report not-connected — the 3-legged OAuth flow + token storage is not built.',
-    ref: 'READINESS §3.1',
-  },
   {
     name: 'Redis-backed rate-limit store',
     detail: 'Throttler uses an in-memory store — fine for one instance, wrong for several.',
@@ -84,7 +108,7 @@ function IntegrationRow({ i }: { i: Integration }) {
       <p className="mt-1 text-body leading-snug text-faint">{i.detail}</p>
       {i.configHint && (
         <div className="mt-1.5 flex items-center gap-2">
-          <code className="rounded bg-bg-raised px-1.5 py-0.5 text-caption text-dim">{i.configHint}</code>
+          <code className="rounded-r1 bg-bg-raised px-1.5 py-0.5 text-caption text-dim">{i.configHint}</code>
           {!ok && i.connectUrl && (
             <a
               href={i.connectUrl}
@@ -103,7 +127,7 @@ function IntegrationRow({ i }: { i: Integration }) {
 
 function GateRow({ tone, title, right, detail }: { tone: 'warn' | 'danger'; title: string; right: string; detail: string }) {
   return (
-    <li className="rounded-r2 border border-border/60 bg-bg-inset/50 px-2.5 py-2">
+    <li className="rounded-r2 border border-border/60 bg-bg-inset/60 px-2.5 py-2">
       <div className="flex items-center gap-2">
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${tone === 'warn' ? 'bg-warn' : 'bg-danger'}`} />
         <span className="text-body font-medium text-dim">{title}</span>
@@ -124,6 +148,7 @@ export function SettingsPanel({
   onClose,
   user,
   integrations,
+  activeProject,
   onRecheck,
   onNotify,
 }: {
@@ -131,6 +156,8 @@ export function SettingsPanel({
   onClose: () => void;
   user: User | null;
   integrations: Integration[];
+  /** the project a Google site / property gets mapped to */
+  activeProject?: { id: string; domain: string } | null;
   /** re-read `GET /integrations` — useful right after setting an env var */
   onRecheck: () => Promise<void>;
   onNotify: (msg: string, tone?: 'ok' | 'warn') => void;
@@ -180,7 +207,9 @@ export function SettingsPanel({
 
   if (!open) return null;
 
-  const configurable = integrations.filter((i) => i.category !== 'mode');
+  const configurable = integrations.filter(
+    (i) => i.category !== 'mode' && !HIDDEN_INTEGRATIONS.has(i.key),
+  );
   const connected = configurable.filter((i) => i.connected).length;
   const total = configurable.length;
   const blocked = configurable.filter((i) => !i.connected);
@@ -241,7 +270,7 @@ export function SettingsPanel({
           </span>
           <div className="min-w-0">
             <h2 className="text-ui font-semibold tracking-tight2 text-text">Workspace</h2>
-            <p className="text-caption text-faint">connections, setup gates &amp; team</p>
+            <p className="font-display text-caption text-faint">connections, setup gates &amp; team</p>
           </div>
 
           {/* segmented tabs */}
@@ -276,7 +305,7 @@ export function SettingsPanel({
           {tab === 'connections' ? (
             <>
               {/* summary */}
-              <div className="mb-4 rounded-r3 border border-border bg-bg-inset/50 p-3">
+              <div className="mb-4 rounded-r3 border border-border bg-bg-inset/60 p-3">
                 <div className="flex items-baseline justify-between gap-2">
                   <span className="text-body font-semibold text-dim">
                     {connected} of {total} connected
@@ -302,6 +331,15 @@ export function SettingsPanel({
                 </div>
               </div>
 
+              {/* Google — the one connector with a real OAuth action, so it
+                  leads rather than sitting in the env-var list below */}
+              <GoogleConnections
+                activeProject={activeProject ?? null}
+                psi={integrations.find((i) => i.key === 'pagespeed')}
+                onNotify={onNotify}
+                onRecheck={onRecheck}
+              />
+
               {total === 0 && (
                 <p className="text-body text-faint">Integration list unavailable — is the backend reachable?</p>
               )}
@@ -309,7 +347,8 @@ export function SettingsPanel({
               {/* integrations by category (unknown categories fall through last) */}
               {[...CAT_ORDER, ...new Set(configurable.map((i) => i.category).filter((c) => !CAT_ORDER.includes(c)))].map(
                 (cat) => {
-                  const items = configurable.filter((i) => i.category === cat);
+                  // pagespeed is rendered inside the Google block, not here
+                  const items = configurable.filter((i) => i.category === cat && i.key !== 'pagespeed');
                   if (!items.length) return null;
                   return (
                     <div key={cat} className="mb-4">
@@ -325,7 +364,7 @@ export function SettingsPanel({
               )}
 
               {/* setup gates — folded into connections */}
-              <div className="mt-5 rounded-r3 border border-warn/40 bg-warn/[0.06] p-3">
+              <div className="mt-5 rounded-r3 border border-warn/40 bg-warn/[0.08] p-3">
                 <div className="mb-2 flex items-center gap-1.5">
                   <BoltIcon className="h-3.5 w-3.5 text-warn" />
                   <span className="text-caption font-semibold uppercase tracking-eyebrow text-warn">Setup gates</span>
@@ -374,7 +413,7 @@ export function SettingsPanel({
                 </span>
                 <button
                   onClick={() => setShowCreate((s) => !s)}
-                  className="rounded-r2 border border-accent-dim bg-accent-dim/15 px-2.5 py-1 text-body font-medium text-accent transition-colors hover:bg-accent-dim/25"
+                  className="rounded-r2 border border-accent-dim bg-accent-dim/14 px-2.5 py-1 text-body font-medium text-accent transition-colors hover:bg-accent-dim/24"
                 >
                   {showCreate ? 'close' : '+ new operator'}
                 </button>
@@ -411,13 +450,13 @@ export function SettingsPanel({
                         }`}
                       >
                         <div className="flex items-center gap-2">
-                          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent-dim/25 text-caption font-semibold text-accent">
+                          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent-dim/24 text-caption font-semibold text-accent">
                             {o.name.slice(0, 1).toUpperCase()}
                           </span>
                           <div className="min-w-0">
                             <div className="flex items-center gap-1.5 text-body font-semibold text-dim">
                               <span className="truncate">{o.name}</span>
-                              {isSelf && <span className="rounded bg-accent-dim/25 px-1 text-eyebrow uppercase text-accent">you</span>}
+                              {isSelf && <span className="rounded-r1 bg-accent-dim/24 px-1 text-eyebrow uppercase text-accent">you</span>}
                             </div>
                             <div className="truncate text-caption text-faint">{o.email}</div>
                           </div>
@@ -468,7 +507,7 @@ export function SettingsPanel({
                               onClick={() => setEditing({ id: o.id, kind: 'remove' })}
                               disabled={isSelf || lastAdmin || working}
                               title={isSelf ? 'You cannot remove your own account' : lastAdmin ? 'The last admin cannot be removed' : undefined}
-                              className="rounded-r1 border border-border px-1.5 py-0.5 text-danger transition-colors duration-micro hover:bg-danger/10 disabled:opacity-30"
+                              className="rounded-r1 border border-border px-1.5 py-0.5 text-danger transition-colors duration-micro hover:bg-danger/14 disabled:opacity-30"
                             >
                               remove
                             </button>
@@ -522,7 +561,7 @@ function InlineFlow({
 
   if (kind === 'remove') {
     return (
-      <div className="mt-2 flex items-center gap-2 rounded-r2 border border-danger/40 bg-danger/[0.06] px-2.5 py-2">
+      <div className="mt-2 flex items-center gap-2 rounded-r2 border border-danger/40 bg-danger/[0.08] px-2.5 py-2">
         <span className="min-w-0 flex-1 text-caption leading-snug text-dim">
           Remove <span className="font-semibold text-text">{operator.email}</span>? This cannot be undone.
         </span>
@@ -550,7 +589,8 @@ function InlineFlow({
       onSubmit={(e) => {
         e.preventDefault();
         if (!ok) return;
-        isPw ? onPassword(value) : onRename(value);
+        if (isPw) onPassword(value);
+        else onRename(value);
       }}
       className="mt-2 flex items-center gap-2"
     >
@@ -572,7 +612,7 @@ function InlineFlow({
       </button>
       <button
         disabled={!ok}
-        className="shrink-0 rounded-r1 border border-accent-dim bg-accent-dim/15 px-2 py-1 text-caption font-medium text-accent transition-colors duration-micro hover:bg-accent-dim/25 disabled:opacity-40"
+        className="shrink-0 rounded-r1 border border-accent-dim bg-accent-dim/14 px-2 py-1 text-caption font-medium text-accent transition-colors duration-micro hover:bg-accent-dim/24 disabled:opacity-40"
       >
         {isPw ? 'Reset' : 'Save'}
       </button>
@@ -639,10 +679,436 @@ function CreateForm({ onCreate }: { onCreate: (o: { email: string; password: str
       </select>
       <button
         disabled={!ok || busy}
-        className="col-span-2 rounded-r2 border border-accent-dim bg-accent-dim/15 px-3 py-1.5 text-body font-medium text-accent transition-colors hover:bg-accent-dim/25 disabled:opacity-40"
+        className="col-span-2 rounded-r2 border border-accent-dim bg-accent-dim/14 px-3 py-1.5 text-body font-medium text-accent transition-colors hover:bg-accent-dim/24 disabled:opacity-40"
       >
         {busy ? 'creating…' : 'create operator'}
       </button>
     </form>
   );
+}
+
+
+/* ── Google Search Console + Analytics ──────────────────────────────────
+   The one connector in this panel with a real action: a 3-legged OAuth
+   connect per operator, then a per-project site / property mapping and a
+   live data preview so it is obvious the link works. */
+
+const GOOGLE_META: Record<
+  GoogleService,
+  { name: string; noun: string; blurb: string }
+> = {
+  'search-console': {
+    name: 'Search Console',
+    noun: 'site',
+    blurb: 'Clicks, impressions, CTR, average position & top queries',
+  },
+  analytics: {
+    name: 'Analytics (GA4)',
+    noun: 'property',
+    blurb: 'Sessions, users, page views, engagement & channel mix',
+  },
+};
+
+const compact = (n: number) =>
+  n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(Math.round(n));
+
+function GoogleConnections({
+  activeProject,
+  psi,
+  onNotify,
+  onRecheck,
+}: {
+  activeProject: { id: string; domain: string } | null;
+  /** PageSpeed Insights — a Google product, but an API key rather than OAuth */
+  psi?: Integration;
+  onNotify: (msg: string, tone?: 'ok' | 'warn') => void;
+  onRecheck: () => Promise<void>;
+}) {
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  const [conns, setConns] = useState<GoogleConnectionView[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setErr(null);
+    try {
+      const [st, list] = await Promise.all([
+        getGoogleStatus().catch(() => ({ configured: false })),
+        listGoogleConnections(),
+      ]);
+      setConfigured(st.configured);
+      setConns(list);
+    } catch (e) {
+      setConns([]);
+      setConfigured(null);
+      setErr(e instanceof ApiError ? e.message : 'could not load Google connections');
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const oauthConnected = (conns ?? []).filter((c) => c.connected && !c.expired).length;
+  const nConnected = oauthConnected + (psi?.connected ? 1 : 0);
+
+  return (
+    <div className="mb-4 overflow-hidden rounded-r3 border border-border bg-bg-raised">
+      <div className="flex items-center gap-2.5 border-b border-border bg-bg-inset/50 px-3 py-2.5">
+        <GoogleGlyph className="h-4 w-4" />
+        <span className="text-body font-semibold text-text">
+          Google · Search Console, Analytics &amp; PageSpeed
+        </span>
+        <span
+          className={`ml-auto shrink-0 rounded-full border px-1.5 py-0.5 text-eyebrow font-semibold uppercase tracking-wide2 ${
+            nConnected > 0 ? 'border-accent-dim text-accent' : 'border-border text-faint'
+          }`}
+        >
+          {conns === null ? '…' : nConnected > 0 ? `${nConnected} connected` : 'not connected'}
+        </span>
+      </div>
+
+      {err && <p className="px-3 pt-2 text-caption text-danger">{err}</p>}
+
+      {configured === false && (
+        <p className="px-3 pt-2.5 text-caption leading-snug text-warn">
+          The OAuth client is not set on the server. An admin needs{' '}
+          <code className="rounded-r1 bg-bg-inset px-1 text-dim">GOOGLE_OAUTH_CLIENT_ID</code> +{' '}
+          <code className="rounded-r1 bg-bg-inset px-1 text-dim">GOOGLE_OAUTH_CLIENT_SECRET</code> in the backend env.
+        </p>
+      )}
+
+      <div className="divide-y divide-border/70">
+        {(['search-console', 'analytics'] as GoogleService[]).map((service) => (
+          <GoogleServiceCard
+            key={service}
+            service={service}
+            conn={conns?.find((c) => c.service === service) ?? null}
+            configured={configured !== false}
+            activeProject={activeProject}
+            onNotify={onNotify}
+            onChanged={async () => {
+              await Promise.all([load(), onRecheck()]);
+            }}
+          />
+        ))}
+        {psi && <PsiRow psi={psi} />}
+      </div>
+
+      <p className="border-t border-border/70 px-3 py-2 text-caption text-faint">
+        Search Console &amp; Analytics connect your own Google account (read-only, tokens encrypted at rest).
+        PageSpeed is an API key on the server, shared across the workspace.
+      </p>
+    </div>
+  );
+}
+
+/** PageSpeed Insights row — Google, but keyed by PSI_API_KEY on the server,
+    so it is status-only (no per-operator connect). */
+function PsiRow({ psi }: { psi: Integration }) {
+  const ok = psi.connected;
+  return (
+    <div className="p-3">
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-r2 bg-bg-inset">
+          <GoogleGlyph className="h-3.5 w-3.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-body font-semibold text-dim">PageSpeed Insights</span>
+            <span
+              className={`ml-auto shrink-0 rounded-full border px-1.5 py-0.5 text-eyebrow font-semibold uppercase tracking-wide2 ${
+                ok ? 'border-accent-dim text-accent' : 'border-border text-faint'
+              }`}
+            >
+              {ok ? 'connected' : 'not set'}
+            </span>
+          </div>
+          <p className="mt-0.5 text-caption leading-snug text-faint">{psi.detail}</p>
+          <div className="mt-1.5">
+            <code className="rounded-r1 bg-bg-inset px-1.5 py-0.5 text-caption text-dim">PSI_API_KEY</code>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GoogleServiceCard({
+  service,
+  conn,
+  configured,
+  activeProject,
+  onNotify,
+  onChanged,
+}: {
+  service: GoogleService;
+  conn: GoogleConnectionView | null;
+  configured: boolean;
+  activeProject: { id: string; domain: string } | null;
+  onNotify: (msg: string, tone?: 'ok' | 'warn') => void;
+  onChanged: () => Promise<void>;
+}) {
+  const meta = GOOGLE_META[service];
+  const [busy, setBusy] = useState<null | 'connect' | 'disconnect'>(null);
+  const connected = Boolean(conn?.connected);
+  const expired = Boolean(conn?.expired);
+
+  const connect = async () => {
+    setBusy('connect');
+    try {
+      const { url } = await authorizeGoogle(service, activeProject?.id);
+      const popup = window.open(url, 'cailyx-google-oauth', 'width=520,height=700');
+      if (!popup) {
+        onNotify('Allow pop-ups for this site, then try connecting again', 'warn');
+        return;
+      }
+      /* resolve on whichever comes first: the popup posting its result back,
+         or the popup closing (its self-close, or the user closing it) */
+      await new Promise<void>((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          clearInterval(t);
+          window.removeEventListener('message', onMsg);
+          resolve();
+        };
+        const onMsg = (e: MessageEvent) => {
+          if (e.data && e.data.source === 'cailyx-google-oauth') finish();
+        };
+        window.addEventListener('message', onMsg);
+        const t = setInterval(() => {
+          if (popup.closed) finish();
+        }, 500);
+      });
+      await onChanged();
+    } catch (e) {
+      onNotify(e instanceof ApiError ? e.message : 'could not start the Google connect', 'warn');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const disconnect = async () => {
+    setBusy('disconnect');
+    try {
+      await disconnectGoogle(service);
+      onNotify(`${meta.name} disconnected`);
+      await onChanged();
+    } catch (e) {
+      onNotify(e instanceof ApiError ? e.message : 'could not disconnect', 'warn');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const statusPill = expired
+    ? { label: 'reauthorise', cls: 'border-warn/50 text-warn' }
+    : connected
+      ? { label: 'connected', cls: 'border-accent-dim text-accent' }
+      : { label: 'not connected', cls: 'border-border text-faint' };
+
+  return (
+    <div className="p-3">
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-r2 bg-bg-inset">
+          <GoogleGlyph className="h-3.5 w-3.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-body font-semibold text-dim">{meta.name}</span>
+            <span
+              className={`ml-auto shrink-0 rounded-full border px-1.5 py-0.5 text-eyebrow font-semibold uppercase tracking-wide2 ${statusPill.cls}`}
+            >
+              {statusPill.label}
+            </span>
+          </div>
+          <p className="mt-0.5 text-caption leading-snug text-faint">
+            {connected ? (
+              <>
+                {conn?.googleEmail ?? 'Google account'}
+                {conn?.lastError ? <span className="text-danger"> · {conn.lastError}</span> : null}
+              </>
+            ) : (
+              meta.blurb
+            )}
+          </p>
+
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {!connected && (
+              <button
+                onClick={() => void connect()}
+                disabled={!configured || busy !== null}
+                className="inline-flex items-center gap-1.5 rounded-r2 border border-accent-dim bg-accent-dim/14 px-2.5 py-1 text-caption font-semibold text-accent transition-colors duration-micro hover:bg-accent-dim/24 disabled:opacity-40"
+              >
+                {busy === 'connect' ? 'opening Google…' : `Connect ${meta.name} ↗`}
+              </button>
+            )}
+            {connected && (
+              <>
+                <button
+                  onClick={() => void connect()}
+                  disabled={busy !== null}
+                  className="rounded-r1 border border-border px-2 py-0.5 text-caption text-faint transition-colors duration-micro hover:text-dim disabled:opacity-40"
+                >
+                  {busy === 'connect' ? 'opening…' : expired ? 'reconnect ↗' : 're-authorise'}
+                </button>
+                <button
+                  onClick={() => void disconnect()}
+                  disabled={busy !== null}
+                  className="rounded-r1 border border-border px-2 py-0.5 text-caption text-faint transition-colors duration-micro hover:text-danger disabled:opacity-40"
+                >
+                  {busy === 'disconnect' ? 'working…' : 'disconnect'}
+                </button>
+              </>
+            )}
+          </div>
+
+          {connected && !expired && (
+            <GoogleResourcePicker service={service} activeProject={activeProject} onNotify={onNotify} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GoogleResourcePicker({
+  service,
+  activeProject,
+  onNotify,
+}: {
+  service: GoogleService;
+  activeProject: { id: string; domain: string } | null;
+  onNotify: (msg: string, tone?: 'ok' | 'warn') => void;
+}) {
+  const [data, setData] = useState<GoogleResourcesView | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const noun = GOOGLE_META[service].noun;
+
+  useEffect(() => {
+    if (!activeProject) return;
+    let alive = true;
+    setData(null);
+    setFailed(false);
+    getGoogleResources(service, activeProject.id)
+      .then((r) => alive && setData(r))
+      .catch(() => alive && setFailed(true));
+    return () => {
+      alive = false;
+    };
+  }, [service, activeProject]);
+
+  if (!activeProject) {
+    return (
+      <p className="mt-2 rounded-r2 bg-bg-inset/60 px-2.5 py-1.5 text-caption text-faint">
+        Select a project (top bar) to map a {noun} to it.
+      </p>
+    );
+  }
+  if (failed) {
+    return <p className="mt-2 text-caption text-faint">Could not list {noun}s — re-authorise?</p>;
+  }
+  if (!data) return <p className="mt-2 text-caption text-faint">loading {noun} list…</p>;
+  if (!data.connected) {
+    return (
+      <p className="mt-2 text-caption text-warn">
+        Couldn&rsquo;t list {noun}s.{' '}
+        {service === 'analytics'
+          ? 'Check the Analytics Admin API is enabled on the OAuth project, then re-authorise.'
+          : 'Re-authorise the connection.'}
+      </p>
+    );
+  }
+  if (data.options.length === 0) {
+    return (
+      <p className="mt-2 text-caption text-faint">
+        This Google account has no {noun} it can read. Grant it access in {GOOGLE_META[service].name} first.
+      </p>
+    );
+  }
+
+  const choose = async (resourceId: string) => {
+    if (!resourceId) return;
+    const opt = data.options.find((o) => o.id === resourceId);
+    setSaving(true);
+    try {
+      await setGoogleResource({ service, projectId: activeProject.id, resourceId, resourceLabel: opt?.label });
+      setData({ ...data, selected: { resourceId, resourceLabel: opt?.label ?? null } });
+      onNotify(`${GOOGLE_META[service].name} ${noun} mapped to ${activeProject.domain}`);
+    } catch (e) {
+      onNotify(e instanceof ApiError ? e.message : 'could not save the mapping', 'warn');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-2 rounded-r2 border border-border/70 bg-bg-inset/40 p-2">
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 text-caption text-faint">{activeProject.domain} →</span>
+        <select
+          value={data.selected?.resourceId ?? ''}
+          disabled={saving}
+          onChange={(e) => void choose(e.target.value)}
+          className="min-w-0 flex-1 rounded-r2 border border-border bg-bg-raised px-1.5 py-1 text-caption text-dim outline-none focus:border-border-strong disabled:opacity-50"
+        >
+          <option value="" disabled>
+            choose a {noun}…
+          </option>
+          {data.options.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.label}
+              {o.detail ? ` — ${o.detail}` : ''}
+            </option>
+          ))}
+        </select>
+      </div>
+      {data.selected && (
+        <GoogleDataPreview service={service} projectId={activeProject.id} key={data.selected.resourceId} />
+      )}
+    </div>
+  );
+}
+
+function GoogleDataPreview({
+  service,
+  projectId,
+}: {
+  service: GoogleService;
+  projectId: string;
+}) {
+  const [text, setText] = useState<string>('loading last 28 days…');
+
+  useEffect(() => {
+    let alive = true;
+    const run = async () => {
+      try {
+        if (service === 'search-console') {
+          const s = await getSearchConsoleSummary(projectId, 28);
+          if (alive)
+            setText(
+              `${compact(s.totals.clicks)} clicks · ${compact(s.totals.impressions)} impressions · ` +
+                `${(s.totals.ctr * 100).toFixed(1)}% CTR · pos ${s.totals.position.toFixed(1)}`,
+            );
+        } else {
+          const s = await getAnalyticsSummary(projectId, 28);
+          if (alive)
+            setText(
+              `${compact(s.totals.sessions)} sessions · ${compact(s.totals.totalUsers)} users · ` +
+                `${compact(s.totals.screenPageViews)} views · ${(s.totals.engagementRate * 100).toFixed(0)}% engaged`,
+            );
+        }
+      } catch (e) {
+        if (alive) setText(e instanceof ApiError ? e.message : 'no data yet');
+      }
+    };
+    void run();
+    return () => {
+      alive = false;
+    };
+  }, [service, projectId]);
+
+  return <p className="mt-1.5 text-caption tabular-nums text-dim">{text}</p>;
 }

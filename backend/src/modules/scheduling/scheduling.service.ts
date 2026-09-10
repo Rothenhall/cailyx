@@ -8,7 +8,7 @@
  */
 
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { Queue, Worker, JobScheduler } from 'bullmq';
+import { Queue, Worker } from 'bullmq';
 import Redis from 'ioredis';
 import { PrismaService } from '../database/prisma.service';
 
@@ -17,21 +17,26 @@ export type ScheduledTaskHandler = (projectId: string, targetUrl: string) => Pro
 @Injectable()
 export class SchedulingService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SchedulingService.name);
-  private queue: Queue;
+  private queue: Queue | null = null;
   private worker: Worker | null = null;
-  private redis: Redis;
+  private redis: Redis | null = null;
   /** The worker's own duplicated connection — tracked so it can be closed. */
   private workerConnection: Redis | null = null;
 
   private readonly handlers = new Map<string, ScheduledTaskHandler>();
 
   constructor(private readonly prisma: PrismaService) {
+    if (!this.useBullmq) return;
     const redisUrl = process.env.REDIS_URL || 'redis://localhost:6380';
     this.redis = new Redis(redisUrl, { maxRetriesPerRequest: null });
     this.queue = new Queue('cailyx-scheduled-tasks', { connection: this.redis });
   }
 
   async onModuleInit(): Promise<void> {
+    if (!this.useBullmq || !this.redis) {
+      this.logger.log('Scheduling: BullMQ backend not selected — Redis not connected (cron backend handles recurring audits).');
+      return;
+    }
     this.workerConnection = this.redis.duplicate();
     this.worker = new Worker(
       'cailyx-scheduled-tasks',
@@ -56,7 +61,7 @@ export class SchedulingService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`Scheduled task failed: ${job?.name} — ${err.message}`);
     });
 
-    this.logger.log('Scheduling service initialized');
+    this.logger.log('Scheduling service initialized (BullMQ)');
   }
 
   /**
@@ -67,10 +72,10 @@ export class SchedulingService implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     try {
       await this.worker?.close();
-      await this.queue.close();
+      await this.queue?.close();
       this.workerConnection?.disconnect();
-      this.redis.disconnect();
-      this.logger.log('Scheduling service connections closed');
+      this.redis?.disconnect();
+      if (this.redis) this.logger.log('Scheduling service connections closed');
     } catch (err) {
       this.logger.warn(`Scheduling teardown error: ${(err as Error).message}`);
     }
@@ -81,59 +86,76 @@ export class SchedulingService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`Registered handler for task: ${taskName}`);
   }
 
+  /** BullMQ/Redis is only touched when SCHEDULING_BACKEND=bullmq. The default
+      (`cron`) backend polls the ScheduleConfig row in-process, so with no
+      Redis this service stays idle and a mis-behaving :6380 (or none) cannot
+      wedge the API. The DB write in setSchedule is the source of truth. */
+  private get useBullmq(): boolean {
+    return (process.env.SCHEDULING_BACKEND ?? 'cron') === 'bullmq';
+  }
+
   async setSchedule(
     projectId: string,
-    cadence: 'weekly' | 'monthly' | 'manual-only',
+    cadence: 'daily' | 'weekly' | 'monthly' | 'manual-only',
     targetUrl: string,
     taskName: string = 'technical-audit',
   ): Promise<{ cadence: string; nextRunAt: string | null; active: boolean }> {
-    // Remove existing scheduled job
-    await this.removeExistingJobs(projectId, taskName);
+    if (this.useBullmq) await this.removeExistingJobs(projectId, taskName);
 
     if (cadence === 'manual-only') {
       await this.prisma.scheduleConfig.upsert({
         where: { projectId },
-        create: { projectId, cadence, active: false, nextRunAt: null },
+        create: { projectId, cadence, active: false, nextRunAt: null, targetUrl: null },
         update: { cadence, active: false, nextRunAt: null },
       });
       this.logger.log(`Schedule set to manual-only for project ${projectId}`);
       return { cadence, nextRunAt: null, active: false };
     }
 
-    const cronExpr = cadence === 'weekly' ? '0 0 * * 1' : '0 0 1 * *';
     const nextRunAt = this.getNextRunDate(cadence);
 
-    // Use JobScheduler for repeatable jobs (BullMQ v6 API)
-    await this.queue.upsertJobScheduler(
-      `${taskName}:${projectId}`,
-      { pattern: cronExpr },
-      { data: { taskName, projectId, targetUrl } },
-    );
+    if (this.useBullmq) {
+      // '0 0 * * *' daily · '0 0 * * 1' Monday · '0 0 1 * *' 1st of month
+      const cronExpr = cadence === 'daily' ? '0 0 * * *' : cadence === 'weekly' ? '0 0 * * 1' : '0 0 1 * *';
+      await this.queue?.upsertJobScheduler(
+        `${taskName}:${projectId}`,
+        { pattern: cronExpr },
+        { data: { taskName, projectId, targetUrl } },
+      );
+    }
 
     await this.prisma.scheduleConfig.upsert({
       where: { projectId },
-      create: { projectId, cadence, active: true, nextRunAt },
-      update: { cadence, active: true, nextRunAt },
+      create: { projectId, cadence, active: true, nextRunAt, targetUrl: targetUrl || null },
+      update: { cadence, active: true, nextRunAt, targetUrl: targetUrl || null },
     });
 
     this.logger.log(`Schedule set to ${cadence} for project ${projectId}, next run: ${nextRunAt.toISOString()}`);
     return { cadence, nextRunAt: nextRunAt.toISOString(), active: true };
   }
 
-  async getSchedule(projectId: string): Promise<{ cadence: string; nextRunAt: string | null; active: boolean }> {
+  async getSchedule(projectId: string): Promise<{
+    cadence: string;
+    nextRunAt: string | null;
+    active: boolean;
+    lastRunAt: string | null;
+    lastError: string | null;
+  }> {
     const config = await this.prisma.scheduleConfig.findUnique({ where: { projectId } });
     if (!config) {
-      return { cadence: 'manual-only', nextRunAt: null, active: false };
+      return { cadence: 'manual-only', nextRunAt: null, active: false, lastRunAt: null, lastError: null };
     }
     return {
       cadence: config.cadence,
       nextRunAt: config.nextRunAt?.toISOString() || null,
       active: config.active,
+      lastRunAt: config.lastRunAt?.toISOString() || null,
+      lastError: config.lastError ?? null,
     };
   }
 
   async removeSchedule(projectId: string, taskName: string = 'technical-audit'): Promise<void> {
-    await this.removeExistingJobs(projectId, taskName);
+    if (this.useBullmq) await this.removeExistingJobs(projectId, taskName);
     await this.prisma.scheduleConfig.updateMany({
       where: { projectId },
       data: { active: false, nextRunAt: null, cadence: 'manual-only' },
@@ -142,22 +164,27 @@ export class SchedulingService implements OnModuleInit, OnModuleDestroy {
 
   private async removeExistingJobs(projectId: string, taskName: string): Promise<void> {
     try {
-      await this.queue.removeJobScheduler(`${taskName}:${projectId}`);
+      await this.queue?.removeJobScheduler(`${taskName}:${projectId}`);
     } catch {
       // Job scheduler may not exist — ignore
     }
   }
 
-  private getNextRunDate(cadence: 'weekly' | 'monthly'): Date {
+  private getNextRunDate(cadence: 'daily' | 'weekly' | 'monthly'): Date {
     const now = new Date();
+    if (cadence === 'daily') {
+      const next = new Date(now);
+      next.setDate(now.getDate() + 1);
+      next.setHours(0, 0, 0, 0);
+      return next;
+    }
     if (cadence === 'weekly') {
       const next = new Date(now);
       const daysUntilMonday = (8 - now.getDay()) % 7 || 7;
       next.setDate(now.getDate() + daysUntilMonday);
       next.setHours(0, 0, 0, 0);
       return next;
-    } else {
-      return new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
     }
+    return new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
   }
 }
