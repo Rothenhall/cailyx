@@ -72,10 +72,37 @@ export class GoogleController {
     @Query('error') error: string | undefined,
     @Res() res: Response,
   ) {
+    /**
+     * The callback runs inside the OAuth popup. Rather than redirect it to the
+     * full app (which then renders a second copy of the console in a 520px
+     * window), serve a tiny page that closes itself and hands the result to
+     * the opener. If it was somehow opened in the same tab, it falls back to a
+     * normal redirect.
+     */
     const back = (params: Record<string, string>) => {
-      const url = new URL(this.oauth.successRedirect);
-      for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-      res.redirect(url.toString());
+      const target = new URL(this.oauth.successRedirect);
+      for (const [k, v] of Object.entries(params)) target.searchParams.set(k, v);
+      const origin = target.origin;
+      const ok = params.status === 'connected';
+      const label = ok
+        ? `${params.google === 'analytics' ? 'Google Analytics' : 'Search Console'} connected`
+        : `Connection failed: ${params.reason ?? 'unknown error'}`;
+      const payload = JSON.stringify({ source: 'cailyx-google-oauth', ...params });
+
+      res
+        .status(200)
+        .type('html')
+        .send(`<!doctype html><html><head><meta charset="utf-8"><title>${ok ? 'Connected' : 'Failed'}</title>
+<style>body{font:14px/1.5 system-ui,sans-serif;background:#efe9dc;color:#1a1712;display:grid;place-items:center;height:100vh;margin:0}
+.c{text-align:center;max-width:300px;padding:24px}.m{color:#5c5648;margin-top:6px}</style></head>
+<body><div class="c"><strong>${label}</strong><p class="m">You can close this window.</p></div>
+<script>
+(function(){
+  try { if (window.opener && !window.opener.closed) window.opener.postMessage(${payload}, ${JSON.stringify(origin)}); } catch (e) {}
+  if (window.opener && !window.opener.closed) { setTimeout(function(){ window.close(); }, 400); }
+  else { location.replace(${JSON.stringify(target.toString())}); }
+})();
+</script></body></html>`);
     };
 
     if (error) return back({ google: 'error', reason: error });

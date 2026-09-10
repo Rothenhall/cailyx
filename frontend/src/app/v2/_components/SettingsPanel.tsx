@@ -862,13 +862,24 @@ function GoogleServiceCard({
         onNotify('Allow pop-ups for this site, then try connecting again', 'warn');
         return;
       }
+      /* resolve on whichever comes first: the popup posting its result back,
+         or the popup closing (its self-close, or the user closing it) */
       await new Promise<void>((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          clearInterval(t);
+          window.removeEventListener('message', onMsg);
+          resolve();
+        };
+        const onMsg = (e: MessageEvent) => {
+          if (e.data && e.data.source === 'cailyx-google-oauth') finish();
+        };
+        window.addEventListener('message', onMsg);
         const t = setInterval(() => {
-          if (popup.closed) {
-            clearInterval(t);
-            resolve();
-          }
-        }, 700);
+          if (popup.closed) finish();
+        }, 500);
       });
       await onChanged();
     } catch (e) {

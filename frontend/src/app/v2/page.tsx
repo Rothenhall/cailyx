@@ -65,22 +65,34 @@ export default function V2Console() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  /* The Google OAuth callback lands the browser back here with ?google=… .
-     Surface the outcome, refresh the connection state, and clean the URL. */
+  /* The Google OAuth popup posts its result back here (and, on the same-tab
+     fallback path, lands with ?google=… in the URL). Either way: toast the
+     outcome and refresh the connection state. */
   useEffect(() => {
+    const settle = (g: string, status: string | null, reason: string | null) => {
+      if (g === 'error' || status === 'error') {
+        notify(`Google connect failed: ${reason ?? 'unknown error'}`, 'warn');
+      } else {
+        notify(`${g === 'analytics' ? 'Google Analytics' : 'Search Console'} connected`);
+        void c.refreshIntegrations();
+        void refreshGoogle();
+        setPanel('connections');
+      }
+    };
+
+    const onMsg = (e: MessageEvent) => {
+      const d = e.data;
+      if (d && d.source === 'cailyx-google-oauth') settle(d.google, d.status ?? null, d.reason ?? null);
+    };
+    window.addEventListener('message', onMsg);
+
     const p = new URLSearchParams(window.location.search);
     const g = p.get('google');
-    if (!g) return;
-    const status = p.get('status');
-    if (g === 'error' || status === 'error') {
-      notify(`Google connect failed: ${p.get('reason') ?? 'unknown error'}`, 'warn');
-    } else {
-      notify(`${g === 'analytics' ? 'Google Analytics' : 'Search Console'} connected`);
-      void c.refreshIntegrations();
-      void refreshGoogle();
-      setPanel('connections');
+    if (g) {
+      settle(g, p.get('status'), p.get('reason'));
+      window.history.replaceState({}, '', window.location.pathname);
     }
-    window.history.replaceState({}, '', window.location.pathname);
+    return () => window.removeEventListener('message', onMsg);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
