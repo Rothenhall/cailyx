@@ -37,8 +37,18 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" data-theme="light" className={poppins.variable}>
-      <body className="min-h-screen bg-bg text-text font-sans antialiased">{children}</body>
+    // suppressHydrationWarning: browser extensions (Grammarly, LanguageTool…)
+    // inject attributes onto <html>/<body> before React hydrates
+    // (`data-gr-ext-installed`, `data-new-gr-c-s-check-loaded`). This suppresses
+    // the mismatch on these two elements only — one level deep, so real
+    // mismatches inside the app still warn.
+    <html lang="en" data-theme="light" className={poppins.variable} suppressHydrationWarning>
+      <body
+        className="min-h-screen bg-bg text-text font-sans antialiased"
+        suppressHydrationWarning
+      >
+        {children}
+      </body>
     </html>
   );
 }
