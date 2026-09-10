@@ -8,7 +8,7 @@
  */
 
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { Queue, Worker, JobScheduler } from 'bullmq';
+import { Queue, Worker } from 'bullmq';
 import Redis from 'ioredis';
 import { PrismaService } from '../database/prisma.service';
 
@@ -17,21 +17,26 @@ export type ScheduledTaskHandler = (projectId: string, targetUrl: string) => Pro
 @Injectable()
 export class SchedulingService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SchedulingService.name);
-  private queue: Queue;
+  private queue: Queue | null = null;
   private worker: Worker | null = null;
-  private redis: Redis;
+  private redis: Redis | null = null;
   /** The worker's own duplicated connection — tracked so it can be closed. */
   private workerConnection: Redis | null = null;
 
   private readonly handlers = new Map<string, ScheduledTaskHandler>();
 
   constructor(private readonly prisma: PrismaService) {
+    if (!this.useBullmq) return;
     const redisUrl = process.env.REDIS_URL || 'redis://localhost:6380';
     this.redis = new Redis(redisUrl, { maxRetriesPerRequest: null });
     this.queue = new Queue('cailyx-scheduled-tasks', { connection: this.redis });
   }
 
   async onModuleInit(): Promise<void> {
+    if (!this.useBullmq || !this.redis) {
+      this.logger.log('Scheduling: BullMQ backend not selected — Redis not connected (cron backend handles recurring audits).');
+      return;
+    }
     this.workerConnection = this.redis.duplicate();
     this.worker = new Worker(
       'cailyx-scheduled-tasks',
@@ -56,7 +61,7 @@ export class SchedulingService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`Scheduled task failed: ${job?.name} — ${err.message}`);
     });
 
-    this.logger.log('Scheduling service initialized');
+    this.logger.log('Scheduling service initialized (BullMQ)');
   }
 
   /**
@@ -67,10 +72,10 @@ export class SchedulingService implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     try {
       await this.worker?.close();
-      await this.queue.close();
+      await this.queue?.close();
       this.workerConnection?.disconnect();
-      this.redis.disconnect();
-      this.logger.log('Scheduling service connections closed');
+      this.redis?.disconnect();
+      if (this.redis) this.logger.log('Scheduling service connections closed');
     } catch (err) {
       this.logger.warn(`Scheduling teardown error: ${(err as Error).message}`);
     }
@@ -81,9 +86,10 @@ export class SchedulingService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`Registered handler for task: ${taskName}`);
   }
 
-  /** Redis-backed BullMQ scheduling is only used when explicitly selected.
-      The default (`cron`) backend polls the ScheduleConfig row in-process, so
-      the DB write below is the source of truth and Redis is never touched. */
+  /** BullMQ/Redis is only touched when SCHEDULING_BACKEND=bullmq. The default
+      (`cron`) backend polls the ScheduleConfig row in-process, so with no
+      Redis this service stays idle and a mis-behaving :6380 (or none) cannot
+      wedge the API. The DB write in setSchedule is the source of truth. */
   private get useBullmq(): boolean {
     return (process.env.SCHEDULING_BACKEND ?? 'cron') === 'bullmq';
   }
@@ -111,7 +117,7 @@ export class SchedulingService implements OnModuleInit, OnModuleDestroy {
     if (this.useBullmq) {
       // '0 0 * * *' daily · '0 0 * * 1' Monday · '0 0 1 * *' 1st of month
       const cronExpr = cadence === 'daily' ? '0 0 * * *' : cadence === 'weekly' ? '0 0 * * 1' : '0 0 1 * *';
-      await this.queue.upsertJobScheduler(
+      await this.queue?.upsertJobScheduler(
         `${taskName}:${projectId}`,
         { pattern: cronExpr },
         { data: { taskName, projectId, targetUrl } },
@@ -158,7 +164,7 @@ export class SchedulingService implements OnModuleInit, OnModuleDestroy {
 
   private async removeExistingJobs(projectId: string, taskName: string): Promise<void> {
     try {
-      await this.queue.removeJobScheduler(`${taskName}:${projectId}`);
+      await this.queue?.removeJobScheduler(`${taskName}:${projectId}`);
     } catch {
       // Job scheduler may not exist — ignore
     }
