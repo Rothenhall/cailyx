@@ -148,6 +148,7 @@ export function TechnicalAuditWorkspace({
   const doRun = async () => {
     if (!projectId || !domain || busy) return;
     setBusy(true);
+    onNotify('audit started — runs the full 8 checks, about 40s');
     try {
       await runAudit(projectId);
       onNotify('audit complete');
@@ -187,14 +188,15 @@ export function TechnicalAuditWorkspace({
         ? `Next run ${until(schedule.nextRunAt)}${schedule.lastRunAt ? ` · last ran ${rel(schedule.lastRunAt)}` : ''}`
         : 'Monitoring off — runs only when you press Re-run';
 
-  /* badge each tab with its own open-finding count */
-  const tabCount = (id: SectionId): number => {
+  /* mark a tab by the worst status among the checks it owns, so a failing
+     area reads at a glance and not just as a small number */
+  const tabTone = (id: SectionId): 'bad' | 'warn' | null => {
     const types = TAB_CHECK[id];
-    if (!types || !audit) return 0;
-    return types.filter((t) => {
-      const s = statusOf(audit, t);
-      return s === 'fail' || s === 'warn';
-    }).length;
+    if (!types || !audit) return null;
+    const states = types.map((t) => statusOf(audit, t));
+    if (states.includes('fail')) return 'bad';
+    if (states.includes('warn')) return 'warn';
+    return null;
   };
 
   return (
@@ -221,22 +223,8 @@ export function TechnicalAuditWorkspace({
           </span>
         )}
 
-        <span className="ml-auto flex shrink-0 items-center gap-3 text-caption text-faint">
-          {obs && typeof obs.totalCostUsd === 'number' && (
-            <span className="tabular-nums" title="model + API cost of this run">
-              ${(obs.totalCostUsd as number).toFixed(4)}
-            </span>
-          )}
-          {obs && typeof obs.totalLatencyMs === 'number' && (
-            <span className="tabular-nums" title="wall-clock time of this run">
-              {fmtMs(obs.totalLatencyMs as number)}
-            </span>
-          )}
-          <span>{audit ? `audited ${rel(audit.createdAt)}` : 'never audited'}</span>
-        </span>
-
         {/* recurring monitoring — the schedule that produces the trend series */}
-        <label className="flex shrink-0 items-center gap-1.5" title={scheduleTitle}>
+        <label className="ml-auto flex shrink-0 items-center gap-1.5" title={scheduleTitle}>
           <span
             className={`h-1.5 w-1.5 rounded-full ${
               schedule?.lastError ? 'bg-a-bad' : schedule?.active ? 'bg-a-ok' : 'bg-faint/40'
@@ -303,7 +291,7 @@ export function TechnicalAuditWorkspace({
           <div className="flex min-w-0 flex-1 flex-col">
             <div className="audit-tabs shrink-0 border-b border-border px-3">
               {REPORT_SECTIONS.map((s) => {
-                const n = tabCount(s.id);
+                const t = tabTone(s.id);
                 return (
                   <button
                     key={s.id}
@@ -312,10 +300,37 @@ export function TechnicalAuditWorkspace({
                     className={`audit-tab ${tab === s.id ? 'is-on' : ''}`}
                   >
                     {s.label}
-                    {n > 0 && <span className="cnt text-a-warn">{n}</span>}
+                    {t && (
+                      <span
+                        className={`ml-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${
+                          t === 'bad' ? 'bg-a-bad' : 'bg-a-warn'
+                        }`}
+                      />
+                    )}
                   </button>
                 );
               })}
+            </div>
+
+            {/* run context — always visible from every tab, so cost / timing /
+                freshness / the next scheduled run are never a scroll away */}
+            <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/60 bg-bg-raised/40 px-4 py-1.5 text-caption text-faint">
+              <span>{audit ? `audited ${rel(audit.createdAt)}` : 'never audited'}</span>
+              {obs && typeof obs.totalLatencyMs === 'number' && (
+                <span className="tabular-nums">ran in {fmtMs(obs.totalLatencyMs as number)}</span>
+              )}
+              {obs && typeof obs.totalCostUsd === 'number' && (
+                <span className="tabular-nums">cost ${(obs.totalCostUsd as number).toFixed(4)}</span>
+              )}
+              {audit?.sitemapUrl && <span className="min-w-0 truncate">sitemap {audit.sitemapUrl}</span>}
+              {schedule?.active && (
+                <span className="ml-auto whitespace-nowrap tabular-nums text-a-ok">
+                  next {schedule.cadence} run {until(schedule.nextRunAt)}
+                </span>
+              )}
+              {schedule?.lastError && (
+                <span className="ml-auto whitespace-nowrap text-a-bad">last scheduled run failed</span>
+              )}
             </div>
 
             <div className="min-h-0 flex-1">

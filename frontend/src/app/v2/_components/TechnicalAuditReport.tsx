@@ -232,10 +232,12 @@ function Panel({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** verdict | evidence */
+/** verdict | evidence. Side-by-side from `lg` up — the workspace is a
+    full-canvas takeover, so the panel column clears 1024px on any laptop and
+    the split (not a stacked scroll) is the normal case. */
 function Split({ summary, evidence }: { summary: React.ReactNode; evidence: React.ReactNode }) {
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]">
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] lg:items-start">
       <div className="flex flex-col gap-4">{summary}</div>
       <div className="flex flex-col gap-4">{evidence}</div>
     </div>
