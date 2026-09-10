@@ -960,10 +960,20 @@ function GoogleResourcePicker({
     return <p className="mt-2 text-caption text-faint">Could not list {noun}s — re-authorise?</p>;
   }
   if (!data) return <p className="mt-2 text-caption text-faint">loading {noun} list…</p>;
+  if (!data.connected) {
+    return (
+      <p className="mt-2 text-caption text-warn">
+        Couldn&rsquo;t list {noun}s.{' '}
+        {service === 'analytics'
+          ? 'Check the Analytics Admin API is enabled on the OAuth project, then re-authorise.'
+          : 'Re-authorise the connection.'}
+      </p>
+    );
+  }
   if (data.options.length === 0) {
     return (
       <p className="mt-2 text-caption text-faint">
-        This Google account can&rsquo;t read any {noun}. Add it in {GOOGLE_META[service].name} first.
+        This Google account has no {noun} it can read. Grant it access in {GOOGLE_META[service].name} first.
       </p>
     );
   }

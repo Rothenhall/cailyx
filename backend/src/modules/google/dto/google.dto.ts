@@ -5,6 +5,7 @@
  */
 
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
 
 const SERVICES = ['search-console', 'analytics'] as const;
@@ -52,6 +53,7 @@ export class SummaryQueryDto {
 
   @ApiPropertyOptional({ description: 'Rolling window in days (1-90).', default: 28 })
   @IsOptional()
+  @Type(() => Number) // query params arrive as strings — coerce before @IsInt
   @IsInt()
   @Min(1)
   @Max(90)
