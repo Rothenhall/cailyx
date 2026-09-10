@@ -352,6 +352,8 @@ export class SeoAuditService {
           impressions: true,
           ctr: true,
           position: true,
+          page1Queries: true,
+          top3Queries: true,
           windowDays: true,
           previousAuditId: true,
           triggeredBy: true,
