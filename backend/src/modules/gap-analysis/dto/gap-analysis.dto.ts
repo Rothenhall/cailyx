@@ -19,10 +19,31 @@ export class PatchGapDto {
   @IsOptional()
   action?: string;
 
+  @ApiPropertyOptional({ enum: ['issue', 'gap', 'opportunity', 'strength', 'risk'] })
+  @IsIn(['issue', 'gap', 'opportunity', 'strength', 'risk'])
+  @IsOptional()
+  category?: string;
+
   @ApiPropertyOptional({ enum: ['open', 'in-progress', 'resolved'] })
   @IsIn(['open', 'in-progress', 'resolved'])
   @IsOptional()
   status?: string;
+
+  @ApiPropertyOptional({ description: 'Override the automatic impact score, 1-5', minimum: 1, maximum: 5 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  @IsOptional()
+  impactScore?: number;
+
+  @ApiPropertyOptional({ description: 'Override the automatic effort score, 1-5', minimum: 1, maximum: 5 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  @IsOptional()
+  effortScore?: number;
 
   @ApiPropertyOptional({ description: 'Manual 1-5: demand potential', minimum: 1, maximum: 5 })
   @Type(() => Number)
