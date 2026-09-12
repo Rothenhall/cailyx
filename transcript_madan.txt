@@ -1,0 +1,73 @@
+Madan: First, first step is, like, our user will give us the website URL and website name, that's it. And with that data, with that simple data, we need to start our discovery process. First step is to fetch a site map, and then we need to crawl their website.
+Madan:  What all web pages are there? Like, there may be career pages, there may be home page, landing page, marketing pages, blog pages.
+Madan:  Whatever pages are available, we need to fetch them and understand the business context. Like, what do they do, what services do they provide, at what locations do they serve, to what kind of companies do they serve, who is their ICP.
+Madan:  All this information we need to gather from their website. And next step is to, uh, analyze their digital presence, complete digital presence.
+Madan:  That includes discovering their social profiles. This can be found in, like, their website headers or, like, footer, any places where they can link their social profiles, right?
+Madan:  People will be linking their social profiles in their footers, mainly. So we need to be trying to search that, and then if that is not possible, like, if we could not find there, then we need to fall back to, uh, Google search.
+Madan:  Like, this company X, Instagram, this company Y, Twitter account. Like, like this.
+Madan:  Like, we can build some queries and try to find their exact Instagram profile or Facebook profile or whatever it may be, relevant social profiles. And then comes the business directories.
+Madan:  Uh, these are the directories where most companies, like, uh, for example, for let us take the domain SaaS. If there is a SaaS company, they need to be listed in, like, product and hacker news or these kind of platforms.
+Madan:  Like this, we need to find out mapping of, like, for which domain, what are the business directories they need to be in. And then comes the relevant marketplaces.
+Madan:  Marketplaces are.
+Lokesh Yarramallu (You):  Uh, other than SaaS, what can we use other examples for, uh, business directories?
+Madan:  Business directories for.
+Lokesh Yarramallu (You):  For SaaS?
+Madan:  Let's take any restaurant.
+Lokesh Yarramallu (You):  Yeah.
+Madan:  For restaurant, it can be Google Business Profile. That is a place where they should be listed as a restaurant. Just a website is not enough.
+Madan:  We need to check whether their Google Business Profile, like, they have a Google Business Profile created or not.
+Madan:  And then relevant marketplaces. Marketplace is the exact place where people will find them and install their app or get their services done.
+Madan:  For example, there is any, like, SaaS outsourcing platform. They can be, like, in marketplaces like Upwork or Fiverr so that they can find people who are looking for freelancers and get their clients from there, right?
+Madan:  Or if their company is completely a mobile application, then they should be listed in App Store, Play Store.
+Lokesh Yarramallu (You):  You're saying it, the relevant business directory, as per you mentioned.
+Madan:  Mm-hmm. Like, like, this is not, like, we need not find for every domain. Like, there is some company X, we need not find business directories, marketplaces, and review platforms.
+Madan:  Some may be present in one, some may be present in two, some may be applicable for all three. Based on the customer and business context, then we need to decide what all things we need to check.
+Madan:  And review platforms are, like, G2, Captera, Google Business Reviews, these kind of thing. Like, whether they are listed and, like, whether they are getting reviews or not.
+Madan:  And the third task is, uh, finding their technology and marketing stack. Like, whether they are running ads or not, whether they are, like, which CRM or which CMS they are using, uh, whether they are using any AI chatbot in their website or not.
+Madan:  Completely the marketing stuff. Like, their tech stack, marketing tech stack, basically.
+Madan:  And next comes the audit. Once we have gathered all the data about them, we need to start the audit.
+Madan:  Let's start with a simple audit, like, the base. That is, on-page SEO.
+Madan:  Whether the title and master descriptions are optimized for SEO length. Like, title should be 60 characters and, uh, meta description should be between 140 to 160 characters.
+Madan:  There will be some conventions and rules for better SEO, whether they are following them or not. How is the content quality?
+Madan:  Is there internal linking? Pages between internal linking?
+Madan:  Whether all the images are having alt text or not. What is the URL structure they are following?
+Madan:  Like, the URL slug of the blogs or, like, uh, these kind of things also matter for SEO. So we need to be checking that as well.
+Madan:  And then comes the technical SEO. We need to be checking their indexability, robots.txt, cannibalization, duplicate content, and then whether site map is present or not, whether robot.txt allows crawlers to crawl their website or not.
+Madan:  And then comes the structured data or breadcrumbs, JSON-LD schemas. First, we need to detect whether there are JSON-LD schemas or not.
+Madan:  And then we need to validate whether those schemas are correct or not as well. And then if they are missing any schemas, for example, they may be adding a FAQ schema and org schema for a blog, but they might not be adding an article schema for a blog.
+Madan:  That we need to find out and give it as a schema opportunity. They may be missing, uh, for an author schema or a profile schema.
+Madan:  They may be missing social profiles, adding social profiles of an author. That we need to give them as a recommendation, schema opportunities.
+Madan:  And then comes the web, web, website performance. We can use Google PageSpeed Insights or Lighthouse to find their websites, loading speed, LCP, core web vitals, and mobile performance, and all these things.
+Madan:  And.
+Lokesh Yarramallu (You):  Is there a way to map that map, uh, existing scenarios to, uh, what's the reason or the cause for, uh, the performance or lagging in this, uh, metrics?
+Madan:  Uh, so.
+Lokesh Yarramallu (You):  Within the website.
+Madan:  PageSpeed Insights already gives us all those info.
+Lokesh Yarramallu (You):  Reason.
+Madan:  Reason we need to.
+Lokesh Yarramallu (You):  That's what, like, mapping kind of, uh, understanding what component, uh, in the website.
+Madan:  Okay.
+Lokesh Yarramallu (You):  Is making this a latency surge.
+Madan:  That we need to find out. Next comes the AUO discoverability. For AUO, we need to have six kind of queries, six kind of prompt groups.
+Madan:  Those are, like, branded queries, service or product queries, local queries, problem-based queries, comparison, and informational queries. And once we have prompts in all these six buckets, we need to, uh, send these prompts to ChatGPT, Grok, Gemini, like, whatever AI platforms the user loves.
+Madan:  Like, all those platforms we need to find and then, like, get their results and, uh, answer them. Like, whether they are being cited or not, whether they are being recommended or not.
+Madan:  If they are being cited or their name is in their answers, whether is the AI favoring them or, like, whether the AI is saying, like, bad about them, negative things about them. That is the next AUO part.
+Madan:  And then comes the market research.
+Madan:  Here we need to find out in which all locations they provide services, which all, like, if they, for example, there is an Indian company, SaaS company, who provides services in Europe. Whether if a person searches for SaaS companies, like, uh, a person who can provide me service X, whether this Indian company is being shown in Europe or not.
+Madan:  The geographical mapping based on the location they serve in. And then comes the computative discovery.
+Madan:  Uh, for this, we can use, like, server API and also in the previous step, we have already ran these prompts, right? Uh, multiple prompts buckets.
+Madan:  So in these, along with our client company, what are the other companies that are being surfaced in those answers? Those are basically already our competitors.
+Madan:  We are finding them. And then once we get the competitor's website, then we need to crawl those competitor websites and their SEO techniques, their content, their reviews, and then, uh, suggest, like, what are the gaps between our client and the competitor.
+Madan:  These are the things that we need to find out, competitor gaps. And next comes the planning.
+Madan:  Once now we have all their profiles, the business context, all the issues they are, like, they have, now we need to plan the next steps. That are opportunities.
+Madan:  We need to find opportunities for them. Once we have find issues, gaps, opportunities, and everything, we need to prioritize, like, which all issues.
+Madan:  For example, there are SEO improvements. Like, there are missing JSON-LD schemas or FAQ schemas.
+Madan:  Or there is missing, uh, like, robots.txt is blocking, uh, crawlers. This kind of thing.
+Madan:  Then based on these, we need to find opportunities and give the next steps for them. Like, content strategy, social strategy, review strategy, like, how to ask people for reviews, AUO strategy, what technology improvements they can do.
+Madan:  Like, what add opportunities they are missing on. Like, for example, there is some, uh, any restaurant company, restaurant business or hotel business, they are already, uh, like, uh, running meta ads, but they are missing on Google ads.
+Madan:  Then that is an opportunity because people will not be based on, like, just Instagram, but so many people will be searching on, like, restaurants near me or restaurants in location X. If then they are missing, then our client is, uh, not using Google ads, that, uh, result will not be surfaced in Google, right?
+Madan:  And next comes the content generation. If they, like, uh, once we find opportunities, if there are any content gaps, like, uh, they have very less blogs or they are not covering any keywords that are needed to be covered based on the company context, then we need to generate content.
+Madan:  The content generation should be backed by real keyword data, like keyword search volume, keyword CPC, and then optimize the complete content around those keywords. For keyword research, we can use data for SEO, which provides us all the information about, uh, keyword volume.
+Madan:  Like, how much search volume that keywords are getting, how much clicks that keywords searches are getting, and all this. So based on that, we can generate, uh, blogs and ads.
+Madan:  And once everything is done, we need to compile everything into a single report and then as, as well as a suggested roadmap and get the final report. Any questions?
+Madan:  Done.
