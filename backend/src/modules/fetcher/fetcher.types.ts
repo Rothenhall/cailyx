@@ -99,6 +99,8 @@ export interface RenderResult {
 
 export interface SchemaResult {
   url: string;
+  /** The underlying fetch's real HTTP status — 0 on a network failure, else whatever the server returned. */
+  status: number;
   schemas: SchemaBlock[];
   raw: string;
 }

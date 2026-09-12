@@ -28,6 +28,8 @@ import type {
   SameAsVerificationResult,
 } from './entity-audit.types';
 
+import { resolveConsistency } from './entity-audit.consistency';
+
 @Injectable()
 export class EntityAuditService {
   private readonly logger = new Logger(EntityAuditService.name);
@@ -440,14 +442,14 @@ export class EntityAuditService {
     }
 
     const results = entity.platformRecords.map((record) => {
-      const nameMatches = record.recordedName
-        ? record.recordedName.toLowerCase().trim() === entity.name.toLowerCase().trim()
-        : record.consistencyStatus === 'match';
-      // If a record has explicit mismatch/match stored, respect mismatch; else compute from name
-      const consistencyStatus =
-        record.consistencyStatus === 'mismatch' ? ('mismatch' as const)
-        : record.consistencyStatus === 'match' ? ('match' as const)
-        : nameMatches ? ('match' as const) : record.recordedName ? ('mismatch' as const) : ('not-checked' as const);
+      // Shared with `digital-presence` via entity-audit.consistency — one rule
+      // for what a name match is, so the same client cannot read as consistent
+      // on one screen and inconsistent on the next.
+      const consistencyStatus = resolveConsistency(
+        record.recordedName,
+        entity.name,
+        record.consistencyStatus,
+      );
       return {
         platform: record.platform,
         recordedName: record.recordedName,

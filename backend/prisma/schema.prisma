@@ -63,13 +63,24 @@ model AuditPage {
   /// <lastmod> as declared by the sitemap, if any.
   lastmod DateTime?
 
-  title           String?
-  titleLength     Int?
-  metaDescription String?
-  metaDescLength  Int?
-  h1Count         Int?
-  canonical       String?
-  wordCount       Int?
+  title            String?
+  titleLength      Int?
+  metaDescription  String?
+  metaDescLength   Int?
+  h1Count          Int?
+  canonical        String?
+  wordCount        Int?
+  /// Content images on the page. Decorative ones (alt="", aria-hidden,
+  /// role="presentation") are excluded from the count, so the denominator is
+  /// images that were *supposed* to describe something.
+  imageCount       Int?
+  /// Of `imageCount`, how many have no `alt` attribute at all. An empty
+  /// alt="" is a valid decorative marker and is NOT counted as missing.
+  imagesMissingAlt Int?
+  /// Fingerprint of the page's body copy, used to find duplicate pages within
+  /// one run. Never compared across runs — a site-wide copy change would make
+  /// every page look newly duplicated.
+  contentHash      String?
 
   /// JSON string[]: @type values found in JSON-LD blocks on the page.
   jsonLdTypes String?
@@ -272,6 +283,26 @@ model Gap {
   dimensionAutoAssigned Boolean  @default(true)
   action                String
   actionAutoAssigned    Boolean  @default(true)
+  /// issue | gap | opportunity | strength | risk — the SWOT-style read stage
+  /// 8 asks for, orthogonal to dimension/action. See gap-analysis.types.ts.
+  category              String   @default("issue")
+  categoryAutoAssigned  Boolean  @default(true)
+  /// One of the nine stage-9 recommendation buckets (gap-analysis.types.ts
+  /// RecommendationCategory), or null for a strength — nothing to act on.
+  recommendationCategory String?
+  /// 1-5, disclosed band from CLASSIFICATION_RULES. Null on every strength.
+  impactScore           Int?
+  /// 1-5, disclosed band from CLASSIFICATION_RULES. Null on every strength.
+  effortScore           Int?
+  /// Governs impactScore/effortScore/quadrant refresh on re-sync. Deliberately
+  /// its OWN flag, not folded into categoryAutoAssigned: an operator override
+  /// of one axis says nothing about the other, and coupling them meant a
+  /// category-only override silently froze impact/effort forever (and vice
+  /// versa) — a bug an audit caught after the fact.
+  scoreAutoAssigned     Boolean  @default(true)
+  /// quick-win | major-project | fill-in | thankless-task — derived from
+  /// impactScore × effortScore, never stored independently of them.
+  quadrant              String?
   demandPotential       Int?
   credibilityImpact     Int?
   citationLikelihood    Int?
@@ -279,6 +310,11 @@ model Gap {
   status                String   @default("open")
   title                 String
   description           String
+  /// Governs title/description/severity refresh on re-sync. Also its own
+  /// flag: it used to ride on dimension/action/category's flags, so a
+  /// title-only or description-only override never actually survived the
+  /// next sync() — the same class of bug as scoreAutoAssigned above.
+  copyAutoAssigned      Boolean  @default(true)
   severity              String?
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
@@ -289,8 +325,58 @@ model Gap {
   @@index([gapAnalysisId])
   @@index([dimension])
   @@index([action])
+  @@index([category])
   @@index([status])
   @@index([priorityScore])
+  @@index([quadrant])
+}
+
+// ─── Strategy (stage 9: "Strategy & Recommendations") ──────────────────────
+// Reads gap-analysis's consolidated, categorised, impact/effort-scored gaps
+// and groups them into the nine recommendation buckets the flowchart draws,
+// sequenced into one action plan. Owns "what do we tell the client to do",
+// never re-derives "what did we find" — that stays gap-analysis's job.
+
+model ActionPlan {
+  id        String   @id @default(cuid())
+  projectId String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  recommendations Recommendation[]
+
+  @@index([projectId])
+}
+
+model Recommendation {
+  id           String   @id @default(cuid())
+  actionPlanId String
+  /// One of the nine RecommendationCategory values — seo-improvements |
+  /// content-strategy | social-strategy | reputation-strategy |
+  /// search-aeo-strategy | conversion-optimization | technology-improvements
+  /// | advertising-opportunities | market-expansion.
+  category     String
+  title        String
+  summary      String
+  /// JSON string[] — the Gap ids this recommendation bundles. The plan
+  /// points at gap-analysis's own rows rather than copying their text, so a
+  /// re-sync's updated evidence is never stale here.
+  gapIds       String   @default("[]")
+  quickWinCount      Int @default(0)
+  majorProjectCount  Int @default(0)
+  fillInCount        Int @default(0)
+  thanklessTaskCount Int @default(0)
+  /// 1 = act on first. Ranked across the WHOLE plan, not just within a
+  /// category, so "do this first" has one unambiguous answer.
+  priorityRank Int
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  actionPlan ActionPlan @relation(fields: [actionPlanId], references: [id], onDelete: Cascade)
+
+  @@unique([actionPlanId, category])
+  @@index([actionPlanId])
+  @@index([priorityRank])
 }
 
 // ─── Projects (backbone entity) ───────────────────────────────
@@ -381,12 +467,17 @@ model QuerySetItem {
   querySetId  String
   prompt      String
   funnelStage String // problem-aware | solution-aware | product-aware | most-aware
+  // AEO matrix provenance (nullable — only set for source="aeo-matrix" sets).
+  dimension   String? // service-discovery | category-best-of | competitor-alternatives | …
+  meta        String? // JSON {service?, competitor?, personaRole?, register?, geo?, template}
   createdAt   DateTime @default(now())
 
   querySet QuerySet @relation(fields: [querySetId], references: [id], onDelete: Cascade)
 
   @@index([querySetId])
   @@index([funnelStage])
+  @@index([dimension])
+  @@index([querySetId, dimension])
 }
 
 // ─── Auth (Wave 0) ────────────────────────────────────────────
@@ -469,12 +560,12 @@ model GoogleProjectResource {
 // this turns it into work.
 
 model SeoAudit {
-  id              String   @id
-  projectId       String
-  siteUrl         String // the mapped GSC property
-  triggeredBy     String   @default("manual")
-  createdAt       DateTime @default(now())
-  windowDays      Int      @default(28)
+  id          String   @id
+  projectId   String
+  siteUrl     String // the mapped GSC property
+  triggeredBy String   @default("manual")
+  createdAt   DateTime @default(now())
+  windowDays  Int      @default(28)
 
   /// 0-100 composite. Null when Search Console returned nothing.
   score           Int?
@@ -483,14 +574,14 @@ model SeoAudit {
   deltas          String?
 
   /// Window totals, denormalised for fast list / trend rendering.
-  clicks      Int   @default(0)
-  impressions Int   @default(0)
-  ctr         Float @default(0)
-  position    Float @default(0)
+  clicks       Int   @default(0)
+  impressions  Int   @default(0)
+  ctr          Float @default(0)
+  position     Float @default(0)
   /// Queries ranking on page 1 (position <= 10) and in the top 3, so the
   /// "how many keywords are we winning" line is a single column read.
-  page1Queries Int  @default(0)
-  top3Queries  Int  @default(0)
+  page1Queries Int   @default(0)
+  top3Queries  Int   @default(0)
 
   /// JSON: { prev: {clicks,impressions,ctr,position} | null, timeseries: [{date,clicks,impressions,ctr,position}] }
   metrics        String?
@@ -527,7 +618,7 @@ model SeoQuery {
   clicksDelta      Int?
 
   /// The page currently ranking highest for this query.
-  topPage String?
+  topPage       String?
   /// JSON string[]: opportunity codes.
   opportunities String?
 
@@ -559,11 +650,11 @@ model SeoPage {
   lastCrawlTime   DateTime?
 
   /// JSON: [{ code, severity, detail, fix, fixArtifact? }]
-  issues     String?
+  issues      String?
   /// JSON string[]: rich-result types Google detected (BreadcrumbList, …).
   richResults String?
   /// JSON: [{ type, issues: [{ severity, message }] }]
-  richIssues String?
+  richIssues  String?
 
   audit SeoAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
 
@@ -574,7 +665,7 @@ model SeoPage {
 
 /// A grouped, actionable issue across the run — the "fix these" layer.
 model SeoFinding {
-  id             String @id @default(cuid())
+  id             String  @id @default(cuid())
   auditId        String
   type           String // indexing | canonical | noindex | robots | redirect | soft-404 | breadcrumb | rich-result | ctr-gap | striking-distance | ranking-drop | cannibalization | sitemap | crawl
   status         String // fail | warn | pass
@@ -1308,6 +1399,20 @@ model SerpResult {
   rawItemCount              Int      @default(0)
   costUsd                   Float    @default(0)
   capturedAt                DateTime @default(now())
+  /// Whether local-pack visibility is even a meaningful question for this
+  /// business (gated on the client's inferred business type — see
+  /// analyzeLocalPack). false for a non-local business; the fields below are
+  /// then all null/empty rather than a false "missing from Maps" finding.
+  localPackApplicable       Boolean  @default(true)
+  /// Why `localPackApplicable` is what it is, printed verbatim — never a
+  /// silent gate.
+  localPackReason           String?
+  /// null = not applicable, or no local pack appeared for this query at all.
+  localPackPresent          Boolean?
+  /// 1-based rank within the pack, when present.
+  localPackRank             Int?
+  /// JSON LocalPackEntry[] — every business the pack showed, win or lose.
+  localPackEntries          String   @default("[]")
 
   snapshot SerpSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
   query    SerpQuery    @relation(fields: [queryId], references: [id], onDelete: Cascade)
@@ -1364,4 +1469,594 @@ model AuthorityCandidate {
   @@index([scanId])
   @@index([scanId, status])
   @@index([projectId])
+}
+
+// ─── AEO Audit (ChatGPT-first answer-engine visibility) ───────
+// Analysis + approved decisions: docs/analysis/aeo-audit.md
+// Orchestrates: intake/fetcher (context) → query-set (matrix) →
+// measurement (execution, n>=5) → stance judge → verdict.
+
+// Scraped business context for one project: what they do, which services
+// they sell, who buys. The backbone of the prompt matrix — every matrix cell
+// interpolates a value that was actually found on the client's own site.
+model SiteContext {
+  id           String   @id @default(cuid())
+  projectId    String
+  domain       String
+  brand        String
+  category     String? // short descriptor, e.g. "b2b logistics software"
+  vertical     String? // industry the client sells INTO
+  description  String?
+  geo          String? // primary market, ISO-3166 alpha-2 code, e.g. "IE"
+  markets      String   @default("[]") // JSON string[] — service areas the site names, ranked, ISO-3166 alpha-2 codes
+  services     String   @default("[]") // JSON string[] — the offerings sold
+  icp          String   @default("[]") // JSON string[] — who buys
+  valueProps   String   @default("[]") // JSON string[]
+  painPoints   String   @default("[]") // JSON string[] — problems the buyer arrives with
+  outcomes     String   @default("[]") // JSON string[] — jobs-to-be-done
+  competitors  String   @default("[]") // JSON {name,domain}[] — merged with Project.competitors
+  pagesFetched Int      @default(0)
+  pageUrls     String   @default("[]") // JSON string[] — exactly what was read
+  extraction   String   @default("deterministic") // deterministic | llm-synthesized
+  llmModel     String?
+  costUsd      Float    @default(0)
+  createdAt    DateTime @default(now())
+
+  audits AeoAudit[]
+
+  @@index([projectId])
+  @@index([projectId, createdAt])
+}
+
+// One AEO audit: a context + a generated matrix + a measurement run on one
+// surface + the stance pass + the rolled-up verdict.
+model AeoAudit {
+  id           String    @id @default(cuid())
+  projectId    String
+  contextId    String?
+  querySetId   String? // the generated matrix (a QuerySet with source="aeo-matrix")
+  runId        String? // MeasurementRun id once execution starts
+  // The primary surface (first in `surfaces`). Kept for single-surface callers.
+  surface      String    @default("chatgpt-browser") // chatgpt-browser | perplexity-browser | gemini-browser | mock
+  // JSON string[] — every surface this audit measures. One AeoSurfaceRun each.
+  surfaces     String    @default("[]")
+  // JSON string[] — the resolved market(s), ISO-3166 alpha-2 codes (wave-6 D8).
+  // Empty until resolved: explicit override resolves at start(), the
+  // context-derived default resolves once context loads in resume().
+  markets      String    @default("[]")
+  tier         String    @default("standard") // scorecard | standard | full
+  runCount     Int       @default(5) // n>=5, enforced by measurement
+  status       String    @default("pending") // pending | context | matrix | running | judging | completed | failed
+  stage        String? // last completed stage, for resumability
+  promptCount  Int       @default(0)
+  observations Int       @default(0)
+  stanceJudged Int       @default(0)
+  costUsd      Float     @default(0)
+  verdict      String? // JSON AeoVerdict — rates, SOV, per-dimension, stance roll-up
+  error        String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  context     SiteContext?    @relation(fields: [contextId], references: [id], onDelete: SetNull)
+  stances     AeoStance[]
+  surfaceRuns AeoSurfaceRun[]
+
+  @@index([projectId])
+  @@index([status])
+  @@index([runId])
+}
+
+// One measured surface within an audit. The same prompt matrix is run on each,
+// which is what makes "named on Perplexity, invisible on ChatGPT" reportable.
+// A surface that fails (blocked, no session, UI drift) records its reason here
+// and leaves the others intact — one dead surface must not void the audit.
+model AeoSurfaceRun {
+  id           String    @id @default(cuid())
+  auditId      String
+  surface      String // the requested surface, e.g. cloro-chatgpt | chatgpt-browser | mock
+  /// ISO-3166 alpha-2 market code this row measures. Null = not yet resolved
+  /// (context-derived default, stamped in during resume()'s context stage);
+  /// an explicit `markets[]` override on the request resolves this at start().
+  market       String?
+  runId        String? // MeasurementRun id once execution starts
+  status       String    @default("pending") // pending | running | completed | failed | skipped
+  observations Int       @default(0)
+  stanceJudged Int       @default(0)
+  costUsd      Float     @default(0)
+  /// Typed failure reason from the adapter (blocked, rate-limited, selector-drift…).
+  failureKind  String?
+  error        String?
+  /// The surface that actually answered, when it differs from `surface` — set
+  /// when a failed `cloro-*` surface falls back to its `*-browser` equivalent,
+  /// so a fallback run is never reported as a Cloro measurement.
+  attemptedVia String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  audit AeoAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@unique([auditId, surface, market])
+  @@index([auditId])
+  @@index([runId])
+}
+
+// Judged (never counted) competitive stance for one Observation.
+// Rates come from measurement's deterministic extraction; this row only says
+// HOW the client was positioned. Kept in a separate table so no consumer can
+// mistake an LLM opinion for a measured rate.
+model AeoStance {
+  id              String   @id @default(cuid())
+  auditId         String
+  observationId   String
+  /// Copied so stance rolls up per surface without joining back through the run.
+  surface         String?
+  dimension       String? // copied from the QuerySetItem for roll-up without a join
+  stance          String // recommended-primary | recommended-alternative | mentioned-neutral | mentioned-negative | absent
+  rankAmongBrands Int? // 1-based position among brands named in the answer
+  brandsNamed     String   @default("[]") // JSON string[] — every brand the answer named, in order
+  recommendedOver String   @default("[]") // JSON string[] — competitors the answer put the client ABOVE
+  losesTo         String   @default("[]") // JSON string[] — competitors the answer put ABOVE the client
+  evidenceQuote   String? // <=280 chars, verbatim from the answer
+  rationale       String?
+  judgeModel      String
+  costUsd         Float    @default(0)
+  createdAt       DateTime @default(now())
+
+  audit AeoAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@unique([auditId, observationId])
+  @@index([auditId])
+  @@index([auditId, stance])
+  @@index([auditId, surface])
+}
+
+// ─── Digital Presence ───────────────────────────────────────────────────────
+// Where the client exists on the internet, discovered from their own site and
+// corrected by the operator. Analysis: docs/analysis/digital-presence.md.
+
+/// One account/profile the client owns on an external platform.
+///
+/// `state` carries three values, never two. A profile linked from the client's
+/// own footer that we then fail to fetch is NOT a missing account -- Instagram
+/// and Facebook serve login walls and LinkedIn returns 999 to datacentre IPs, so
+/// `unverified` is the routine, honest outcome for exactly the platforms that
+/// matter most. Collapsing it into `missing` would report a working account as
+/// absent.
+model PresenceAccount {
+  id         String    @id @default(cuid())
+  projectId  String
+  platform   String
+  url        String
+  handle     String?
+  /// json-ld-sameas | page-link | manual | serp. Operator entry outranks both
+  /// crawlers and is never overwritten by a re-run.
+  source     String
+  /// company | personal | unknown. The audit is about the company; a founder's
+  /// own LinkedIn or Google Scholar page is recorded but never counted as the
+  /// company's reach.
+  entity     String    @default("company")
+  /// confirmed | unverified | missing
+  state      String
+  /// Why verification could not be completed. Set only when state=unverified;
+  /// the UI prints it verbatim rather than inventing a summary.
+  reason     String?
+  statusCode Int?
+  title      String?
+  /// Page the link was found on -- lets an operator check the finding at source.
+  /// For a SERP candidate this is the query that produced it, so the finding is
+  /// reproducible.
+  foundOn    String?
+  /// 0-1 handle-vs-brand similarity, set on `candidate` rows only. An ordering
+  /// hint for the operator; no code branches on it.
+  confidence Float?
+  verifiedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  /// Apify social-activity rows attached to this account (wave-6 D7). Optional:
+  /// a post is still worth keeping if the account row it belonged to is later
+  /// deleted, so the FK clears rather than cascades.
+  posts PresencePost[]
+
+  @@unique([projectId, platform, url])
+  @@index([projectId])
+  @@index([projectId, platform])
+}
+
+/// One discovery run over the client's site.
+model PresenceDiscovery {
+  id           String    @id @default(cuid())
+  projectId    String
+  /// pending | crawling | verifying | completed | failed
+  status       String    @default("pending")
+  pagesFetched Int       @default(0)
+  found        Int       @default(0)
+  confirmed    Int       @default(0)
+  unverified   Int       @default(0)
+  /// Search suggestions raised, awaiting an operator's yes/no.
+  candidates   Int       @default(0)
+  /// Billable DataForSEO queries on this run. Cache hits are excluded — they
+  /// cost nothing, and counting them would price the next run wrongly.
+  serpQueries  Int       @default(0)
+  /// Real charge read off DataForSEO's response envelope. Never estimated.
+  serpCostUsd  Float     @default(0)
+  /// Why the SERP sweep did not run (no key, no brand, budget reached).
+  serpSkipped  String?
+  /// JSON: per-source counts, so the report can show where each account came from.
+  sources      String?
+  error        String?
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+
+  @@index([projectId, startedAt])
+}
+
+// ─── Tech Stack (wave-6 D3/step 3) ──────────────────────────────────────────
+// Deterministic technology fingerprinting over one fetched homepage — no
+// vendor, no per-lookup cost. Analysis: docs/analysis/tech-stack.md, decision
+// D3 in docs/analysis/wave-6-audit-pipeline.md.
+
+/// One scan of one domain. `domain` may differ from Project.domain — the same
+/// scan is reused, unchanged, to profile a competitor's site (wave-6 step 6).
+model TechStackScan {
+  id        String   @id @default(cuid())
+  projectId String
+  domain    String
+  /// completed | failed. A blocked/unreachable fetch is a reportable outcome
+  /// (see `error`), not a thrown error — the row still gets written.
+  status    String   @default("completed")
+  error     String?
+  createdAt DateTime @default(now())
+
+  findings TechFinding[]
+
+  @@index([projectId])
+  @@index([projectId, domain, createdAt])
+}
+
+/// One detected technology within a scan.
+model TechFinding {
+  id         String @id @default(cuid())
+  scanId     String
+  /// analytics | ads | crm | chat | cms | hosting | cdn | ecommerce | tag-manager | ab-testing
+  category   String
+  name       String
+  /// Signature matches are binary today (always 1); reserved for future weighting.
+  confidence Float  @default(1)
+  /// JSON string[] — the literal matched header value/script URL/HTML snippet, for auditability.
+  evidence   String
+
+  scan TechStackScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([scanId])
+  @@index([scanId, category])
+}
+
+// ─── Keyword Research (wave-6 D5/step 4) ────────────────────────────────────
+// Search volume, competition/CPC, and related/long-tail expansion for a set of
+// operator-supplied seed keywords via DataForSEO Keywords Data (same vendor
+// account as serp-intelligence). Analysis: docs/analysis/wave-6-audit-pipeline.md
+// §D5. Pulled forward from stage 10 on the operator's instruction; may later
+// feed the AEO matrix generator a demand weighting (not built here — stretch).
+
+/// One research run: the seed keywords the operator submitted, plus whatever
+/// DataForSEO returned for them. `status` follows the same discipline as
+/// `TechStackScan` — a reachable-but-empty or partially-failed vendor call is
+/// a reportable outcome, not a thrown error, once past the credential gate.
+model KeywordSet {
+  id           String    @id @default(cuid())
+  projectId    String
+  /// JSON string[] — the operator's own seed keywords, verbatim, before
+  /// normalization (trim/lowercase/dedupe) for the vendor call.
+  seedInput    String
+  locationName String?
+  languageCode String?
+  /// pending | completed | partial | failed. `partial` = seed volumes saved
+  /// but the related/long-tail expansion call failed (see `error`).
+  status       String    @default("pending")
+  /// Set on `partial`/`failed`; null on a clean `completed` run.
+  error        String?
+  /// Real vendor charge only — DataForSEO's own reported `cost`, the same
+  /// discipline as `SerpSnapshot.costUsd`. Never estimated.
+  costUsd      Float     @default(0)
+  createdAt    DateTime  @default(now())
+  finishedAt   DateTime?
+
+  keywords Keyword[]
+
+  @@index([projectId])
+  @@index([projectId, createdAt])
+}
+
+/// One keyword's volume/competition/CPC row within a KeywordSet — either an
+/// operator-supplied seed or a related/long-tail suggestion DataForSEO
+/// returned for those seeds.
+model Keyword {
+  id    String @id @default(cuid())
+  setId String
+
+  keyword          String
+  searchVolume     Int?
+  /// LOW | MEDIUM | HIGH — DataForSEO's Google Ads advertiser-competition
+  /// bucket. A demand-pressure proxy, NOT an organic SEO ranking-difficulty
+  /// score (DataForSEO Keywords Data has no such metric) — reported as what
+  /// it actually is, not relabelled into something it isn't.
+  competition      String?
+  /// Same metric as `competition`, 0-100. Same caveat.
+  competitionIndex Int?
+  cpc              Float?
+  lowTopOfPageBid  Float?
+  highTopOfPageBid Float?
+  /// false for the operator's own seed keywords, true for a suggestion
+  /// returned by the related-keywords expansion call.
+  isRelated        Boolean  @default(false)
+  /// Heuristic: 4+ words. Auditable, not vendor-supplied.
+  isLongTail       Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  set KeywordSet @relation(fields: [setId], references: [id], onDelete: Cascade)
+
+  @@unique([setId, keyword])
+  @@index([setId])
+  @@index([setId, searchVolume])
+}
+
+// ─── Competitors (wave-6 D4/step 6) ────────────────────────────────────────
+// Promotes Project.competitors (JSON) into first-class rows, then builds a
+// light per-competitor profile: homepage tech-stack scan (reusing
+// tech-stack.module.ts unchanged) + schema/JSON-LD read + a reference to
+// whatever SERP/AEO presence already exists for that competitor. Decision D4
+// (docs/analysis/wave-6-audit-pipeline.md): "light now, structured to deepen
+// later" — explicitly NOT a full technical-audit per competitor.
+
+/// One competitor entity for a project. `Project.competitors` (JSON) stays
+/// populated and readable on purpose (existing consumers — measurement,
+/// aeo-audit, authority, serp-intelligence — keep working unchanged); this
+/// table is additive, not a replacement.
+model Competitor {
+  id        String   @id @default(cuid())
+  projectId String
+  name      String
+  domain    String?
+  /// project-json (promoted from Project.competitors) | manual (operator-added
+  /// via an explicit body list on /discover)
+  source    String   @default("project-json")
+  createdAt DateTime @default(now())
+
+  profiles CompetitorProfile[]
+
+  @@unique([projectId, name])
+  @@index([projectId])
+}
+
+/// One light profile snapshot for a competitor. A new row per `/discover`
+/// call (never overwritten), same convention as TechStackScan/AeoAudit — the
+/// latest is whatever the caller wants, history stays inspectable.
+model CompetitorProfile {
+  id               String   @id @default(cuid())
+  competitorId     String
+  domain           String? // copied from Competitor.domain at profile time
+  /// completed | failed | skipped. `skipped` = no domain on record, so no
+  /// homepage could be crawled (AEO/SERP attachment by name still runs).
+  status           String   @default("completed")
+  error            String?
+  /// TechStackScan.id this profile reused — tech-stack already persists
+  /// findings, so we reference rather than duplicate them.
+  techScanId       String?
+  /// JSON string[] — schema.org @type values found on the homepage.
+  schemaTypes      String   @default("[]")
+  /// JSON SchemaBlock[] — {type, fields} per JSON-LD block found; see fetcher.types.ts.
+  schemaRaw        String   @default("[]")
+  /// present | absent | unknown. `unknown` = no completed AeoAudit exists yet
+  /// for this project at all (nothing to attach, not "no presence").
+  aeoStatus        String   @default("unknown")
+  /// JSON snapshot of the matched CompetitorStanding (+ share-of-voice), null
+  /// when aeoStatus != "present".
+  aeoStanding      String?
+  /// AeoAudit.id the snapshot was read from, for traceability.
+  aeoAuditId       String?
+  /// present | absent | unknown. `unknown` = the project has no SERP tracker
+  /// at all yet.
+  serpStatus       String   @default("unknown")
+  /// JSON summary {seenInResults, occurrences, bestRank, sampleKeyword,
+  /// capturedAt}, null when serpStatus != "present".
+  serpPresence     String?
+  /// completed | skipped | failed | unknown. `skipped` = no domain to crawl.
+  /// Wave-6 step 6: the rival's own external presence, so the gap report can
+  /// say "they are on Instagram and you are not" rather than comparing only
+  /// tech stacks.
+  presenceStatus   String   @default("unknown")
+  /// JSON {platform,label,group,url,handle,state}[] — COMPANY profiles only;
+  /// a rival founder's personal LinkedIn is not their company's footprint.
+  presenceAccounts String   @default("[]")
+  presenceError    String?
+  /// completed | skipped | failed | unknown. Stage 7's "Competitor SEO" and
+  /// "Competitor Content" columns. Derived from the SAME homepage HTML the
+  /// schema read already fetched, so it costs no extra request, and scored by
+  /// the SAME `seo-rubric.ts` the client's own pages are scored by -- two
+  /// rubrics would make "client 62 vs rival 71" a comparison of nothing.
+  seoStatus        String   @default("unknown")
+  /// 0-100 from `scorePage()`. Null unless seoStatus = completed. HOMEPAGE
+  /// ONLY -- never presented as a site-wide score, which would need the rival's
+  /// sitemap crawled.
+  seoScore         Int?
+  /// JSON PageIssueCode[] -- the rubric's own codes, same vocabulary as AuditPage.issues.
+  seoIssues        String   @default("[]")
+  /// JSON {wordCount,h1Count,headingLevels,imageCount,imagesMissingAlt,
+  /// titleLength,metaDescriptionLength,jsonLdCount,noindex} -- stage 7's
+  /// "Competitor Content" read. Homepage only; a content *inventory* needs
+  /// their sitemap, which this module does not crawl.
+  contentSignals   String?
+  seoError         String?
+  /// completed | skipped | failed | unknown. Stage 7's "Competitor Reviews".
+  /// Reads the AggregateRating a directory listing already publishes about
+  /// itself -- no review vendor, no per-lookup cost.
+  reviewStatus     String   @default("unknown")
+  /// JSON {platform,label,url,rating,ratingCount,scale,found}[] -- one row per
+  /// ratable listing discovered. `found: false` is kept, not dropped: "they are
+  /// on G2 but publish no rating" and "they are not on G2" are different facts.
+  reviewRatings    String   @default("[]")
+  reviewError      String?
+  createdAt        DateTime @default(now())
+
+  competitor Competitor @relation(fields: [competitorId], references: [id], onDelete: Cascade)
+
+  @@index([competitorId])
+  @@index([competitorId, createdAt])
+}
+
+// ─── Digital Presence — external data (wave-6 step 5) ──────────────────────
+// The two gaps `PresenceAssessment.notMeasured` used to name: business-profile
+// data and review ratings (DataForSEO, decision D2) and social activity
+// (Apify, decision D7). Analysis: docs/analysis/wave-6-audit-pipeline.md.
+
+/// One Google Business Profile snapshot -- DataForSEO Business Data -> Google
+/// My Business Info. `rating`/`reviewCount` here are the profile's own
+/// aggregate as My Business reports it; `PresenceReview` below records each
+/// review PLATFORM's own count separately, since they rarely agree.
+///
+/// A project accumulates snapshots over time (no unique constraint on
+/// `projectId` alone) rather than upserting one row -- the point of a
+/// business profile is that hours, categories and rating drift, and a
+/// re-pull should not erase what the last one saw.
+model PresenceProfile {
+  id          String   @id @default(cuid())
+  projectId   String
+  /// google-my-business today; room for another Business Data profile source
+  /// later without a migration.
+  source      String   @default("google-my-business")
+  name        String?
+  /// JSON string[] -- the categories Google lists the business under.
+  categories  String?
+  /// JSON, stored in whatever shape the provider returns it -- opening hours
+  /// per day. Not reshaped here so a display bug can never come from a lossy
+  /// re-encoding of the provider's own structure.
+  hours       String?
+  rating      Float?
+  reviewCount Int?
+  address     String?
+  phone       String?
+  website     String?
+  /// The full provider response, verbatim. Nothing this module cannot yet
+  /// parse is lost -- only unsurfaced until a mapping is added.
+  raw         String?
+  fetchedAt   DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@index([projectId])
+  @@index([projectId, source, fetchedAt])
+}
+
+/// One review-platform snapshot. Rating + count ONLY -- neither adapter that
+/// writes this table invents a sentiment score over review text (see
+/// wave-6-audit-pipeline.md D2).
+model PresenceReview {
+  id          String   @id @default(cuid())
+  projectId   String
+  /// google | trustpilot | yelp | g2 | capterra | glassdoor | yelp | clutch |
+  /// crunchbase | producthunt -- any RATABLE_PLATFORMS entry, not a closed enum.
+  platform    String
+  rating      Float?
+  reviewCount Int?
+  url         String?
+  raw         String?
+  /// dataforseo (Business Data API, google/trustpilot/yelp only) |
+  /// schema-scrape (AggregateRating read off the listing page itself --
+  /// presence.directory-rating.service.ts, the platforms DataForSEO does not
+  /// cover). Defaulted for backward compatibility with rows written before
+  /// this column existed -- all of which came from DataForSEO.
+  source      String   @default("dataforseo")
+  fetchedAt   DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@index([projectId])
+  @@index([projectId, platform, fetchedAt])
+}
+
+/// One social-activity row from the Apify enrichment (wave-6 D7). A row is
+/// either a **profile** snapshot (`kind = "profile"`, `postedAt` null,
+/// `followerCount`/`followingCount`/`postCount` set) or one **post**
+/// (`kind = "post"`, `postedAt` set, the engagement columns set). Both share
+/// this table because they come from the same actor family and answer the
+/// same question -- "how active is this account?" -- and splitting them into
+/// two tables would only add a join to answer it.
+///
+/// Every actor family's raw output is normalised into these columns at the
+/// adapter boundary (`presence.apify.service.ts`) precisely so this shape
+/// never has to change when an actor's own schema does.
+model PresencePost {
+  id             String    @id @default(cuid())
+  projectId      String
+  /// The account this enriches, when one is on file. Nullable: a platform can
+  /// still be pulled by handle even before/without a confirmed PresenceAccount
+  /// row, and losing that account later must not delete its post history.
+  accountId      String?
+  /// linkedin | instagram | facebook | twitter | youtube | tiktok
+  platform       String
+  /// profile | post
+  kind           String    @default("post")
+  postedAt       DateTime?
+  url            String?
+  /// Short caption/text, kept for context -- this module measures cadence and
+  /// engagement, not archives content.
+  caption        String?
+  likeCount      Int?
+  commentCount   Int?
+  shareCount     Int?
+  viewCount      Int?
+  followerCount  Int?
+  followingCount Int?
+  postCount      Int?
+  /// The Apify actor id that produced this row -- actor output drifts, so
+  /// knowing which actor made a claim matters for auditing it later.
+  actorId        String?
+  raw            String?
+  fetchedAt      DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+
+  account PresenceAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([projectId, platform, fetchedAt])
+  @@index([accountId])
+}
+
+/// One brand-voice read, synthesised from the captions `PresencePost` already
+/// holds (wave-6 D7's Apify pull) -- how the client actually writes, not what
+/// they post about. Same two-layer discipline as `SiteContext`:
+/// `extraction: "insufficient-data"` when there are too few captions or no LLM
+/// provider is configured (never a fabricated voice from nothing), else
+/// `"llm-synthesized"` from a constrained-JSON pass grounded in the real text.
+model PresenceBrandVoice {
+  id            String   @id @default(cuid())
+  projectId     String
+  domain        String
+  /// JSON string[] -- short adjectives ("confident", "playful"), each backed
+  /// by a real pattern in the captions.
+  tone          String   @default("[]")
+  /// JSON string[] -- recurring topics ("product updates", "customer wins").
+  themes        String   @default("[]")
+  /// JSON string[] -- distinctive repeated words/phrases, this brand's own
+  /// language rather than generic marketing copy.
+  vocabulary    String   @default("[]")
+  /// JSON string[] -- recurring CTA patterns ("Book a call", "Link in bio").
+  callToActions String   @default("[]")
+  /// 1-2 plain sentences, written for someone about to write copy in the same voice.
+  summary       String?
+  /// Total captions the synthesis actually read across all platforms.
+  postSample    Int      @default(0)
+  /// JSON: per-platform tone/themes breakout, ONLY populated when the voice
+  /// genuinely differs by platform -- an empty array means one voice covers
+  /// everything, not that per-platform analysis was skipped.
+  byPlatform    String   @default("[]")
+  /// llm-synthesized | insufficient-data
+  extraction    String   @default("insufficient-data")
+  llmModel      String?
+  costUsd       Float    @default(0)
+  createdAt     DateTime @default(now())
+
+  @@index([projectId])
+  @@index([projectId, createdAt])
 }

@@ -49,17 +49,27 @@ export class CacheService {
   /**
    * Build a cache key from method + URL + userAgent.
    */
-  private buildKey(method: string, url: string, userAgent: string): string {
-    return `fetcher:${method}:${Buffer.from(url).toString('base64url')}:${Buffer.from(userAgent).toString('base64url')}`;
+  /**
+   * Cache key.
+   *
+   * `variant` exists because a POST body is part of a request's identity. Every
+   * DataForSEO call goes to the *same* URL with the keyword in the body, so a
+   * key of (url, userAgent) alone made every SERP request inside the TTL return
+   * the first keyword's results — wrong data that looks like working data. Any
+   * caller sending a body must pass one.
+   */
+  private buildKey(method: string, url: string, userAgent: string, variant?: string): string {
+    const base = `fetcher:${method}:${Buffer.from(url).toString('base64url')}:${Buffer.from(userAgent).toString('base64url')}`;
+    return variant ? `${base}:${variant}` : base;
   }
 
   /**
    * Retrieve a cached value. Returns null if not found or Redis unavailable.
    */
-  async get<T>(method: string, url: string, userAgent: string): Promise<T | null> {
+  async get<T>(method: string, url: string, userAgent: string, variant?: string): Promise<T | null> {
     if (!this.redis || !this.connected) return null;
     try {
-      const key = this.buildKey(method, url, userAgent);
+      const key = this.buildKey(method, url, userAgent, variant);
       const data = await this.redis.get(key);
       if (!data) return null;
       return JSON.parse(data) as T;
@@ -73,10 +83,17 @@ export class CacheService {
    * Store a value in cache with a TTL in seconds.
    * TTL of 0 means don't cache.
    */
-  async set(method: string, url: string, userAgent: string, value: unknown, ttlSeconds: number): Promise<void> {
+  async set(
+    method: string,
+    url: string,
+    userAgent: string,
+    value: unknown,
+    ttlSeconds: number,
+    variant?: string,
+  ): Promise<void> {
     if (!this.redis || !this.connected || ttlSeconds <= 0) return;
     try {
-      const key = this.buildKey(method, url, userAgent);
+      const key = this.buildKey(method, url, userAgent, variant);
       await this.redis.set(key, JSON.stringify(value), 'EX', ttlSeconds);
     } catch (err) {
       this.logger.debug(`Cache set failed: ${(err as Error).message}`);
@@ -86,10 +103,10 @@ export class CacheService {
   /**
    * Delete a cached value.
    */
-  async del(method: string, url: string, userAgent: string): Promise<void> {
+  async del(method: string, url: string, userAgent: string, variant?: string): Promise<void> {
     if (!this.redis || !this.connected) return;
     try {
-      const key = this.buildKey(method, url, userAgent);
+      const key = this.buildKey(method, url, userAgent, variant);
       await this.redis.del(key);
     } catch (err) {
       this.logger.debug(`Cache del failed: ${(err as Error).message}`);

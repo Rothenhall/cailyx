@@ -40,6 +40,12 @@ export class BrowserClientService implements OnModuleDestroy {
    * @returns RenderResult with HTML, extracted text, title, and optional screenshot
    */
   async render(opts: RenderOptions): Promise<RenderResult> {
+    // Declared here, not inside the try block, so a render failure can still
+    // report how long it took before failing — the same convention
+    // http-client.service.ts uses. It used to live inside `try`, so the catch
+    // branch's `latencyMs` was silently computed as "ms since the Node
+    // process started" instead of this request's actual duration.
+    const startTime = performance.now();
     const browser = await this.ensureBrowser();
     const timeout = opts.timeout || 30_000;
     const context = await browser.newContext({
@@ -62,7 +68,6 @@ export class BrowserClientService implements OnModuleDestroy {
         });
       }
 
-      const startTime = performance.now();
       await page.goto(opts.url, {
         waitUntil: opts.jsDisabled ? 'domcontentloaded' : 'networkidle',
         timeout,
@@ -95,7 +100,7 @@ export class BrowserClientService implements OnModuleDestroy {
         jsDisabled: opts.jsDisabled || false,
       };
     } catch (err) {
-      const latencyMs = Math.round(performance.now());
+      const latencyMs = Math.round(performance.now() - startTime);
       this.logger.warn(`Browser render failed for ${opts.url}: ${(err as Error).message}`);
       return {
         url: opts.url,

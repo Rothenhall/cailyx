@@ -20,6 +20,7 @@ import { CacheService } from './services/cache.service';
 import { RateLimiterService } from './services/rate-limiter.service';
 import { RetryService } from './services/retry.service';
 import { CostTrackerService } from './services/cost-tracker.service';
+import { RobotsService } from './services/robots.service';
 import { PsiAdapter } from './adapters/psi.adapter';
 
 @Module({
@@ -31,8 +32,14 @@ import { PsiAdapter } from './adapters/psi.adapter';
     RateLimiterService,
     RetryService,
     CostTrackerService,
+    RobotsService,
     PsiAdapter,
   ],
-  exports: [FetcherService],
+  // RobotsService is exported alongside FetcherService (not folded into it)
+  // so a crawler can consult "is this URL allowed" independently of making
+  // the fetch — built ahead of being wired into page-inventory.check.ts,
+  // aeo-context.service.ts and presence.discovery.service.ts, none of which
+  // consult robots.txt today.
+  exports: [FetcherService, RobotsService],
 })
 export class FetcherModule {}

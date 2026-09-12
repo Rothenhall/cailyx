@@ -22,6 +22,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpClientService } from './clients/http-client.service';
 import { BrowserClientService } from './clients/browser-client.service';
+import { createHash } from 'crypto';
 import { CacheService } from './services/cache.service';
 import { RateLimiterService } from './services/rate-limiter.service';
 import { RetryService } from './services/retry.service';
@@ -69,10 +70,14 @@ export class FetcherService {
   async fetch(opts: FetchOptions, calledBy: string = 'unknown', runId?: string): Promise<FetchResult> {
     const userAgent = opts.userAgent || BROWSER_CONTROL.userAgent;
     const cacheTtl = opts.cacheTtlSeconds ?? this.getDefaultCacheTtl(opts.url);
+    // A POST body is part of the request's identity. Without it in the key,
+    // every DataForSEO SERP call -- same URL, keyword in the body -- collided
+    // and returned the first keyword's results for the whole TTL.
+    const variant = this.bodyVariant(opts);
 
     // Check cache first
     if (!opts.bypassCache && cacheTtl > 0) {
-      const cached = await this.cache.get<FetchResult>('fetch', opts.url, userAgent);
+      const cached = await this.cache.get<FetchResult>('fetch', opts.url, userAgent, variant);
       if (cached) {
         this.log({ calledBy, runId, method: 'fetch', url: opts.url, userAgent, httpStatus: cached.status, latencyMs: 0, cost: 0, cached: true, retryCount: 0 });
         return { ...cached, cached: true };
@@ -93,7 +98,7 @@ export class FetcherService {
 
     // Cache the result
     if (cacheTtl > 0 && result.status > 0) {
-      await this.cache.set('fetch', opts.url, userAgent, result, cacheTtl);
+      await this.cache.set('fetch', opts.url, userAgent, result, cacheTtl, variant);
     }
 
     // Log
@@ -217,6 +222,7 @@ export class FetcherService {
 
     return {
       url,
+      status: fetchResult.status,
       schemas,
       raw: fetchResult.body,
     };
@@ -325,6 +331,18 @@ export class FetcherService {
    * Get the default cache TTL for a URL based on its path.
    * robots.txt: 24h, homepage: 1h, other pages: 30min
    */
+  /**
+   * Short hash of the method and body, or undefined for a plain GET.
+   *
+   * Undefined rather than a hash of "" so existing GET cache entries keep their
+   * keys and nothing is silently invalidated by this change.
+   */
+  private bodyVariant(opts: FetchOptions): string | undefined {
+    const method = opts.method ?? 'GET';
+    if (method === 'GET' && !opts.body) return undefined;
+    return createHash('sha1').update(`${method}:${opts.body ?? ''}`).digest('base64url').slice(0, 16);
+  }
+
   private getDefaultCacheTtl(url: string): number {
     try {
       const parsed = new URL(url);
