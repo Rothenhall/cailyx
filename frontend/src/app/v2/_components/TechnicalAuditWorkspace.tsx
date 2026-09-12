@@ -26,6 +26,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   getAudit,
   getAuditComparison,
+  getAuditJob,
   getAuditSchedule,
   getAuditTrend,
   listAudits,
@@ -34,12 +35,14 @@ import {
   type AuditCadence,
   type AuditSchedule,
 } from '@/lib/terminal-api';
+import { pollUntilDone } from '@/lib/poll-job';
 import type { AuditComparison, AuditTrendPoint, TechnicalAudit } from '@/types/terminal';
 import { band, fmtMs, rel, REPORT_SECTIONS, statusOf, type SectionId } from '@/app/v2/_lib/audit';
 import {
   MetricLedger,
   ReportAccess,
   ReportAgent,
+  ReportStack,
   ReportAnalysis,
   ReportOverview,
   ReportPages,
@@ -148,9 +151,11 @@ export function TechnicalAuditWorkspace({
   const doRun = async () => {
     if (!projectId || !domain || busy) return;
     setBusy(true);
-    onNotify('audit started — runs the full 8 checks, about 40s');
+    onNotify('audit queued — runs the full 8 checks, about 40s');
     try {
-      await runAudit(projectId);
+      const { jobId } = await runAudit(projectId);
+      const job = await pollUntilDone(() => getAuditJob(projectId, jobId));
+      if (job.status === 'failed') throw new Error(job.error || 'audit failed');
       onNotify('audit complete');
       await load();
     } catch (err) {
@@ -340,6 +345,9 @@ export function TechnicalAuditWorkspace({
               {tab === 'structure' && <ReportStructure audit={audit} />}
               {tab === 'pages' && <ReportPages audit={audit} comparison={comparison} />}
               {tab === 'agent' && <ReportAgent audit={audit} />}
+              {tab === 'stack' && projectId && (
+                <ReportStack projectId={projectId} domain={audit.targetUrl ?? domain} />
+              )}
               {tab === 'analysis' && <ReportAnalysis audit={audit} />}
             </div>
           </div>

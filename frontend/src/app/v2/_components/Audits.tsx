@@ -3,61 +3,97 @@
 /**
  * Audits — /v2. A chrome-less card between the Flywheel and the Agents Feed.
  *
- * The four disciplines the market actually names — SEO, AEO, Technical, GEO —
- * open as a 2×2 grid of tiles rather than a tab strip. At 320px a four-up strip
- * had no room for a name, a count and a state at once, so the counts read as
- * noise; a tile carries all three. Tapping one shows that discipline's stats,
- * which is the same grid→detail move the agent roster makes.
+ * One tile per audit-type module, clubbed here and correctly wired to each
+ * one's real data — not the Agents Feed, which stays a mix of unrelated
+ * swarm-layer capabilities (Journeys, Personas, Council, …) and is left alone.
+ * Digital Presence has its own dedicated card directly above this one, so it
+ * is deliberately not repeated here as a tile.
  *
- * Internal links fold under Technical, where crawl concerns belong, rather
- * than holding a discipline slot of their own.
+ * SEO and AEO used to fake their tile counts by regex-filtering the
+ * *Technical* audit's findings by type — a stand-in from before the real
+ * `seo-audit`/`aeo-audit` modules existed. Both now read their own module.
  *
- * Live data: the newest technical audit, the newest complete link graph, and
- * the measurement summary for the active project. "Re-run" runs a fresh audit.
+ * Tapping a tile opens that module's full workspace (`onExpand`) rather than
+ * showing content in-card — 320px has no room for a real report. Technical,
+ * SEO and AEO keep a lightweight in-card fallback for when `onExpand` is not
+ * wired up; Tech Stack, Rivals and Keywords do not — they have no natural
+ * in-card view and always defer to the full workspace.
+ *
+ * Tech Stack has no workspace of its own — its data lives in the Technical
+ * report's own "Stack" section, so its tile opens Technical.
  *
  * @module app/v2/_components/Audits
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { ApiError } from '@/lib/api';
 import { cleanFindingText } from '@/lib/text';
-import { getAudit, getMeasurementSummary, listAudits, listLinkGraphs, runAudit } from '@/lib/terminal-api';
-import type { AuditFinding, LinkGraph, TechnicalAudit } from '@/types/terminal';
+import {
+  getAudit,
+  getAuditJob,
+  getAeoVerdict,
+  getCompetitorGap,
+  getSeoAudit,
+  getTechStack,
+  listAeoAudits,
+  listAudits,
+  listCompetitorProfiles,
+  listKeywordSets,
+  listLinkGraphs,
+  listSeoAudits,
+  runAudit,
+} from '@/lib/terminal-api';
+import { pollUntilDone } from '@/lib/poll-job';
+import type {
+  AeoAuditSummary,
+  AeoVerdict,
+  AuditFinding,
+  CompetitorGap,
+  CompetitorRow,
+  KeywordSet,
+  LinkGraph,
+  SeoAudit,
+  TechStackScan,
+  TechnicalAudit,
+} from '@/types/terminal';
 import { band, tone as toneOf, type ToneKind } from '@/app/v2/_lib/audit';
 import { Gauge, Pill } from './TechnicalAuditReport';
 import { BarIcon, ChevronLeft, SyncIcon } from './icons';
 import { Button } from './Button';
 
-type Tab = 'seo' | 'aeo' | 'technical' | 'geo';
+type Tab = 'technical' | 'seo' | 'aeo' | 'tech-stack' | 'competitors' | 'keywords';
+/** Where a tile opens when expanded. Tech Stack has no workspace of its own. */
+type ExpandTarget = 'technical' | 'seo' | 'aeo' | 'competitors' | 'keywords';
+function expandTarget(t: Tab): ExpandTarget {
+  return t === 'tech-stack' ? 'technical' : t;
+}
 type Row = { label: string; value: string; warn?: boolean };
 
-/* Technical leads deliberately: it is the audit that actually runs, and the
-   findings it produces are what SEO and AEO then read. Ordering it first makes
-   the card's entry point the thing you press. */
-const TABS: Tab[] = ['technical', 'seo', 'aeo', 'geo'];
+/* Technical leads deliberately: it is the audit that actually runs, and Tech
+   Stack rides beside it since its data lives in the same report. SEO/AEO
+   follow, then Rivals/Keywords, matching the NavRail's own delivery-flow
+   order (audits → competitors → keywords). */
+const TABS: Tab[] = ['technical', 'tech-stack', 'seo', 'aeo', 'competitors', 'keywords'];
 
-interface Summary {
-  runs: number;
-  observations: number;
-  mentionRate: number;
-  citationRate: number;
-  shareOfVoice: Array<{ name: string; share: number }>;
-}
+/** Only Technical/SEO/AEO have an in-card fallback view. */
+const HAS_INLINE_VIEW = new Set<Tab>(['technical', 'seo', 'aeo']);
 
-/* Findings are routed to a discipline by type. These are the types the audit
-   actually emits (robots · cdn-inferred · js-render · cwv · schema), plus the
-   ones the finding-title map knows about (entity-clarity · sitemap · canonical).
-   Anything unmatched falls to SEO, which is the on-page catch-all. */
-const TECH_RE = /robots|cdn|js|cwv|render|lcp|cls|inp/i;
-const AEO_RE = /schema|entity|faq|answer|structured|markup/i;
-
-/** the four disciplines, as the market names them */
+/** the disciplines, as the market names them */
 const TAB_META: Record<Tab, { label: string; blurb: string }> = {
-  seo: { label: 'SEO', blurb: 'On-page' },
-  aeo: { label: 'AEO', blurb: 'Answer-ready' },
   technical: { label: 'Technical', blurb: 'Site audit' },
-  geo: { label: 'GEO', blurb: 'AI visibility' },
+  'tech-stack': { label: 'Tech Stack', blurb: 'Detected technology' },
+  seo: { label: 'SEO', blurb: 'On-page' },
+  aeo: { label: 'AEO', blurb: 'Answer-ready & AI visibility' },
+  competitors: { label: 'Rivals', blurb: 'Gap vs competitors' },
+  keywords: { label: 'Keywords', blurb: 'Demand research' },
 };
+
+/** A tile's headline metric + whether it deserves the attention dot. Each
+ *  module reports what it actually measures — no invented composite score
+ *  where the module has none (tech-stack/keywords/competitors are counts,
+ *  not a pass/fail signal). */
+function pct(n: number): string {
+  return `${Math.round(n * 100)}%`;
+}
 
 /* muted dashed line — "no data yet" stand-in for the connector chart */
 function SectionLabel({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
@@ -94,13 +130,17 @@ function SignalTable({ rows }: { rows: Row[] }) {
 
 function Issues({
   findings,
-  audit,
+  hasRun,
   onRun,
   busy,
 }: {
   findings: AuditFinding[];
-  audit: TechnicalAudit | null;
-  onRun: () => void;
+  /** Whether this discipline has ever produced a run — decoupled from the
+   *  Technical-specific `TechnicalAudit` type so SEO/AEO can reuse this. */
+  hasRun: boolean;
+  /** Omitted disciplines (SEO/AEO) have no run action wired here — they only
+   *  say "not run yet", pointing at the full workspace to actually run one. */
+  onRun?: () => void;
   busy: boolean;
 }) {
   const live = findings.filter((f) => f.status !== 'error');
@@ -108,20 +148,22 @@ function Issues({
   const crit = live.filter((f) => f.status === 'fail').length;
   const warn = live.filter((f) => f.status === 'warn').length;
 
-  if (!audit) {
+  if (!hasRun) {
     return (
       <div className="mt-3">
         <SectionLabel>Issues</SectionLabel>
         <p className="text-body leading-relaxed text-faint">
           No audit has been run for this project yet.
         </p>
-        <button
-          onClick={onRun}
-          disabled={busy}
-          className="mt-2 rounded-r2 border border-accent-dim px-2 py-1 text-caption font-medium text-accent transition-colors hover:bg-accent-dim/14 disabled:opacity-50"
-        >
-          {busy ? 'running…' : 'Run the first audit'}
-        </button>
+        {onRun && (
+          <button
+            onClick={onRun}
+            disabled={busy}
+            className="mt-2 rounded-r2 border border-accent-dim px-2 py-1 text-caption font-medium text-accent transition-colors hover:bg-accent-dim/14 disabled:opacity-50"
+          >
+            {busy ? 'running…' : 'Run the first audit'}
+          </button>
+        )}
       </div>
     );
   }
@@ -187,84 +229,6 @@ function Issues({
   );
 }
 
-function GeoTab({ summary, domain }: { summary: Summary | null; domain: string | null }) {
-  if (!summary || summary.observations === 0) {
-    return (
-      <Hint>
-        No AI-visibility measurement yet. The GEO agent measures mention &amp; citation rates across AI answers —
-        run it to populate this tab.
-      </Hint>
-    );
-  }
-
-  const sov = summary.shareOfVoice.slice(0, 6);
-  const max = Math.max(...sov.map((s) => s.share), 0.0001);
-  const ownedIdx = sov.findIndex((s) => domain !== null && s.name.toLowerCase().includes(domain.split('.')[0].toLowerCase()));
-
-  return (
-    <>
-      <div className="grid grid-cols-3 gap-1.5">
-        {[
-          { label: 'Obs', value: String(summary.observations), warn: false },
-          { label: 'Mention', value: `${Math.round(summary.mentionRate * 100)}%`, warn: summary.mentionRate < 0.5 },
-          { label: 'Citation', value: `${Math.round(summary.citationRate * 100)}%`, warn: summary.citationRate < 0.35 },
-        ].map((t) => (
-          <div key={t.label} className="rounded-r3 border border-border/60 px-1 py-2.5 text-center">
-            <div className={`num font-display text-display font-medium ${t.warn ? 'text-a-warn' : 'text-text'}`}>
-              {t.value}
-            </div>
-            <div className="mt-1 text-eyebrow uppercase text-faint">{t.label}</div>
-          </div>
-        ))}
-      </div>
-
-      {sov.length > 0 && (
-        <div className="mt-3">
-          <SectionLabel
-            right={
-              ownedIdx >= 0 ? (
-                <span className={`num text-eyebrow ${ownedIdx === 0 ? 'text-a-ok' : 'text-a-warn'}`}>
-                  rank {String(ownedIdx + 1).padStart(2, '0')} / {String(sov.length).padStart(2, '0')}
-                </span>
-              ) : undefined
-            }
-          >
-            Share of voice
-          </SectionLabel>
-          {/* ranked, and marked the way rothenhall.com numbers its disciplines
-              — rank is a genuine sequence, so the numeral carries information */}
-          <ul className="v2-stagger space-y-1.5">
-            {sov.map((s, i) => {
-              const owned = i === ownedIdx;
-              return (
-                <li
-                  key={s.name}
-                  style={{ ['--i' as string]: i }}
-                  className="flex items-center gap-2 text-body"
-                >
-                  <span className={`v2-rank w-4 shrink-0 ${owned ? 'v2-rank-lead' : ''}`}>
-                    {String(i + 1).padStart(2, '0')}
-                  </span>
-                  <span className={`w-14 shrink-0 truncate ${owned ? 'font-semibold text-accent' : 'text-dim'}`}>
-                    {s.name}
-                  </span>
-                  <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-bg-inset">
-                    <span
-                      className={`block h-full rounded-full transition-[width] duration-morph ease-brand ${owned ? 'bg-accent' : 'bg-accent-dim/65'}`}
-                      style={{ width: `${Math.round((s.share / max) * 100)}%` }}
-                    />
-                  </span>
-                  <span className="num w-7 shrink-0 text-right text-faint">{Math.round(s.share * 100)}%</span>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-    </>
-  );
-}
-
 /* ── helpers ─────────────────────────────────────────────────────────── */
 function countH1(headingsJson: string | null): number | null {
   if (!headingsJson) return null;
@@ -301,17 +265,23 @@ export function Audits({
   booting: boolean;
   onNotify: (msg: string, tone?: 'ok' | 'warn') => void;
   /**
-   * Open a discipline in the full-canvas workspace instead of in-card. Only
-   * Technical uses it — it is the one view that does not fit 320px. When it is
-   * not supplied (or the tile is not Technical) the tile opens in place.
+   * Open a discipline in the full-canvas workspace instead of in-card.
+   * Technical, SEO and AEO also have an in-card fallback for when this is not
+   * supplied; Tech Stack, Rivals and Keywords have none and no-op without it.
    */
-  onExpand?: (tab: Tab) => void;
+  onExpand?: (tab: ExpandTarget) => void;
 }) {
-  /* null = the four tiles; a value = that discipline's stats */
+  /* null = the tile list; a value = that discipline's stats (technical/seo/aeo only) */
   const [tab, setTab] = useState<Tab | null>(null);
   const [audit, setAudit] = useState<TechnicalAudit | null>(null);
   const [graphs, setGraphs] = useState<LinkGraph[] | null>(null);
-  const [summary, setSummary] = useState<Summary | null>(null);
+  const [seoAudit, setSeoAudit] = useState<SeoAudit | null>(null);
+  const [aeoAudit, setAeoAudit] = useState<AeoAuditSummary | null>(null);
+  const [aeoVerdict, setAeoVerdict] = useState<AeoVerdict | null>(null);
+  const [techStack, setTechStack] = useState<TechStackScan | null>(null);
+  const [keywordSets, setKeywordSets] = useState<KeywordSet[]>([]);
+  const [competitors, setCompetitors] = useState<CompetitorRow[]>([]);
+  const [competitorGap, setCompetitorGap] = useState<CompetitorGap | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
@@ -333,18 +303,53 @@ export function Audits({
       setGraphs([]);
     }
     try {
-      setSummary(await getMeasurementSummary(projectId));
-    } catch (err) {
-      setSummary(null);
-      if (err instanceof ApiError && err.status !== 404) onNotify(err.message, 'warn');
+      const audits = await listSeoAudits(projectId);
+      setSeoAudit(audits[0] ? await getSeoAudit(projectId, audits[0].id) : null);
+    } catch {
+      setSeoAudit(null);
+    }
+    try {
+      const audits = await listAeoAudits(projectId);
+      const latest = audits[0] ?? null;
+      setAeoAudit(latest);
+      setAeoVerdict(latest ? await getAeoVerdict(projectId, latest.id).catch(() => null) : null);
+    } catch {
+      setAeoAudit(null);
+      setAeoVerdict(null);
+    }
+    try {
+      setTechStack(await getTechStack(projectId));
+    } catch {
+      setTechStack(null);
+    }
+    try {
+      setKeywordSets(await listKeywordSets(projectId));
+    } catch {
+      setKeywordSets([]);
+    }
+    try {
+      setCompetitors(await listCompetitorProfiles(projectId));
+    } catch {
+      setCompetitors([]);
+    }
+    try {
+      setCompetitorGap(await getCompetitorGap(projectId));
+    } catch {
+      setCompetitorGap(null);
     }
     setLoading(false);
-  }, [projectId, onNotify]);
+  }, [projectId]);
 
   useEffect(() => {
     setAudit(null);
     setGraphs(null);
-    setSummary(null);
+    setSeoAudit(null);
+    setAeoAudit(null);
+    setAeoVerdict(null);
+    setTechStack(null);
+    setKeywordSets([]);
+    setCompetitors([]);
+    setCompetitorGap(null);
     void load();
   }, [load]);
 
@@ -354,7 +359,10 @@ export function Audits({
     try {
       // No target URL — the backend audits the project's own domain, so the
       // operator never retypes it and a project rename cannot desync them.
-      setAudit(await runAudit(projectId));
+      const { jobId } = await runAudit(projectId);
+      const job = await pollUntilDone(() => getAuditJob(projectId, jobId));
+      if (job.status === 'failed') throw new Error(job.error || 'audit failed');
+      if (job.result) setAudit(job.result);
       onNotify('audit complete');
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'audit failed', 'warn');
@@ -365,10 +373,7 @@ export function Audits({
 
   /* ── derived ───────────────────────────────────────────────────────── */
   const findings = audit?.findings ?? [];
-  const open = findings.filter((f) => f.status !== 'pass');
-  const aeoIssues = open.filter((f) => AEO_RE.test(f.type));
-  const techIssues = open.filter((f) => TECH_RE.test(f.type) && !AEO_RE.test(f.type));
-  const seoIssues = open.filter((f) => !TECH_RE.test(f.type) && !AEO_RE.test(f.type));
+  const techIssues = findings.filter((f) => f.status !== 'pass');
   const graph = graphs?.find((g) => g.status === 'complete') ?? null;
 
   const title = audit?.pageMetadata?.title ?? null;
@@ -377,52 +382,87 @@ export function Audits({
   const fails = findings.filter((f) => f.status === 'fail').length;
   const warns = findings.filter((f) => f.status === 'warn').length;
 
-  /* count within the tab's own scope — a site-wide total sitting above a
-     filtered list read as a contradiction ("1 fail" then "Clean on this tab") */
-  const tally = (fs: AuditFinding[]) => ({
-    fail: fs.filter((f) => f.status === 'fail').length,
-    warn: fs.filter((f) => f.status === 'warn').length,
-  });
-  const seoTally = tally(seoIssues);
+  const seoFindings = seoAudit?.findings ?? [];
+  const seoOpen = seoFindings.filter((f) => f.status !== 'pass');
+  const seoFails = seoFindings.filter((f) => f.status === 'fail').length;
+  const seoWarns = seoFindings.filter((f) => f.status === 'warn').length;
 
   const seoRows: Row[] = [
     { label: 'Meta title', value: title ? `${title.length} chars` : '—', warn: (title?.length ?? 0) > 60 || !title },
     { label: 'Meta description', value: desc ? `${desc.length} chars` : '—', warn: (desc?.length ?? 0) > 160 || !desc },
     { label: 'H1 tags', value: h1s === null ? '—' : String(h1s), warn: (h1s ?? 0) !== 1 },
     {
-      label: 'On-page checks',
-      value: audit ? `${seoTally.fail} fail · ${seoTally.warn} warn` : '—',
-      warn: seoTally.fail + seoTally.warn > 0,
-    },
-  ];
-  /* AEO reads answer-extractability: is there structured data, and is the
-     entity described clearly enough to be quoted? Both come from audit
-     findings the crawler already emits (`schema`, `entity-clarity`). */
-  const schemaFindings = open.filter((f) => /schema|structured|markup/i.test(f.type));
-  const entityFindings = open.filter((f) => /entity/i.test(f.type));
-  const aeoRows: Row[] = [
-    {
-      label: 'Structured data',
-      value: audit ? (schemaFindings.length ? `${schemaFindings.length} to fix` : 'ok') : '—',
-      warn: schemaFindings.length > 0,
-    },
-    {
-      label: 'Entity clarity',
-      value: audit ? (entityFindings.length ? `${entityFindings.length} to fix` : 'ok') : '—',
-      warn: entityFindings.length > 0,
-    },
-    {
-      label: 'Answer-ready checks',
-      value: audit ? `${aeoIssues.length} open` : '—',
-      warn: aeoIssues.length > 0,
+      label: 'Search Console findings',
+      value: seoAudit ? `${seoFails} fail · ${seoWarns} warn` : '—',
+      warn: seoFails + seoWarns > 0,
     },
   ];
 
-  const tabCount: Record<Tab, number> = {
-    seo: seoIssues.length,
-    aeo: aeoIssues.length,
-    technical: techIssues.length + (graph ? graph.orphanCount + graph.recommendationCount : 0),
-    geo: summary && summary.observations === 0 ? 1 : 0,
+  const aeoOverall = aeoVerdict?.counted.overall ?? null;
+  const aeoFailedSurfaces = aeoVerdict?.surfaceRuns.filter((r) => r.status === 'failed').length ?? 0;
+  const aeoRows: Row[] = [
+    {
+      label: 'Mentioned',
+      value: aeoOverall ? pct(aeoOverall.mentionRate) : '—',
+      warn: !!aeoOverall && aeoOverall.mentionRate < 0.3,
+    },
+    {
+      label: 'Cited',
+      value: aeoOverall ? pct(aeoOverall.citationRate) : '—',
+      warn: !!aeoOverall && aeoOverall.citationRate < 0.15,
+    },
+    {
+      label: 'Engines measured',
+      value: aeoVerdict ? `${aeoVerdict.surfaceRuns.length - aeoFailedSurfaces}/${aeoVerdict.surfaceRuns.length}` : '—',
+      warn: aeoFailedSurfaces > 0,
+    },
+  ];
+
+  const latestKeywordSet = keywordSets[0] ?? null;
+  const competitorGapCount =
+    (competitorGap?.tech.competitorsOnly.length ?? 0) + (competitorGap?.schema.competitorsOnly.length ?? 0);
+
+  /** Each tile's headline + whether it earns the attention dot. Modules
+   *  without a pass/fail signal (tech-stack/keywords/competitors) report a
+   *  plain count instead of inventing a score. */
+  const tileMetric: Record<Tab, { text: string; warn: boolean }> = {
+    technical: {
+      text:
+        techIssues.length + (graph ? graph.orphanCount + graph.recommendationCount : 0) > 0
+          ? `${techIssues.length + (graph ? graph.orphanCount + graph.recommendationCount : 0)} to review`
+          : audit
+            ? 'clear'
+            : 'not run',
+      warn: techIssues.length + (graph ? graph.orphanCount + graph.recommendationCount : 0) > 0,
+    },
+    'tech-stack': {
+      text: techStack
+        ? techStack.status === 'failed'
+          ? 'scan failed'
+          : `${techStack.findings.length} detected`
+        : 'not scanned',
+      warn: techStack?.status === 'failed',
+    },
+    seo: {
+      text: seoAudit ? (seoOpen.length > 0 ? `${seoOpen.length} to review` : 'clear') : 'not run',
+      warn: seoOpen.length > 0,
+    },
+    aeo: {
+      text: aeoOverall ? `${pct(aeoOverall.mentionRate)} mentioned` : 'not run',
+      warn: aeoFailedSurfaces > 0,
+    },
+    competitors: {
+      text: competitors.length
+        ? competitorGapCount > 0
+          ? `${competitorGapCount} gaps`
+          : `${competitors.length} profiled`
+        : 'not profiled',
+      warn: competitorGapCount > 0,
+    },
+    keywords: {
+      text: latestKeywordSet ? `${latestKeywordSet.keywords.length} tracked` : 'not researched',
+      warn: false,
+    },
   };
 
   const health: { label: string; kind: ToneKind; note: string } = !audit
@@ -431,13 +471,13 @@ export function Audits({
       ? {
           label: 'Needs work',
           kind: 'bad',
-          note: `${open.length} open issue${open.length === 1 ? '' : 's'} · SEO & technical`,
+          note: `${techIssues.length} open issue${techIssues.length === 1 ? '' : 's'} · technical`,
         }
       : warns > 0
         ? { label: 'Minor issues', kind: 'warn', note: `${warns} warning${warns === 1 ? '' : 's'}` }
         : { label: 'Healthy', kind: 'ok', note: 'no open findings' };
 
-  const skeleton = booting || (loading && !audit && !graphs && !summary);
+  const skeleton = booting || (loading && !audit && !graphs);
 
   return (
     <div className="pointer-events-auto flex max-h-full w-full max-w-[320px] flex-col overflow-hidden rounded-r4 bg-bg-raised/25 backdrop-blur-[1.5px]">
@@ -473,9 +513,9 @@ export function Audits({
           </Button>
           <span className="font-display text-body font-semibold text-text">{TAB_META[tab].label}</span>
           <span className="truncate text-caption text-faint">{TAB_META[tab].blurb}</span>
-          {tabCount[tab] > 0 && (
+          {tileMetric[tab].warn && (
             <span className="num ml-auto shrink-0 rounded-full border border-a-warn-line bg-a-warn-soft px-1.5 text-eyebrow text-a-warn">
-              {tabCount[tab]}
+              {tileMetric[tab].text}
             </span>
           )}
         </div>
@@ -495,25 +535,24 @@ export function Audits({
             <Hint>Select a project to see its diagnostics.</Hint>
           </div>
         ) : tab === null ? (
-          /* ── the four audits, stacked ────────────────────────────────
-             One column, not a 2x2 grid. Reading order and severity order are
-             the same thing here — Technical first, because it is the audit
-             that actually runs and the findings it produces are what the
-             other three read — and a single column makes that order
-             unambiguous. It also gives each row the full 320px, so the name,
-             the discipline and the count all fit on one line instead of
-             being squeezed into a square. */
+          /* ── the six audits, stacked ─────────────────────────────────
+             One column, not a grid. Reading order follows the delivery flow
+             (NavRail's own ordering): Technical leads because it is the audit
+             that actually runs, Tech Stack rides beside it since its data
+             lives in the same report, then SEO/AEO, then Rivals/Keywords. A
+             single column gives each row the full 320px, so the name, the
+             discipline and the metric all fit on one line. */
           <div className="v2-stagger flex flex-col gap-2 p-3">
             {TABS.map((t, i) => {
-              const n = tabCount[t];
+              const m = tileMetric[t];
               return (
                 <button
                   key={t}
                   type="button"
-                  onClick={() => ((t === 'technical' || t === 'seo') && onExpand ? onExpand(t) : setTab(t))}
+                  onClick={() => (onExpand ? onExpand(expandTarget(t)) : HAS_INLINE_VIEW.has(t) ? setTab(t) : undefined)}
                   style={{ ['--i' as string]: i }}
                   className={`relative flex w-full items-center gap-3 rounded-r3 border bg-bg-raised px-3 py-2.5 text-left transition-colors duration-micro hover:border-accent-dim ${
-                    n > 0 ? 'border-border-strong' : 'border-border'
+                    m.warn ? 'border-border-strong' : 'border-border'
                   }`}
                 >
                   <span className="min-w-0 flex-1">
@@ -521,7 +560,7 @@ export function Audits({
                       <span className="truncate font-display text-title font-semibold text-text">
                         {TAB_META[t].label}
                       </span>
-                      {n > 0 && <span className="v2-dot v2-dot-attention shrink-0" />}
+                      {m.warn && <span className="v2-dot v2-dot-attention shrink-0" />}
                     </span>
                     <span className="mt-0.5 block truncate text-caption text-faint">
                       {TAB_META[t].blurb}
@@ -529,10 +568,10 @@ export function Audits({
                   </span>
                   <span
                     className={`num shrink-0 text-body font-medium tabular-nums ${
-                      n > 0 ? 'text-a-warn' : 'text-faint'
+                      m.warn ? 'text-a-warn' : 'text-faint'
                     }`}
                   >
-                    {n > 0 ? `${n} to review` : 'clear'}
+                    {m.text}
                   </span>
                   <ChevronLeft className="h-3.5 w-3.5 shrink-0 rotate-180 text-faint" />
                 </button>
@@ -542,20 +581,38 @@ export function Audits({
         ) : (
           <div key={tab} className="v2tab-in p-3">
             {tab === 'seo' && (
+              /* Reached only when no onExpand is wired up (the tile jumps
+                 straight to the full SEO report otherwise). No run action
+                 here — running one lives in that report, not this card. */
               <>
                 <SignalTable rows={seoRows} />
-                <Issues findings={seoIssues} audit={audit} onRun={doRunAudit} busy={busy} />
+                <Issues
+                  findings={seoFindings.map((f) => ({
+                    id: f.id,
+                    type: f.type,
+                    status: f.status,
+                    severity: f.severity,
+                    confidence: 'high',
+                    detail: f.detail,
+                    recommendedFix: f.recommendedFix,
+                  }))}
+                  hasRun={!!seoAudit}
+                  busy={busy}
+                />
               </>
             )}
             {tab === 'aeo' && (
-              <>
-                <SignalTable rows={aeoRows} />
-                <Issues findings={aeoIssues} audit={audit} onRun={doRunAudit} busy={busy} />
-              </>
+              /* Reached only when no onExpand is wired up (the tile jumps
+                 straight to the full AEO report otherwise, same as SEO and
+                 Technical) — a plain fallback, not a place to cram both
+                 structural and measured content. AEO has no findings list
+                 (it's a measurement, not a set of pass/fail checks), so this
+                 is just the rate summary. */
+              <SignalTable rows={aeoRows} />
             )}
             {tab === 'technical' &&
               (!audit ? (
-                <Issues findings={[]} audit={null} onRun={doRunAudit} busy={busy} />
+                <Issues findings={[]} hasRun={false} onRun={doRunAudit} busy={busy} />
               ) : (
                 /* A teaser only — the full run lives in the takeover report
                    (tapping the Technical tile opens it). This keeps the card
@@ -577,7 +634,7 @@ export function Audits({
                       </div>
                     </div>
                   </div>
-                  <Issues findings={techIssues} audit={audit} onRun={doRunAudit} busy={busy} />
+                  <Issues findings={techIssues} hasRun={!!audit} onRun={doRunAudit} busy={busy} />
                   {onExpand && (
                     <button
                       type="button"
@@ -590,7 +647,6 @@ export function Audits({
                   )}
                 </div>
               ))}
-            {tab === 'geo' && <GeoTab summary={summary} domain={domain} />}
           </div>
         )}
       </div>

@@ -199,6 +199,7 @@ export function AgentsFeed({
   onAsk,
   onRan,
   chat,
+  onOpenGap,
 }: {
   data: AgentsResponse | null;
   loading: boolean;
@@ -215,6 +216,8 @@ export function AgentsFeed({
   onRan: (agentKey: string, error?: string) => void;
   /** the Cailyx Assistant, slotted under the grid so it slides with it */
   chat: React.ReactNode;
+  /** Open the competitor gap workspace from the rivals panel. */
+  onOpenGap?: () => void;
 }) {
   const selKey = selectedKey;
   const setSelKey = onSelect;
@@ -401,6 +404,7 @@ export function AgentsFeed({
                       onAsk(sel.key);
                       setSelKey(null);
                     }}
+                    onOpenGap={onOpenGap}
                   />
                 ) : (
                 <RunPanel

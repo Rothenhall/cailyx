@@ -602,12 +602,11 @@ export function Flywheel({
    The suggestions endpoint returns ranked interventions alongside the buyer
    queries: what to ship, why, the action, what evidence produced it, and
    whether it's a quick win or a project. Lanes are labelled rather than
-   colour-coded loudly — the brand is entirely warm, so six saturated pills
+   colour-coded loudly — the brand is entirely warm, so five saturated pills
    would read as confetti. Each lane gets a quiet tint and the short label
-   (AEO / GEO / …) carries the meaning. */
+   (AEO / Content / …) carries the meaning. */
 const LANE: Record<string, string> = {
   AEO: 'var(--accent)',
-  GEO: 'var(--cognac)',
   Content: 'var(--brass-mid)',
   Technical: 'var(--st-danger)',
   Authority: 'var(--accent-dim)',

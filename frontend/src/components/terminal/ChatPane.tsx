@@ -213,9 +213,9 @@ function respond(
     return seo ? `${seo.headline}\n${seo.activity.join('\n')}` : 'No SEO data yet.';
   }
 
-  if (q.includes('visib') || q.includes('geo') || q.includes('citation') || q.includes('mention')) {
-    const geo = agents.agents.find((a) => a.key === 'geo');
-    return geo ? `${geo.headline}\n${geo.activity.join('\n')}` : 'No GEO data yet.';
+  if (q.includes('visib') || q.includes('geo') || q.includes('aeo') || q.includes('citation') || q.includes('mention')) {
+    const aeo = agents.agents.find((a) => a.key === 'aeo');
+    return aeo ? `${aeo.headline}\n${aeo.activity.join('\n')}` : 'No AEO data yet.';
   }
 
   const named = agents.agents.find((a) => q.includes(a.key) || q.includes(a.name.toLowerCase().replace(' agent', '')));

@@ -17,7 +17,9 @@ import { useEffect, useMemo, useState } from 'react';
 export const flywheelMeta = { key: 'flywheel' as const, title: 'Flywheel', icon: '❋' };
 
 export type SuggestionSource = 'template' | 'persona' | 'journey';
-export type BoostLane = 'AEO' | 'GEO' | 'Content' | 'Technical' | 'Authority' | 'Measurement';
+/** AEO folds in what used to be a separate "GEO" lane — the market treats
+ *  answer-engine and generative-engine optimization as one discipline. */
+export type BoostLane = 'AEO' | 'Content' | 'Technical' | 'Authority' | 'Measurement';
 
 export interface SuggestionBoost {
   id: string;
@@ -46,7 +48,6 @@ export interface SuggestionWheel {
 
 const LANE_COLOR: Record<BoostLane, string> = {
   AEO: 'var(--accent)',
-  GEO: 'var(--cognac)',
   Content: 'var(--amber)',
   Technical: 'var(--red)',
   Authority: 'var(--blue)',
@@ -281,7 +282,7 @@ export function Flywheel({
 
       {/* ── detail panel (full readable text) ── */}
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {/* view switch: buyer queries  ·  AEO/GEO boosts */}
+        {/* view switch: buyer queries  ·  AEO boosts */}
         <div className="mb-2.5 flex items-center gap-1 rounded-md border border-border bg-bg-inset p-0.5 text-[11px]">
           <button
             onClick={() => setView('queries')}
@@ -293,7 +294,7 @@ export function Flywheel({
             onClick={() => setView('boosts')}
             className={`flex-1 rounded px-2 py-1 transition-colors ${view === 'boosts' ? 'bg-bg-raised font-semibold text-text' : 'text-faint hover:text-dim'}`}
           >
-            AEO / GEO boosts{boosts.length ? ` (${boosts.length})` : ''}
+            AEO boosts{boosts.length ? ` (${boosts.length})` : ''}
           </button>
         </div>
 

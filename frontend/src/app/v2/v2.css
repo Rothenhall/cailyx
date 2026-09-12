@@ -799,3 +799,30 @@
 @media (prefers-reduced-motion: reduce) {
   .v2-audit-ws .tip { transition: none; }
 }
+
+/* ── navigation rail ──────────────────────────────────────────────────────
+   The console's first real navigation (see NavRail.tsx for why it exists).
+
+   Fixed width rather than fluid: it is a router, and a router that resizes
+   makes every destination move. 64px fits a 16px icon over a two-line-safe
+   eyebrow label at this type scale without truncation.
+
+   It never hides. The responsive cliff that drops the Audits card below
+   1000px is survivable — those figures exist elsewhere — but losing the only
+   way to reach a section is not, so the rail is the one fixed element. */
+.v2-rail {
+  /* 72px, not 64: at the eyebrow size "Overview" and "Keywords" run ~44px, and
+     64px minus padding left them one character from clipping. A nav label that
+     truncates defeats the point of labelling it. */
+  width: 72px;
+}
+
+/* A section that owns the whole canvas (Presence, Rivals, Keywords, …).
+   Distinct from .v2-audit-ws, which is an overlay ON TOP of the canvas: this
+   one IS the canvas, so it needs no z-index and no absolute positioning. */
+.v2-section {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}

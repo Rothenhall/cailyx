@@ -335,7 +335,6 @@ export function SettingsPanel({
                   leads rather than sitting in the env-var list below */}
               <GoogleConnections
                 activeProject={activeProject ?? null}
-                psi={integrations.find((i) => i.key === 'pagespeed')}
                 onNotify={onNotify}
                 onRecheck={onRecheck}
               />
@@ -347,8 +346,7 @@ export function SettingsPanel({
               {/* integrations by category (unknown categories fall through last) */}
               {[...CAT_ORDER, ...new Set(configurable.map((i) => i.category).filter((c) => !CAT_ORDER.includes(c)))].map(
                 (cat) => {
-                  // pagespeed is rendered inside the Google block, not here
-                  const items = configurable.filter((i) => i.category === cat && i.key !== 'pagespeed');
+                  const items = configurable.filter((i) => i.category === cat);
                   if (!items.length) return null;
                   return (
                     <div key={cat} className="mb-4">
@@ -714,13 +712,10 @@ const compact = (n: number) =>
 
 function GoogleConnections({
   activeProject,
-  psi,
   onNotify,
   onRecheck,
 }: {
   activeProject: { id: string; domain: string } | null;
-  /** PageSpeed Insights — a Google product, but an API key rather than OAuth */
-  psi?: Integration;
   onNotify: (msg: string, tone?: 'ok' | 'warn') => void;
   onRecheck: () => Promise<void>;
 }) {
@@ -749,14 +744,14 @@ function GoogleConnections({
   }, [load]);
 
   const oauthConnected = (conns ?? []).filter((c) => c.connected && !c.expired).length;
-  const nConnected = oauthConnected + (psi?.connected ? 1 : 0);
+  const nConnected = oauthConnected;
 
   return (
     <div className="mb-4 overflow-hidden rounded-r3 border border-border bg-bg-raised">
       <div className="flex items-center gap-2.5 border-b border-border bg-bg-inset/50 px-3 py-2.5">
         <GoogleGlyph className="h-4 w-4" />
         <span className="text-body font-semibold text-text">
-          Google · Search Console, Analytics &amp; PageSpeed
+          Google · Search Console &amp; Analytics
         </span>
         <span
           className={`ml-auto shrink-0 rounded-full border px-1.5 py-0.5 text-eyebrow font-semibold uppercase tracking-wide2 ${
@@ -791,47 +786,15 @@ function GoogleConnections({
             }}
           />
         ))}
-        {psi && <PsiRow psi={psi} />}
       </div>
 
       <p className="border-t border-border/70 px-3 py-2 text-caption text-faint">
         Search Console &amp; Analytics connect your own Google account (read-only, tokens encrypted at rest).
-        PageSpeed is an API key on the server, shared across the workspace.
       </p>
     </div>
   );
 }
 
-/** PageSpeed Insights row — Google, but keyed by PSI_API_KEY on the server,
-    so it is status-only (no per-operator connect). */
-function PsiRow({ psi }: { psi: Integration }) {
-  const ok = psi.connected;
-  return (
-    <div className="p-3">
-      <div className="flex items-start gap-2.5">
-        <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-r2 bg-bg-inset">
-          <GoogleGlyph className="h-3.5 w-3.5" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-body font-semibold text-dim">PageSpeed Insights</span>
-            <span
-              className={`ml-auto shrink-0 rounded-full border px-1.5 py-0.5 text-eyebrow font-semibold uppercase tracking-wide2 ${
-                ok ? 'border-accent-dim text-accent' : 'border-border text-faint'
-              }`}
-            >
-              {ok ? 'connected' : 'not set'}
-            </span>
-          </div>
-          <p className="mt-0.5 text-caption leading-snug text-faint">{psi.detail}</p>
-          <div className="mt-1.5">
-            <code className="rounded-r1 bg-bg-inset px-1.5 py-0.5 text-caption text-dim">PSI_API_KEY</code>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function GoogleServiceCard({
   service,

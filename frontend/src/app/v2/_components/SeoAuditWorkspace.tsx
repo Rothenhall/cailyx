@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiError } from '@/lib/api';
 import {
   getSeoAudit,
+  getSeoAuditJob,
   getSeoComparison,
   getSeoSchedule,
   getSeoTrend,
@@ -25,6 +26,7 @@ import {
   type AuditCadence,
   type AuditSchedule,
 } from '@/lib/terminal-api';
+import { pollUntilDone } from '@/lib/poll-job';
 import type { AuditDelta, SeoAudit, SeoComparison, SeoTrendPoint } from '@/types/terminal';
 import { band, rel } from '@/app/v2/_lib/audit';
 import { SeoFixes, SeoOverview, SeoPages, SeoQueries } from './SeoAuditReport';
@@ -135,10 +137,12 @@ export function SeoAuditWorkspace({
   const doRun = async () => {
     if (!projectId || busy) return;
     setBusy(true);
-    onNotify('SEO audit started — reading Search Console, ~1 min');
+    onNotify('SEO audit queued — reading Search Console, ~1 min');
     try {
-      const next = await runSeoAudit(projectId);
-      setAudit(next);
+      const { jobId } = await runSeoAudit(projectId);
+      const job = await pollUntilDone(() => getSeoAuditJob(projectId, jobId));
+      if (job.status === 'failed') throw new Error(job.error || 'SEO audit failed');
+      if (job.result) setAudit(job.result);
       setGate('ok');
       onNotify('SEO audit complete');
       await load();

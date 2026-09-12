@@ -14,10 +14,13 @@
  * @module app/v2/_components/TechnicalAuditReport
  */
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { cleanFindingText } from '@/lib/text';
+import { getTechStack, runTechStackScan } from '@/lib/terminal-api';
+import type { TechStackScan } from '@/types/terminal';
+import { Button } from './Button';
 import type {
   AuditComparison,
   AuditDelta,
@@ -1437,5 +1440,132 @@ export function ReportAnalysis({ audit }: { audit: TechnicalAudit }) {
         )}
       </Card>
     </Panel>
+  );
+}
+
+/**
+ * Detected technology (wave-6 step 3, surfaced in step 8).
+ *
+ * Lives beside the technical audit because it answers the same operator
+ * question — *what is this site actually built on* — and shares its input, the
+ * homepage fetch. It is deliberately **not** folded into the audit score: a CMS
+ * is not a defect, and scoring "uses WordPress" would turn a fact into a
+ * judgement the rubric cannot defend.
+ *
+ * Every row shows its own evidence, because a detection without the thing that
+ * triggered it is indistinguishable from a guess.
+ */
+export function ReportStack({ projectId, domain }: { projectId: string; domain: string | null }) {
+  const [scan, setScan] = useState<TechStackScan | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    getTechStack(projectId)
+      .then(setScan)
+      .catch(() => setScan(null))
+      .finally(() => setLoading(false));
+  }, [projectId]);
+
+  useEffect(load, [load]);
+
+  const run = async () => {
+    setBusy(true);
+    try {
+      setScan(await runTechStackScan(projectId));
+    } catch {
+      /* the empty state below already says what to do */
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loading) return <div className="v2skel h-28 rounded-r4" />;
+
+  if (!scan) {
+    return (
+      <div className="max-w-prose space-y-3">
+        <p className="text-body leading-relaxed text-faint">
+          No technology scan yet for {domain ?? 'this domain'}. Reads the homepage and matches headers,
+          markup and script sources against an in-repo signature table — one fetch, nothing external.
+        </p>
+        <Button type="button" variant="soft" size="sm" onClick={run} disabled={busy}>
+          {busy ? 'scanning…' : 'Scan technology'}
+        </Button>
+      </div>
+    );
+  }
+
+  if (scan.status === 'failed') {
+    return (
+      <div className="max-w-prose space-y-2">
+        <p className="text-body leading-relaxed text-a-warn">
+          The scan could not read {scan.domain}: {scan.error ?? 'unknown error'}
+        </p>
+        <p className="text-caption leading-relaxed text-faint">
+          That is a fetch problem, not a finding about their stack — nothing is inferred from a page
+          we could not load.
+        </p>
+        <Button type="button" variant="outline" size="sm" onClick={run} disabled={busy}>
+          {busy ? 'scanning…' : 'Retry'}
+        </Button>
+      </div>
+    );
+  }
+
+  const byCategory = new Map<string, typeof scan.findings>();
+  for (const f of scan.findings) {
+    const bucket = byCategory.get(f.category);
+    if (bucket) bucket.push(f);
+    else byCategory.set(f.category, [f]);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-baseline gap-2">
+        <span className="text-body text-dim">
+          {scan.findings.length} technolog{scan.findings.length === 1 ? 'y' : 'ies'} detected on{' '}
+          {scan.domain}
+        </span>
+        <Button type="button" variant="ghost" size="sm" onClick={run} disabled={busy} className="ml-auto">
+          {busy ? 'scanning…' : 'Re-scan'}
+        </Button>
+      </div>
+
+      {scan.findings.length === 0 ? (
+        <p className="max-w-prose text-body leading-relaxed text-faint">
+          Nothing matched the signature table. That means the signatures did not fire — not that the
+          site uses no technology.
+        </p>
+      ) : (
+        [...byCategory.entries()].map(([category, findings]) => (
+          <section key={category}>
+            <h3 className="mb-1.5 text-eyebrow font-semibold uppercase tracking-eyebrow text-faint">
+              {category}
+            </h3>
+            <ul className="divide-y divide-border/50 overflow-hidden rounded-r3 border border-border/60">
+              {findings.map((f) => (
+                <li key={`${f.category}:${f.name}`} className="px-3 py-2">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-body font-semibold text-text">{f.name}</span>
+                    <span className="ml-auto shrink-0 text-caption text-faint">
+                      {Math.round(f.confidence * 100)}% confidence
+                    </span>
+                  </div>
+                  {/* The evidence, not a summary of it — a detection you cannot
+                      check is indistinguishable from a guess. */}
+                  {f.evidence.length > 0 && (
+                    <p className="mt-0.5 break-words text-caption leading-relaxed text-faint">
+                      {f.evidence.join(' · ')}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))
+      )}
+    </div>
   );
 }

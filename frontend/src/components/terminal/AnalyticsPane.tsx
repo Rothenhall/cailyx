@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Analytics pane — SEO / Links / Technical / GEO tabs, the Google connector
+ * Analytics pane — SEO / Links / Technical / AEO tabs, the Google connector
  * cards (Analytics + Search Console), a signal table, and the on-page issues
  * list. Reads the latest technical audit, link graph, and measurement summary
  * for the active project.
@@ -13,10 +13,11 @@ import { useCallback, useEffect, useState } from 'react';
 import { ApiError } from '@/lib/api';
 import { cleanFindingText } from '@/lib/text';
 import { CardSkeleton } from './CardSkeleton';
-import { getAudit, getMeasurementSummary, listAudits, listLinkGraphs, runAudit } from '@/lib/terminal-api';
+import { getAudit, getAuditJob, getMeasurementSummary, listAudits, listLinkGraphs, runAudit } from '@/lib/terminal-api';
+import { pollUntilDone } from '@/lib/poll-job';
 import type { Integration, LinkGraph, TechnicalAudit } from '@/types/terminal';
 
-type Tab = 'seo' | 'links' | 'technical' | 'geo';
+type Tab = 'seo' | 'links' | 'technical' | 'aeo';
 
 const SEV_COLOR: Record<string, string> = {
   critical: 'text-red',
@@ -90,8 +91,10 @@ export function AnalyticsPane({
     setBusy(true);
     setNote(null);
     try {
-      const a = await runAudit(projectId, `https://${domain}`);
-      setAudit(a);
+      const { jobId } = await runAudit(projectId, `https://${domain}`);
+      const job = await pollUntilDone(() => getAuditJob(projectId, jobId));
+      if (job.status === 'failed') throw new Error(job.error || 'audit failed');
+      if (job.result) setAudit(job.result);
     } catch (err) {
       setNote(err instanceof Error ? err.message : 'audit failed');
     } finally {
@@ -109,7 +112,7 @@ export function AnalyticsPane({
     <>
       {/* tabs */}
       <div className="flex border-b border-border text-[11px]">
-        {(['seo', 'links', 'technical', 'geo'] as Tab[]).map((t) => (
+        {(['seo', 'links', 'technical', 'aeo'] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -166,7 +169,7 @@ export function AnalyticsPane({
             </>
           )}
 
-          {tab === 'geo' && <GeoTab summary={summary} />}
+          {tab === 'aeo' && <GeoTab summary={summary} />}
 
           {note && <p className="mt-2 text-[11px] text-amber">{note}</p>}
         </div>
@@ -302,7 +305,7 @@ function LinksTab({ graph, loading }: { graph: LinkGraph | null; loading: boolea
 /* ── geo tab ────────────────────────────────────────────────── */
 function GeoTab({ summary }: { summary: Summary | null }) {
   if (!summary || summary.observations === 0)
-    return <p className="text-[12px] text-faint">No AI-visibility measurement yet. The GEO Agent measures mention &amp; citation rates across AI answers.</p>;
+    return <p className="text-[12px] text-faint">No AI-visibility measurement yet. The AEO Agent measures mention &amp; citation rates across AI answers.</p>;
   return (
     <>
       <SignalTable

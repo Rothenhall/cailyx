@@ -75,10 +75,20 @@ function Step({
 export function RivalsPanel({
   projectId,
   onAsk,
+  onOpenGap,
 }: {
   projectId: string;
   /** hand the competitive question to the assistant */
   onAsk: () => void;
+  /**
+   * Open the full competitor gap workspace (wave-6 step 6/8).
+   *
+   * This panel answers "who are they and how loud are we next to them"; the
+   * workspace answers "what do they have that we do not". Same subject, so the
+   * door belongs here rather than as a fifth tile on the Audits card, which is
+   * a list of disciplines and would have to stop meaning that.
+   */
+  onOpenGap?: () => void;
 }) {
   const [data, setData] = useState<CompetitorsResponse | null>(null);
   const [failed, setFailed] = useState(false);
@@ -151,6 +161,20 @@ export function RivalsPanel({
 
   return (
     <div className="flex flex-col gap-3.5">
+      {/* The door to the full gap workspace. Shown in every state, including
+          the empty one — with nothing measured yet, the gap view is often the
+          more useful of the two. */}
+      {onOpenGap && (
+        <button
+          type="button"
+          onClick={onOpenGap}
+          className="flex w-full items-center gap-1.5 rounded-r2 border border-border bg-bg-raised px-2 py-1.5 text-left text-caption text-dim transition-colors hover:border-accent-dim hover:text-accent"
+        >
+          <span>Full gap analysis &mdash; tech, schema &amp; presence</span>
+          <span className="ml-auto">&rarr;</span>
+        </button>
+      )}
+
       {/* ── the scoreboard, once there is something to score ─────────── */}
       {measured && (
         <StatHeadline
@@ -225,7 +249,7 @@ export function RivalsPanel({
             detail={
               readiness.runs > 0
                 ? `${readiness.runs} run so far, no observations stored yet.`
-                : 'Run the GEO agent against a query set to record who appears in each answer.'
+                : 'Run the AEO agent against a query set to record who appears in each answer.'
             }
             state={!hasRivals ? 'later' : 'now'}
           />

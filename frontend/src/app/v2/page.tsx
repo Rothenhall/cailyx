@@ -22,6 +22,15 @@ import { AgentsFeed } from './_components/AgentsFeed';
 import { Audits } from './_components/Audits';
 import { TechnicalAuditWorkspace } from './_components/TechnicalAuditWorkspace';
 import { SeoAuditWorkspace } from './_components/SeoAuditWorkspace';
+import { AeoAuditWorkspace } from './_components/AeoAuditWorkspace';
+import { DigitalPresence } from './_components/DigitalPresence';
+import { DigitalPresenceWorkspace } from './_components/DigitalPresenceWorkspace';
+import { CompetitorsWorkspace } from './_components/CompetitorsWorkspace';
+import { NavRail, type Section } from './_components/NavRail';
+import { KeywordsWorkspace } from './_components/KeywordsWorkspace';
+import { DeliverablesWorkspace } from './_components/DeliverablesWorkspace';
+import { AgentReports } from './_components/AgentReports';
+import { AuditsSection } from './_components/AuditsSection';
 import { ChatBot, type ChatSeed } from './_components/ChatBot';
 import { Flywheel, FLYWHEEL_VB } from './_components/Flywheel';
 import { ErrorBoundary } from './_components/ErrorBoundary';
@@ -43,7 +52,28 @@ export default function V2Console() {
   const [agentKey, setAgentKey] = useState<string | null>(null);
   const [palette, setPalette] = useState(false);
   /* the Technical tile takes over the canvas rather than opening in-card */
-  const [expanded, setExpanded] = useState<'technical' | 'seo' | null>(null);
+  const [expanded, setExpanded] = useState<
+    'technical' | 'seo' | 'aeo' | 'presence' | 'competitors' | 'keywords' | null
+  >(null);
+  /**
+   * Which top-level section the rail has selected.
+   *
+   * `overview` is the original three-band canvas and stays the default — the
+   * rail adds destinations, it does not move the one that already worked.
+   */
+  const [section, setSection] = useState<Section>('overview');
+
+  /**
+   * Choosing a section closes any overlay workspace.
+   *
+   * Without this, navigating while an audit workspace is open leaves the
+   * overlay covering the section you just asked for — the click appears to do
+   * nothing, which is the worst possible failure for a brand-new nav.
+   */
+  const goSection = (s: Section) => {
+    setExpanded(null);
+    setSection(s);
+  };
   /* live Google (GSC + GA) connections — folded into the header count */
   const [googleConnected, setGoogleConnected] = useState<number | null>(null);
   const refreshGoogle = () =>
@@ -139,6 +169,30 @@ export default function V2Console() {
       run: () => c.selectProject(p.id),
     })),
     {
+      id: 'w:aeo',
+      label: 'AEO audit — ChatGPT, Perplexity, Gemini',
+      group: 'Workspace' as const,
+      keywords: 'aeo answer engine visibility chatgpt perplexity gemini ai search',
+      icon: <SyncIcon className="h-4 w-4" />,
+      run: () => setExpanded('aeo'),
+    },
+    {
+      id: 'w:competitors',
+      label: 'Competitors — gap vs your rivals',
+      group: 'Workspace' as const,
+      keywords: 'competitors rivals gap comparison tech schema presence stage 7',
+      icon: <UsersIcon className="h-4 w-4" />,
+      run: () => setExpanded('competitors'),
+    },
+    {
+      id: 'w:presence',
+      label: 'Digital presence — accounts, listings, footprint',
+      group: 'Workspace' as const,
+      keywords: 'presence social instagram linkedin facebook accounts discovery footprint',
+      icon: <PlugIcon className="h-4 w-4" />,
+      run: () => setExpanded('presence'),
+    },
+    {
       id: 'w:connections',
       label: 'Connections & setup gates',
       group: 'Workspace' as const,
@@ -211,99 +265,248 @@ export default function V2Console() {
 
           The gutters come from the wall components' own constants (see the
           .v2-canvas rules in v2.css), so they can't drift out of sync. */}
-      <main
-        className={`v2-dots v2-canvas relative grid min-h-0 flex-1${expanded ? ' is-zoomed' : ''}`}
-        style={{
-          ['--wheel-half' as string]: `${FLYWHEEL_VB / 2}px`,
-          ['--nub' as string]: `${CONTEXT_NUB_W}px`,
-        }}
-      >
-        <ErrorBoundary label="The flywheel">
-          <Flywheel
-            wheel={c.wheel}
-            loading={c.booting || c.wheelLoading || c.projectPending}
-            onPick={(q) => handOff('query', q)}
-          />
-        </ErrorBoundary>
+      {/* The rail plus whichever section it points at. Overview keeps the
+          original three-band canvas untouched; every other section owns the
+          canvas outright rather than overlaying it. */}
+      <div className="flex min-h-0 flex-1">
+        <NavRail section={section} onSelect={goSection} disabled={!c.activeId} />
 
-        <ErrorBoundary label="The context drawer">
-          <ContextPanel project={c.project} agents={c.agents} onSave={c.saveProject} />
-        </ErrorBoundary>
-
-        {/* Audits card, parked between the Flywheel's visible half and the feed */}
-        <section className="v2-audits pointer-events-none flex min-h-0 items-center justify-center py-6">
-          <ErrorBoundary label="Audits">
-            <Audits
-              key={c.activeId ?? 'none'}
-              projectId={c.activeId}
-              domain={c.project?.domain ?? null}
-              booting={c.booting}
-              onNotify={notify}
-              onExpand={(t) => setExpanded(t === 'seo' ? 'seo' : 'technical')}
+        {section === 'overview' ? (
+        <main
+          /* `overflow-hidden` matters: the Flywheel is absolutely positioned at
+             left-0 with a -50% translate, so half of it deliberately hangs off
+             its container's left edge. That container used to be the window, so
+             the wheel emerged from the window edge. With the rail in front of
+             it, the same overflow would render the wheel *on top of the
+             navigation* — so it is clipped, and the rail becomes the wall the
+             wheel is welded to. The Context drawer is flush right-0 and never
+             protrudes, so nothing else is affected. */
+          className={`v2-dots v2-canvas relative grid min-h-0 flex-1 overflow-hidden${expanded ? ' is-zoomed' : ''}`}
+          style={{
+            ['--wheel-half' as string]: `${FLYWHEEL_VB / 2}px`,
+            ['--nub' as string]: `${CONTEXT_NUB_W}px`,
+          }}
+        >
+          <ErrorBoundary label="The flywheel">
+            <Flywheel
+              wheel={c.wheel}
+              loading={c.booting || c.wheelLoading || c.projectPending}
+              onPick={(q) => handOff('query', q)}
             />
           </ErrorBoundary>
-        </section>
 
-        <section className="v2-feed flex min-h-0 flex-col py-6">
-          <ErrorBoundary label="The agents feed">
-            <AgentsFeed
-              data={c.agents}
-              loading={c.booting || c.agentsLoading || c.projectPending}
-              projectId={c.activeId}
-              runCtx={{ integrations, querySets: c.querySets }}
-              selectedKey={agentKey}
-              onSelect={setAgentKey}
-              onRefresh={c.refreshAgents}
-              onAsk={(key) => handOff('agent', key)}
-              onRan={(key, error) => {
-                if (error) {
-                  notify(error, 'warn');
-                  return;
+          <ErrorBoundary label="The context drawer">
+            <ContextPanel project={c.project} agents={c.agents} onSave={c.saveProject} />
+          </ErrorBoundary>
+
+          {/* Presence above Audits, then the Audits card, parked between the
+              Flywheel's visible half and the feed. Presence leads deliberately:
+              it answers "what did we find?", which comes before "how does it
+              score?" -- and it is where an operator fixes a discovery gap. */}
+          <section className="v2-audits pointer-events-none flex min-h-0 flex-col items-center justify-center gap-3 py-6">
+            <ErrorBoundary label="Digital presence">
+              <DigitalPresence
+                key={c.activeId ?? 'none'}
+                projectId={c.activeId}
+                domain={c.project?.domain ?? null}
+                booting={c.booting}
+                onNotify={notify}
+                onExpand={() => setExpanded('presence')}
+              />
+            </ErrorBoundary>
+            <ErrorBoundary label="Audits">
+              <Audits
+                key={c.activeId ?? 'none'}
+                projectId={c.activeId}
+                domain={c.project?.domain ?? null}
+                booting={c.booting}
+                onNotify={notify}
+                onExpand={setExpanded}
+              />
+            </ErrorBoundary>
+          </section>
+
+          <section className="v2-feed flex min-h-0 flex-col py-6">
+            <ErrorBoundary label="The agents feed">
+              <AgentsFeed
+                data={c.agents}
+                loading={c.booting || c.agentsLoading || c.projectPending}
+                projectId={c.activeId}
+                runCtx={{ integrations, querySets: c.querySets }}
+                onOpenGap={() => setExpanded('competitors')}
+                selectedKey={agentKey}
+                onSelect={setAgentKey}
+                onRefresh={c.refreshAgents}
+                onAsk={(key) => handOff('agent', key)}
+                onRan={(key, error) => {
+                  if (error) {
+                    notify(error, 'warn');
+                    return;
+                  }
+                  // the roster is the source of truth for what a run produced,
+                  // so report from the refreshed card rather than guessing
+                  void c.refreshAgentsAnd((next) => {
+                    const a = next.agents.find((x) => x.key === key);
+                    notify(a ? `${a.name}: ${a.headline}` : 'run complete');
+                  });
+                }}
+                chat={
+                  <ChatBot
+                    project={c.project}
+                    agents={c.agents}
+                    integrations={integrations}
+                    seed={seed}
+                    onOpenConnections={() => setPanel('connections')}
+                  />
                 }
-                // the roster is the source of truth for what a run produced,
-                // so report from the refreshed card rather than guessing
-                void c.refreshAgentsAnd((next) => {
-                  const a = next.agents.find((x) => x.key === key);
-                  notify(a ? `${a.name}: ${a.headline}` : 'run complete');
-                });
-              }}
-              chat={
-                <ChatBot
-                  project={c.project}
-                  agents={c.agents}
-                  integrations={integrations}
-                  seed={seed}
-                  onOpenConnections={() => setPanel('connections')}
-                />
-              }
-            />
-          </ErrorBoundary>
-        </section>
+              />
+            </ErrorBoundary>
+          </section>
 
-        {expanded === 'technical' && (
-          <ErrorBoundary label="Technical audit">
-            <TechnicalAuditWorkspace
-              key={c.activeId ?? 'none'}
-              projectId={c.activeId}
-              domain={c.project?.domain ?? null}
-              onClose={() => setExpanded(null)}
-              onNotify={notify}
-            />
-          </ErrorBoundary>
-        )}
+          {expanded === 'technical' && (
+            <ErrorBoundary label="Technical audit">
+              <TechnicalAuditWorkspace
+                key={c.activeId ?? 'none'}
+                projectId={c.activeId}
+                domain={c.project?.domain ?? null}
+                onClose={() => setExpanded(null)}
+                onNotify={notify}
+              />
+            </ErrorBoundary>
+          )}
 
-        {expanded === 'seo' && (
-          <ErrorBoundary label="SEO audit">
-            <SeoAuditWorkspace
-              key={c.activeId ?? 'none'}
-              projectId={c.activeId}
-              domain={c.project?.domain ?? null}
-              onClose={() => setExpanded(null)}
-              onNotify={notify}
-            />
-          </ErrorBoundary>
+          {expanded === 'seo' && (
+            <ErrorBoundary label="SEO audit">
+              <SeoAuditWorkspace
+                key={c.activeId ?? 'none'}
+                projectId={c.activeId}
+                domain={c.project?.domain ?? null}
+                onClose={() => setExpanded(null)}
+                onNotify={notify}
+              />
+            </ErrorBoundary>
+          )}
+
+          {expanded === 'competitors' && (
+            <ErrorBoundary label="Competitors">
+              <CompetitorsWorkspace
+                key={c.activeId ?? 'none'}
+                projectId={c.activeId}
+                domain={c.project?.domain ?? null}
+                onClose={() => setExpanded(null)}
+                onNotify={notify}
+              />
+            </ErrorBoundary>
+          )}
+
+          {expanded === 'presence' && (
+            <ErrorBoundary label="Digital presence">
+              <DigitalPresenceWorkspace
+                key={c.activeId ?? 'none'}
+                projectId={c.activeId}
+                domain={c.project?.domain ?? null}
+                onClose={() => setExpanded(null)}
+                onNotify={notify}
+              />
+            </ErrorBoundary>
+          )}
+
+          {expanded === 'aeo' && (
+            <ErrorBoundary label="AEO audit">
+              <AeoAuditWorkspace
+                key={c.activeId ?? 'none'}
+                projectId={c.activeId}
+                domain={c.project?.domain ?? null}
+                onClose={() => setExpanded(null)}
+                onNotify={notify}
+              />
+            </ErrorBoundary>
+          )}
+
+          {expanded === 'keywords' && (
+            <ErrorBoundary label="Keyword research">
+              <KeywordsWorkspace
+                key={c.activeId ?? 'none'}
+                projectId={c.activeId}
+                onClose={() => setExpanded(null)}
+                onNotify={notify}
+              />
+            </ErrorBoundary>
+          )}
+        </main>
+        ) : section === 'presence' ? (
+          <div className="v2-section">
+            <ErrorBoundary label="Digital presence">
+              <DigitalPresenceWorkspace
+                key={c.activeId ?? 'none'}
+                projectId={c.activeId}
+                domain={c.project?.domain ?? null}
+                onClose={() => goSection('overview')}
+                onNotify={notify}
+              />
+            </ErrorBoundary>
+          </div>
+        ) : section === 'competitors' ? (
+          <div className="v2-section">
+            <ErrorBoundary label="Competitors">
+              <CompetitorsWorkspace
+                key={c.activeId ?? 'none'}
+                projectId={c.activeId}
+                domain={c.project?.domain ?? null}
+                onClose={() => goSection('overview')}
+                onNotify={notify}
+              />
+            </ErrorBoundary>
+          </div>
+        ) : section === 'keywords' ? (
+          <div className="v2-section">
+            <ErrorBoundary label="Keywords">
+              <KeywordsWorkspace
+                key={c.activeId ?? 'none'}
+                projectId={c.activeId}
+                onClose={() => goSection('overview')}
+                onNotify={notify}
+              />
+            </ErrorBoundary>
+          </div>
+        ) : section === 'deliverables' ? (
+          <div className="v2-section">
+            <ErrorBoundary label="Deliverables">
+              <DeliverablesWorkspace
+                key={c.activeId ?? 'none'}
+                projectId={c.activeId}
+                domain={c.project?.domain ?? null}
+                onClose={() => goSection('overview')}
+                onNotify={notify}
+              />
+            </ErrorBoundary>
+          </div>
+        ) : section === 'agents' ? (
+          <div className="v2-section">
+            <ErrorBoundary label="Agent reports">
+              <AgentReports
+                key={c.activeId ?? 'none'}
+                projectId={c.activeId}
+                agents={c.agents}
+                onClose={() => goSection('overview')}
+                onNotify={notify}
+              />
+            </ErrorBoundary>
+          </div>
+        ) : (
+          /* audits: the four discipline workspaces, chosen from the card */
+          <div className="v2-section">
+            <ErrorBoundary label="Audits">
+              <AuditsSection
+                projectId={c.activeId}
+                domain={c.project?.domain ?? null}
+                onClose={() => goSection('overview')}
+                onNotify={notify}
+              />
+            </ErrorBoundary>
+          </div>
         )}
-      </main>
+      </div>
 
       <SettingsPanel
         open={panel}

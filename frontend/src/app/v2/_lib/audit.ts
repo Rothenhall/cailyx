@@ -40,6 +40,7 @@ export type SectionId =
   | 'structure'
   | 'pages'
   | 'agent'
+  | 'stack'
   | 'analysis';
 
 /** The report's sections, in reading order. Drives the rail nav and scrollspy. */
@@ -48,6 +49,7 @@ export const REPORT_SECTIONS: { id: SectionId; label: string; blurb: string }[] 
   { id: 'access', label: 'Access', blurb: 'robots.txt & CDN' },
   { id: 'performance', label: 'Performance', blurb: 'Core Web Vitals' },
   { id: 'structure', label: 'Structure', blurb: 'Schema & sitemap' },
+  { id: 'stack', label: 'Stack', blurb: 'Detected technology' },
   { id: 'pages', label: 'Pages', blurb: 'Per-URL crawl' },
   { id: 'agent', label: 'AI readiness', blurb: 'is-agentic' },
   { id: 'analysis', label: 'Analysis', blurb: 'Written reading' },

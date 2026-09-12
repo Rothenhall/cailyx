@@ -154,7 +154,7 @@ export function runFor(agentKey: string, ctx: RunContext): RunOption {
         },
       };
 
-    case 'geo': {
+    case 'aeo': {
       if (ctx.querySets === null) return { blocked: 'Checking for a query set…' };
       const usable = ctx.querySets.filter((q) => q.items.length > 0);
       if (usable.length === 0) {
