@@ -9,6 +9,1079 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-13 — One SERP vendor, and the cache bug that was waiting for Redis
+
+Cailyx was paying two vendors for the same search. `serp-intelligence` and
+`keyword-research` used DataForSEO; `digital-presence` used Serper.dev to find
+unlinked social profiles. Serper is gone.
+
+**The economics were never in Serper's favour.** DataForSEO Standard is
+**$0.0006** per query and Live **$0.002**, against Serper's ~$0.001 — on an
+account that is already funded. Two vendors also meant two auth paths, two cost
+models, and two places for a bug to hide.
+
+There is now one `DataForSeoSerpService`, exported from `serp-intelligence` and
+consumed by `digital-presence`. The candidate-classification logic that made the
+sweep trustworthy — the signature table, the share-widget rejection, the
+name-variant search — is untouched; only the transport changed.
+
+**The bug found on the way, which matters more than the consolidation.**
+`FetcherService`'s cache key was `(url, userAgent)` — **with no request body**.
+Every DataForSEO call posts to the *same* URL with the keyword in the body, and
+the default TTL for that path is 30 minutes.
+
+So in `serp-intelligence`, every SERP call inside a half-hour window returned
+**the first keyword's results**. A ten-keyword tracker would store the same SERP
+ten times: wrong rankings, indistinguishable from right ones, with no error
+anywhere.
+
+It had never fired, because `CacheService` short-circuits when Redis is down and
+Redis was not running. It would have activated **silently** the moment anyone
+started Redis — which happened later the same day. The key now includes a SHA-1
+of method+body; a plain GET keeps its original key, so no existing entry is
+orphaned. Verified against live Redis: two different query bodies produce
+distinct keys and read back their own results.
+
+**Credit discipline**, in order of effect:
+
+1. **Seven-day cache.** The largest saving by far, and only safe because of the
+   key fix above. A `site:instagram.com "Acme"` result does not move hour to hour.
+2. **Cache hits are not counted as spend.** Counting them would tell the operator
+   credits went out when none did — and the budget guard, which prices the next
+   run off that number, would refuse runs that are actually free.
+3. **`depth: 10`, fixed.** DataForSEO bills per ten results; asking for twenty
+   doubles the charge and nothing here reads a second page.
+4. **Opt-in per run**, and only platforms still missing after the free crawl are
+   searched at all.
+5. **Real cost recorded.** `PresenceDiscovery.serpCostUsd`, read off the response
+   envelope — the same discipline the OpenRouter and Cloro paths follow. Never
+   estimated.
+
+**Credentials.** Verified live against `/v3/appendix/user_data`, which is free —
+account `office@rothenhall.com`, balance $51. They had been added as
+`DATA_FOR_SEO_API_LOGIN` / `_PASSWORD`, while every module reads
+`DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD`; as written they would have done
+nothing at all. Renamed.
+
+**Verified end to end at zero spend.** A presence discovery with
+`searchWeb: true` returns `SWARM_ALLOW_LIVE=1 is required before any paid SERP
+call` — the exact string from `DataForSeoSerpService.availability()`, which
+proves the new path is the live one and the Serper path is gone. That master
+switch stays off; turning it on is an operator decision, not a code one.
+
+**Also fixed: the backend's repeated death.** `jobs/pipeline-queue.service.ts`
+created its ioredis client with no `error` listener. An `error` event with no
+listener is fatal in Node, and with `maxRetriesPerRequest: null` it retried
+forever — so a Redis that simply was not running took the API process down in a
+loop. Both the main and the `duplicate()`d worker connection now log at warn
+instead. The queue is optional infrastructure and must never be able to kill the
+API.
+
+**Two smoke failures, neither a code regression.** The full harness reported
+11/13 scripts. `authority` failed at project creation with a 429 — global
+throttle (100 req/60s per IP), tripped only because thirteen suites run
+back-to-back from one address; it passes 22/22 in isolation. `digital-presence`
+failed one assertion the same way, but that one reproduced alone: `POST
+/social-activity` is throttled at **2 per 60s**, deliberately tight because a
+call that got through would spend real Apify credit, and the script makes three
+calls in a row. The third was guaranteed a 429 on every run, which read like a
+validation regression and was not one. The endpoint is right; the script now
+waits out the throttle's own TTL before the third call. `digital-presence` is
+**61 passed / 0 failed / 1 skipped**.
+
+**Not done:** DataForSEO also sells an **AI Optimization API** — LLM Scraper at
+$0.004 per results page returns real ChatGPT and Gemini responses, which is the
+job Cloro does today on a separate trial account. Same "why two vendors"
+question, different decision, not taken here.
+
+---
+
+## 2026-09-12 — External presence: DataForSEO business data + Apify social activity (wave 6, step 5)
+
+Closed the two gaps `digital-presence`'s own `assessment.notMeasured` named
+since it shipped: "social activity" and "review content and ratings" (decisions
+D2/D7, `docs/analysis/wave-6-audit-pipeline.md`). Extended the existing
+`digital-presence` module rather than adding a new one, per its own doc's
+framing ("ahead of the Apify step").
+
+**Business profile + reviews (D2).** `PresenceDataForSeoService` calls
+DataForSEO Business Data → Google My Business Info (profile, hours,
+categories, rating) and Google/Trustpilot/Yelp Reviews (rating + count
+only — no sentiment is invented over review text), reusing
+`serp-intelligence`'s Basic-Auth convention (`DATAFORSEO_LOGIN`/
+`DATAFORSEO_PASSWORD`, gated on `SWARM_ALLOW_LIVE=1`). New
+`POST /projects/:id/presence/business-profile`; new `PresenceProfile` /
+`PresenceReview` models, append-only (a business profile drifts, so each pull
+is a new snapshot, never an upsert). Neither credential is set in this
+environment — verified the honest 503 end-to-end against a live local
+backend, naming exactly what is missing, never a fabricated empty profile.
+
+**Social activity (D7).** `PresenceApifyService` runs the actors D7 selected
+per platform (LinkedIn, Instagram, Facebook, X/Twitter by default; YouTube/
+TikTok configured but off), async-only (`POST .../actors/{id}/runs` → poll →
+`GET .../datasets/{id}/items`, never the 300s sync variant), normalising each
+actor's very different raw output into one `PresencePost` shape at the
+adapter boundary. `APIFY_API_KEY` is a real key with real spend attached
+(`FREE` plan, $5/month), so `POST /projects/:id/presence/social-activity`
+requires an explicit `confirmSpend: true` — checked before the project is
+even looked up — mirroring the module's existing `searchWeb` opt-in on
+`/discover`. **No live Apify call was made at any point building or testing
+this** — the adapter is built and reviewed strictly against D7's documented
+request/response shapes; only the opt-in refusal path is exercised by the
+smoke suite, by design, since a positive-path assertion would have to spend
+real credit to pass.
+
+`GET /presence`'s inventory now returns `businessProfile`, `reviews[]` and a
+per-platform `socialActivity[]` cadence/engagement summary (derived purely
+from stored rows — reading the inventory never triggers a pull or spends
+anything), and `assessment.notMeasured` changed shape from a bare string list
+to `{ label, state, note }[]`, three-valued the same way `PresenceAccount.state`
+already is: `not-built` (no code yet — e.g. directory-listing completeness),
+`not-configured` (built, credentials absent here), `not-run` (built and
+configured, nobody has pulled it for this project yet). An entry disappears
+entirely only once all three are satisfied.
+
+`backend/smoke/digital-presence.smoke.sh` extended (not duplicated): asserts
+the 503 for the DataForSEO path and that the Apify endpoint refuses to run
+(and stores nothing) without a genuine `confirmSpend: true`, with an unknown
+platform also rejected by validation — zero-spend, as the harness's header
+comment already promises. `npx tsc --noEmit` clean, no `any`.
+
+## 2026-09-12 — Competitors: first-class rows + light profile + gap comparison (wave 6, step 6)
+
+New `competitors` module (decision D4, `docs/analysis/wave-6-audit-pipeline.md`):
+promotes `Project.competitors` (JSON `{name,domain}[]`) into first-class
+`Competitor` rows and builds a light profile for each — a homepage tech-stack
+scan (reusing wave-6 step 3's `TechStackService.scanDomain` unchanged), a
+schema.org/JSON-LD read (`FetcherService.fetchSchema`), and whatever SERP/AEO
+presence already exists for that competitor, attached by reference (never a
+fresh SERP or AEO run — this module only reads what `serp-intelligence` and
+`aeo-audit` have already measured). Explicitly **not** in scope per D4:
+running the full `technical-audit` module per competitor. `Project.competitors`
+stays populated and readable — additive, not a migration.
+
+`POST /projects/:id/competitors/discover` (merges an optional explicit list
+with the JSON column, upserts + profiles), `GET /projects/:id/competitors/profiles`
+(latest profile per competitor), `GET /projects/:id/competitors/gap` (a plain
+tech/schema presence diff plus each competitor's AEO/SERP status — no
+invented composite score).
+
+**Routing note:** the wave-6 doc's API table lists the list endpoint as bare
+`GET /projects/:id/competitors`, but that exact path is already owned by
+`ProjectsController` (the named-competitor list + SERP-discovered candidates
+the RivalsPanel frontend reads). Adding an identical route would have silently
+shadowed it, so this module's list endpoint lives one segment deeper
+(`/competitors/profiles`) instead of touching a live, frontend-consumed
+response shape.
+
+Verified end-to-end against a live local backend with real domains
+(cloudflare.com, stripe.com): `backend/smoke/competitors.smoke.sh`, 20/20
+passed — promotion (JSON + explicit merge), a completed profile with a
+`TechStackScan` reference, honest `"unknown"` AEO/SERP attachment on a fresh
+project (no prior audit/tracker to attach), a domain-less competitor's
+profile correctly `"skipped"` rather than crashing, and the gap diff
+correctly attributing Cloudflare's CDN signature to `competitorsOnly` once
+the client's own (deliberately unresolvable) domain scan fails honestly.
+`npx tsc --noEmit` clean, no `any`. Left out for v1: crawling high-signal
+pages beyond the homepage — see the module's `LEFT-OUT.md` for why (the
+fetcher's schema helper doesn't surface HTTP status, so a multi-page crawl
+couldn't yet distinguish "no JSON-LD here" from "this page didn't load"
+without doubling the request count).
+
+## 2026-09-12 — The console gets navigation, and the backend gets read
+
+An audit of what the frontend actually reaches found the real problem, and it was
+not styling: **39 modules, 231 endpoints, the frontend touching about 40 routes.**
+The console was a *launcher* for work whose results were then invisible. Ten of
+twelve agent cards could only run things — a form, a button, a one-line toast —
+while the output went into the database unread.
+
+**A navigation rail (`NavRail`).** The console had no navigation at all: a fixed
+three-band canvas plus four full-screen workspaces, each reached from inside an
+unrelated surface. Competitors sat four clicks deep behind an agent card, tech
+stack was the fifth section of the Technical audit, keyword research had no route
+whatsoever. Seven destinations now, one click each. The rail never hides — the
+responsive cliff that drops the Audits card below 1000px is survivable because
+those figures exist elsewhere, but losing the only route to a section is not.
+
+It is deliberately a router, not a dashboard: no counts, no badges. A nav that
+reports state has to be kept in sync with that state, and a stale badge is worse
+than none.
+
+**`AgentReports` — one component, config per module.** The instinct is a bespoke
+workspace each; that is exactly how four workspaces ended up behind four
+unrelated doors, and repeating it eight more times makes navigation worse, not
+better. Each module supplies ~15 lines mapping its own shape onto a common row.
+Six modules read today — authority, SERP, mentions, council, journeys, personas —
+and `notMeasured` is **mandatory** in every config, because the costliest failure
+in this product is a reader taking an absence for a finding. A failed fetch is
+rendered as a failed fetch, never as a result of zero.
+
+**`KeywordsWorkspace`** — the module that had endpoints and no UI. One rule
+shapes it: DataForSEO returns Google Ads *advertiser* competition, so the column
+is **"Ad competition"**, never "Difficulty". Relabelling it would have an SEO lead
+planning against a number that means something else.
+
+**`DeliverablesWorkspace`** — `reporting` and `scorecard` had no UI at all, which
+meant the thing the business sells was the one thing the console could not
+produce. Visibility is stated on every row and never inferred: a control that
+quietly defaults to public is a data leak with a nice animation. Reports show
+when they were generated, because they snapshot findings rather than tracking
+them — without the date an operator sends a client a report that predates the fix
+they just shipped.
+
+**`AuditsSection`** — splits the old card's two contradictory jobs. The card keeps
+the summary on Overview; this section owns launching. One job each.
+
+**Four shape mismatches caught by checking rather than assuming:** `/tech-stack`
+returns `{ scan }` wrapped, scorecard's list returns a bare array, report
+visibility is `PUT` not `PATCH`, and the keyword `GET` is enveloped as `{ sets }`.
+All four would have compiled and failed at runtime.
+
+**A layout bug the first paint caught.** The Flywheel is `absolute left-0` with a
+`-50%` translate — half of it *deliberately* hangs off its container's left edge.
+That container used to be the window, so the wheel emerged from the window edge.
+With the rail in front of it, the same overflow rendered the wheel **on top of the
+navigation**. The canvas is now clipped, so the rail becomes the wall the wheel is
+welded to. (The Context drawer is flush `right-0` and never protrudes, so nothing
+else is affected by the clip.)
+
+**Monitoring joins `AgentReports`** — the only module returning a single object
+rather than a list. Rather than bend it into a fake list of one, its figures
+*become* the rows, which is what a snapshot actually is. No tone colouring on
+them: a score is not a pass or a fail without a target, and colouring it as one
+would invent a threshold nobody set.
+
+**Verified:** `tsc` and eslint clean across both sides; the rail confirmed
+rendering in the real canvas. **Not verified:** the populated states — the browser
+session expired mid-pass and I do not enter credentials, so every section's
+with-data rendering is unconfirmed. Plan: `docs/analysis/ui-ux-refinement.md`.
+
+---
+
+## 2026-09-12 — Competitors workspace + tech stack in the UI (wave 6, step 8)
+
+The last step in the wave. Three modules had working backends and no way to reach
+them from the console; two of them now do.
+
+**Competitors workspace** — five tabs (Overview / Presence / Tech / Schema /
+Rivals), matching the AEO and Presence pattern. Reached from `RivalsPanel`, which
+was already "the competitive surface", rather than as a fifth tile on the Audits
+card — that card is a list of *disciplines*, and competitors is not one, so
+adding it there would have made the card stop meaning what it means.
+
+Three rules the layout enforces:
+
+- **`unknown` is not `absent`.** A rival whose `aeoStatus` is `unknown` means no
+  completed audit exists to attach — nobody has looked. Rendering that as "not
+  present" would report an unasked question as a negative finding, which is the
+  same error the presence module's `not-checked` state exists to prevent.
+- **`competitorsOnly` leads every diff.** What rivals have and the client does
+  not is the half a client acts on; `clientOnly` is reassurance and sits last.
+  The order *is* the argument.
+- **An empty client side is called out explicitly.** With nothing recorded on the
+  client's own side, every rival signature shows as a gap — the view says so
+  rather than letting a missing scan read as a competitive deficit.
+
+**Tech stack on the Technical audit** — a new `stack` section beside Structure.
+Deliberately **not** folded into the audit score: a CMS is not a defect, and
+scoring "uses WordPress" would turn a fact into a judgement the rubric cannot
+defend. Each row prints the evidence that triggered it, because a detection you
+cannot check is indistinguishable from a guess. A failed scan says so as a *fetch*
+problem, not as a finding about the stack.
+
+**This also closed the one item left unverified from the previous round.** The
+per-competitor presence crawl (step 6) had compiled but never been seen working —
+I had killed its probe by restarting the backend underneath it. Run properly
+against `rothenhall.com` and its three real rivals, all three profiled, and the
+gap produced an actual finding:
+
+```
+client platforms: linkedin
+they have, you do not:  x        <- Athena, Peec AI
+                        youtube  <- Peec AI
+shared:                 linkedin
+```
+
+**Left:** `keyword-research` still has no UI — outside this step's bullet, but it
+leaves that module reachable only by API. `tsc` and eslint clean on both sides;
+all three endpoint shapes the new UI consumes verified live.
+
+---
+
+## 2026-09-12 — Image/alt coverage + duplicate content (wave 6, step 7)
+
+Stage 4's residue, and the last backend step in the wave. Thin content already
+existed; these are the two that did not.
+
+**Image/alt coverage** — new `images-missing-alt` code. The distinction the whole
+check turns on: **a missing `alt` attribute is the fault; `alt=""` is not.** An
+empty alt is the correct, deliberate marker for a decorative image. Flagging it
+would tell a client to "fix" markup that is already right — and worse, train them
+to stuff junk text into an attribute whose emptiness was the point. The extractor
+drops anything the author marked decorative (`alt=""`, `aria-hidden="true"`,
+`role="presentation"`, 1x1 tracking pixels) before counting, so the denominator is
+images that were *supposed* to describe something.
+
+Band is 25% missing, not zero: one undescribed image out of twenty is a typo, and
+flagging it would bury the page where half of them are undescribed. A page where
+**every** image lacks alt trips regardless of ratio.
+
+**Duplicate content** — new `duplicate-content` code, applied run-level after the
+crawl, because a single page cannot know it is a duplicate. Exact matches only,
+on a whitespace-normalised fingerprint. Near-duplicate detection needs a
+similarity threshold, and a threshold is a number this module would have to
+invent and then defend to a client; an exact match is a fact — these two URLs
+serve the same copy.
+
+**Every** page in a duplicate group is flagged, not just the later ones. Without
+knowing which URL the client treats as canonical, nominating one as "the
+original" would be a guess dressed as a finding. Errored pages are skipped —
+they carry no copy to duplicate, and are already reported as `page-error`.
+
+`AuditPage` gains `imageCount`, `imagesMissingAlt` and `contentHash`. The hash is
+compared **within** a run only; across runs, a site-wide copy change would make
+every page look newly duplicated.
+
+**The checks also had to be *reported*, not just stored.** `summarisePages` had
+named roll-ups for JSON-LD, titles and meta and nothing for alt, duplicates or
+even thin content — so the new codes sat in the generic `issueCounts` map for
+someone to notice. Added `pagesThin`, `pagesWithMissingAlt`,
+`pagesWithDuplicateContent`, and site-wide `imagesTotal` / `imagesMissingAlt`
+summed over **every** crawled page rather than only flagged ones: "31 of 212
+content images have no alt text" is a work item, where a list of flagged URLs is
+just a diagnosis. The `page-inventory` finding now says so in prose, each clause
+appearing only when there is something to say — a clean site should not read as a
+list of zeros.
+
+**Verified:** 10/10 rule cases — band edges (5-of-20 clean, 6-of-20 flagged),
+all-missing regardless of ratio, errored pages reporting only `page-error`, null
+hashes not grouped with each other, whitespace normalisation — plus the extractor
+over real markup: 4 content images / 2 missing from a sample containing an empty
+alt, an `aria-hidden`, a `role="presentation"` and a tracking pixel; and the roll-ups over a mixed page
+set (1 alt-flagged, 2 duplicates, 1 thin, 36 images / 13 missing), confirming
+null image counts on errored pages are ignored rather than summed as zero-width
+holes. `tsc` clean.
+
+---
+
+## 2026-09-12 — Closing the remaining gaps in steps 0–6
+
+A bullet-by-bullet re-audit of steps 0–6 found six items that had been written
+down but not built. Four are now done; one is blocked on credentials and one is
+a deliberate, documented deviation.
+
+**Competitor presence (step 6's biggest gap).** The plan says step 6 orchestrates
+*steps 3–5* per rival; it ran step 3 and attached existing SERP/AEO, but never
+step 5 — so the gap report compared **tech stacks and nothing else**. Each
+competitor's own site is now crawled with `PresenceDiscoveryService.crawl`,
+reused unchanged (it already took a bare domain, so it was competitor-ready),
+and `GET /competitors/gap` gained a **`presence` diff** beside tech and schema.
+"Three of your four rivals are on Clutch and you are not" is a decision a client
+acts on; a tech-stack diff is trivia. Company profiles only — a rival founder's
+personal LinkedIn is not their company's footprint, and counting it would inflate
+the very comparison this feeds. Crawl only: DataForSEO/Apify spend real money per
+entity, and silently multiplying that by the competitor count is not a cost
+anyone asked for.
+
+**`byMarketSurface` (step 2).** Existed only as a word in a code comment.
+`byMarket` alone says "weaker in GB"; `bySurface` alone says "weaker on Gemini";
+only the cross says *Gemini in GB* is the hole — and that is the one an operator
+can act on. Populated only when more than one market was measured, since on a
+single-market audit it would just repeat `bySurface` with a redundant column.
+Each cell carries **its own** run status, so an engine that failed in one market
+but worked in another cannot inherit the aggregate and vanish.
+
+**Consistency rules shared, not duplicated (step 5).** The plan said reuse
+`entity-audit`'s descriptor logic; `digital-presence` had no consistency check at
+all. The rules are now extracted into `entity-audit.consistency.ts` (pure, no
+Nest, no Prisma) and **both** modules import it — two modules disagreeing about
+what a name match is would be worse than either rule alone, since the same client
+would read as consistent on one screen and inconsistent on the next.
+
+Two rules, because a recorded name and a fetched page title are not the same
+evidence. `namesMatchExactly` is strict: an operator typing "Acme" against "Acme
+Ltd" is a real inconsistency, and fuzzy-matching it away hides exactly what the
+check exists to find. `titleIdentifies` is containment, matching what
+`fetcher.verifyUrl` already does — platforms pad titles ("Acme Ltd | LinkedIn"),
+so equality there would mark every genuine profile a mismatch. Accounts now carry
+`nameConsistency`; no title (every walled platform) stays `not-checked` rather
+than defaulting to a verdict.
+
+**Cloro concurrency is now a contract, not an accident (step 1).** The executor
+runs prompts sequentially, so concurrency was 1 by coincidence. `CloroClient`
+now enforces it with an in-flight gate and FIFO queue read from
+`CLORO_MAX_CONCURRENCY` (default 1), so nothing upstream parallelising can
+silently exceed the plan and start getting tasks rejected mid-run. Slots release
+in a `finally` — a thrown task must not permanently shrink the pool.
+
+**Left, honestly:** DataForSEO Business Data and per-competitor keyword research
+both need `DATAFORSEO_LOGIN`/`PASSWORD`, still unset — blocked on credentials,
+not on code. And Cloro submission still uses `/v1/async/task` rather than the
+planned `/v1/async/task/batch`: the adapter's own docstring records that the
+batch schema was never confirmed, and guessing at it without a live call would
+trade a working path for an unverified one. Same cost, more round-trips.
+
+---
+
+## 2026-09-12 — Closing the two deferred bullets in steps 0–6
+
+A sweep back over steps 0–6 found everything structurally present, and exactly
+two things that had been written down as deferred rather than done.
+
+**1. Pre-flight budget (step 0's deferred bullet).** Step 0 shipped without the
+credits-vs-allowance display because credits had no meaning until the Cloro
+adapter existed. It does now. `GET /projects/:id/aeo/budget?surfaces=&tier=&runCount=&markets=`
+prices a configuration before it runs, and the AEO workspace shows it live while
+the operator is still choosing.
+
+The run-time guard already refused an unaffordable run — but learning it *after*
+the click is the wrong place. Browser surfaces report **0** credits, because a
+subscription pays for them and a fabricated per-call price would corrupt the
+total. When the balance cannot be read, `remaining` and `fits` are **null** with
+the reason stated: an unknown balance is neither sufficient nor insufficient, and
+a reassuring tick on a guess is worse than no tick.
+
+The first live call earned its keep: **228 credits remaining, `trial` × 3 engines
+needs 325** — a run that would have been refused mid-flight, now visible before
+pressing anything.
+
+**2. Demand weighting (step 4's unbuilt bullet).** `generateMatrix` now takes an
+optional `DemandIndex` — keyword → monthly search volume, read from the project's
+latest `KeywordSet` — and orders the client's services by measured demand.
+
+This matters most where the budget is tightest. Verified on a synthetic context
+whose services were deliberately ordered worst-first: the `trial` tier's single
+service-discovery prompt moved from *"who provides driver onboarding"* (no
+demand) to *"who provides dispatch automation"* (9,900/mo). Same prompt count,
+deterministic across repeat runs, and an empty index is byte-identical to no
+index at all.
+
+**Ordering only.** No prompt is invented, dropped or rewritten because of a
+volume number — cells are still built from the client's own context, so a stale
+or wrong keyword set can reorder the matrix but can never put a service in it
+that the client does not sell. Services with no matching keyword keep their
+original order and sit *after* the matched ones: absence of a volume figure is
+not evidence of low demand. Keyword matching is deliberately blunt (either term
+containing the other, normalised) — fuzzy matching would start pairing things a
+human would not, and a wrong pairing here emphasises the wrong offering.
+`GeneratedMatrix.demand` records what was applied, so an oddly-ordered matrix can
+be traced to the volumes that ordered it instead of looking arbitrary.
+
+Both are additive and gated: no Cloro key → the budget line hides; no keyword
+research → the matrix generates exactly as before.
+
+---
+
+## 2026-09-12 — Keyword research (wave 6, step 4)
+
+New `keyword-research` module: search volume, competition/CPC, and
+related/long-tail suggestions for operator-supplied seed keywords, via
+DataForSEO Keywords Data — the same vendor account already wired for
+`serp-intelligence` (decision D5, `docs/analysis/wave-6-audit-pipeline.md`,
+stage 10 pulled forward). `POST /projects/:id/keyword-research` (body:
+`keywords[]`, optional `locationName`/`languageCode`/`includeRelated`) and
+`GET /projects/:id/keyword-research?setId=&minVolume=` run synchronously, no
+job queue. "Difficulty" is reported honestly as DataForSEO's Google Ads
+advertiser-competition fields (`competition`/`competitionIndex`) rather than
+relabelled into an organic-SEO metric this vendor endpoint doesn't provide.
+Gated on `SWARM_ALLOW_LIVE=1` + `DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD`,
+neither of which is set in this repo's `.env` — verified the honest 503 path
+(no `KeywordSet` row written) end-to-end against a live local backend, plus
+input validation and 404 ownership checks: `backend/smoke/keyword-research.smoke.sh`,
+8/8 passed. A real paid DataForSEO call was out of scope for this pass (no
+credentials in this environment). Left out for now: automatic seed
+derivation from `SiteContext.services` (explicit `keywords[]` input only in
+v1) and feeding the AEO matrix generator a demand weighting — an optional
+stretch goal, not attempted — see the module's `LEFT-OUT.md`.
+
+## 2026-09-12 — Markets picker/tab, and Cloro surfaces reachable from the UI (wave 6, steps 1-2 leftovers)
+
+Two frontend gaps closed after a status pass over wave-6 steps 0-3.
+
+**Markets (step 2).** The AEO workspace had zero market/geo UI even though the
+backend has fully supported multi-market runs since D8. Added a Markets
+toggle group to the run-config bar (sourced from the site's own ranked
+`context.markets`, capped at 5, empty selection lets the backend apply its
+own top-ranked default) and a Markets results tab, shown only when an audit
+actually measured more than one market. Verified end-to-end against the real
+`rothenhall.com` demo project: a mock-surface run with `markets: ["US","GB"]`
+produced the exact `counted.byMarket` shape the new UI expects.
+
+**Cloro surfaces (step 1).** The frontend's `AeoSurface` type and engine
+picker only ever listed the three `-browser` surfaces — the five `cloro-*`
+surfaces built in step 1, which wave-6 D1 calls *the default path* (no
+session file, no ToS exposure), were impossible to select from the UI at
+all. Added them to the type and the engine picker (offered first; the
+`-browser` trio remains, both for operators with a session configured and as
+Cloro's automatic fallback).
+
+## 2026-09-12 — Tech-stack fingerprinting (wave 6, step 3)
+
+New `tech-stack` module: deterministic technology detection (CMS, ecommerce,
+hosting/CDN, analytics, ads, CRM, chat, tag managers, A/B testing) from a
+single fetch's headers, HTML and scripts — no vendor, no API key, no
+per-lookup cost (decision D3, `docs/analysis/wave-6-audit-pipeline.md`).
+`POST /projects/:id/tech-stack/scan` (optional `domain` override, defaults to
+the project's own) and `GET /projects/:id/tech-stack` run synchronously, no
+job queue. A blocked/unreachable domain is stored as `status: "failed"`, HTTP
+200, never a 500. Verified live: real Cloudflare detection against
+`cloudflare.com`, honest failure against an unresolvable domain — see
+`backend/smoke/tech-stack.smoke.sh`. Left out for now: cookie-based
+signatures (fetcher doesn't parse `set-cookie`) and JS-rendered tags (would
+need a Playwright render) — see the module's `LEFT-OUT.md`.
+
+## 2026-09-12 — The company footprint, not the founder's; and stage 2 gets its *analyse* half
+
+Two corrections after reading the delivery flowchart properly. Both were mine.
+
+**1. I let a founder into a company audit.** Yesterday's fix kept a declared
+`sameAs` profile that had been silently dropped — a Google Scholar page. Keeping
+it was right; *counting it as company presence* was not. `rothenhall.com` declares
+an `Organization` (company LinkedIn) and a `Person` (personal LinkedIn + Scholar).
+Reported flat, that reads as **3 company profiles**. The truth is **1**.
+
+Every row now carries `entity` — `company` | `personal` | `unknown` — decided by
+**the site's own schema `@type`** first (a `sameAs` under `Person` is a person's),
+then the URL shape (`/company/` vs `/in/`, and Scholar/ORCID as always personal).
+Personal rows are excluded from every count, cannot close a gap, and render in a
+separate section. The SERP sweep now searches `site:linkedin.com/company` for the
+same reason.
+
+**2. Stage 2 is five discover/analyse pairs; I had built only the discover half.**
+The flowchart's "External Presence & Reputation" asks for Social Profiles,
+Industry Directories, Business Profiles, Marketplaces and Review Platforms — each
+with an *Analyze* step beside it. The module produced an inventory and no
+analysis.
+
+`GET /presence` now returns an `assessment`: `headlines` (plain language, worst
+first, no score), `coverage` per category (`covered`/`partial`/`absent`/
+`not-checked`), and **`notMeasured`** — what the module cannot see yet, named
+explicitly rather than implied by silence. The workspace leads with an **Analysis**
+tab.
+
+**The bug that made stage 2 structurally impossible.** The expected-platform list
+was social-only, so directories, reviews and marketplaces could never be a gap —
+four of five categories read "not checked" forever. Expected platforms are now
+keyed on an inferred business type (B2B services / B2B software / local services /
+consumer brand), taken from the client's own category text. The assessment prints
+the type *and* the text it was inferred from, so a wrong guess is arguable instead
+of invisible.
+
+On `rothenhall.com` — read as "B2B services / consultancy" from *"b2b growth
+operating partner"* — this turns a bare account list into findings:
+
+```
+1 company profile found across 1 category.
+Industry & business directories: none found.   (Clutch, Crunchbase)
+Review platforms: none found.                  (Glassdoor)
+Social media profiles: X / Twitter missing.
+2 personal profiles recorded separately and excluded from the counts above.
+```
+
+**Verified:** `digital-presence.smoke.sh` **50 passed, 0 failed, 1 skipped**,
+including the invariant that adding a personal profile does not move the company
+total. `tsc` clean both sides.
+
+---
+
+## 2026-09-12 — Declared `sameAs` profiles are no longer silently dropped
+
+Chasing "why does rothenhall.com only show LinkedIn?". The answer to the question
+as asked is **the site only links LinkedIn** — two URLs, both LinkedIn, and the
+module reported that correctly. But the investigation found a real defect beside
+it.
+
+`rothenhall.com` declares this in its schema markup:
+
+```json
+"sameAs": ["https://www.linkedin.com/in/kunalachintyareddy/",
+           "https://scholar.google.com/citations?user=8ajuQHEAAAAJ&hl=en"]
+```
+
+The Google Scholar profile matched no signature, so it was **discarded without a
+trace** — a client's own declared identity, lost to a missing regex, in a module
+whose entire job is "show everything we found".
+
+**The rule that was wrong:** the classifier was applied identically to page links
+and to `sameAs`. Those are not the same kind of evidence. For a page link, no
+match means *"probably a share widget"* and dropping it is right. For `sameAs`,
+the site's author has asserted ownership — there is no ambiguity to protect
+against, only a gap in our table. Unrecognised `sameAs` URLs are now kept as
+`platform: 'other'` ("Declared profile"); self-references are still skipped.
+
+rothenhall.com went 2 accounts → **3**, with the Scholar profile `confirmed`
+(it resolves, unlike the walled LinkedIn pages).
+
+**And the actual footprint question**, answered by running the opt-in sweep: 4
+queries surfaced one candidate, `instagram.com/rothenhall.partners` (60% name
+match), awaiting confirmation. Facebook, X and YouTube returned nothing — which is
+a finding, not a failure.
+
+**Verified:** `digital-presence.smoke.sh` 42/42, `tsc` clean both sides.
+
+---
+
+## 2026-09-12 — Google account discovery, as candidates; PageSpeed off the connectors list
+
+**PageSpeed Insights removed from the connectors panel.** `PSI_API_KEY` is a
+server-side key consumed by `technical-audit` for Core Web Vitals, not something
+an operator connects per workspace, so it no longer sits in the Google block
+pretending to be one. The roster went 11 → 10. **The capability is untouched** —
+CWV still runs; what is gone is the connector row and, with it, the only UI that
+warned when the key was unset.
+
+**SERP account discovery — the half I deferred, now done.** The site crawl only
+ever finds what a client chose to link; plenty of real accounts are not linked at
+all. I had skipped search purely on cost. With a Serper.dev key that objection is
+gone — but the *accuracy* objection never was, and the live data is emphatic:
+
+```
+site:instagram.com "HubSpot"
+  instagram.com/hubspot/           theirs
+  instagram.com/hubspotlife/       theirs
+  instagram.com/hubspotacademy/    theirs
+  instagram.com/reel/DWVj-HrjmeU/  a reel — classifier rejects it
+  instagram.com/hubshotspodcast/   a different company entirely
+```
+
+And for Notion the **top** name match (`instagram.com/notion`, 100%) is *not* the
+official account — `@notionhq` at 75% is, while `@ivanhzhao` and `@simonlast` are
+the founders. Any threshold would have picked wrong. So similarity is an ordering
+hint and **nothing branches on it**.
+
+Search results therefore land as `state: 'candidate'`, `source: 'serp'`: excluded
+from every count, unable to close a gap, and promoted only by an operator's
+explicit yes via `POST /accounts/:id/confirm` — after which they are `manual` and
+survive re-runs. The workspace gets a **Suggested** tab with "Yes, this is us" /
+"Not us".
+
+**Cost control, three layers.** The sweep is **opt-in per run** (`searchWeb:
+true`); it queries **only platforms still missing** after the crawl; and
+`PRESENCE_SERP_MAX_QUERIES` (default 5) caps a single run. Verified: a client
+holding 4 of 5 platforms spent **1** credit, not 5.
+
+**A zero-spend violation, caught and fixed.** The first working version swept on
+every discovery, and the smoke run duly burned 3 real Serper credits — in a
+harness documented as zero-spend by contract. A harness that quietly bills is
+worse than one that skips, so the sweep became opt-in and the smoke now *asserts*
+that a default run spends nothing and states why it did not search.
+
+**Two dedupe bugs the live runs exposed.** A Notion sweep first returned **20 rows
+for 16 accounts**:
+- LinkedIn's handle pattern was not end-anchored, so `/company/notionhq/life`,
+  `/jobs` and `/about` each stored as a separate URL. Canonicalisation now
+  truncates to the matched profile prefix.
+- Google returns `linkedin.com`, `do.linkedin.com` and `ar.linkedin.com` for the
+  same page; locale subdomains now collapse onto the base host. (Substack, where
+  the subdomain *is* the account, is resolved earlier and unaffected.)
+- Separately, YouTube's pattern *was* end-anchored, so `/channel/UC…/videos` was
+  dropped entirely rather than collapsed — a whole class of real channels missed.
+
+**Verified:** classifier 41/41 with no regression, plus 6 canonicalisation and 6
+case-folding cases; `digital-presence.smoke.sh` **41/41**; full suite **10/10
+scripts, 296 passed, 0 failed, 2 skipped**, with zero search credits spent.
+
+**Left for later:** `SERPER_API_KEY` is stored in `backend/.env` (gitignored) and
+placeholdered in `.env.example`. The UI for the paid sweep lives in the workspace's
+Suggested tab, where the credit cost is printed on the button rather than hidden.
+
+---
+
+## 2026-09-11 — Digital presence: discovery, gaps, and operator-supplied accounts
+
+A new module and a new card **above** the Audits card, answering the question
+that comes before any score: **where does this client exist online, and what do
+we actually know about them?**
+
+**Discovery costs nothing external.** `intake` was already parsing every outbound
+link on a client's homepage and classifying `instagram.com`, `facebook.com`,
+`linkedin.com` as "not a competitor" — then throwing them away. Those are the
+accounts. This module keeps them, plus JSON-LD `sameAs`, which is where a site
+declares its profiles machine-readably.
+
+**Two design rules, both load-bearing:**
+
+1. **Three account states, never two.** A logged-out fetch *cannot* verify most
+   social profiles — Instagram and Facebook serve login walls, LinkedIn answers
+   datacentre IPs with `999`. So a profile linked from the client's own footer
+   that we fail to fetch is `unverified`, **not** `missing`, and carries the
+   platform's own reason verbatim. Collapsing the two would report a working
+   account as absent and send an operator to fix something that is fine. Walled
+   platforms are not fetched at all: being told "log in" is the same answer as
+   not asking, more slowly, while looking like scraping.
+2. **Most links to a social host are not accounts.** `facebook.com/sharer.php`,
+   `twitter.com/intent/tweet`, `pinterest.com/pin/create/` and bare hostnames all
+   pass a naive host match, and each would be shown to a client as their account.
+   A candidate must clear host match, reject-pattern, *and* a platform-shaped
+   handle. 41/41 classifier cases pass, including every share-widget rejection.
+
+**The manual path is first-class, not a fallback.** When discovery finds nothing —
+common, and not an error — the operator pastes a URL. Platform and handle are
+derived from it, because they already encoded both when they copied the link. A
+later re-scan re-verifies operator rows but **never** downgrades their provenance.
+
+**Beyond social:** `GET /presence` also assembles identity, owned properties,
+connected data, answer-engine coverage and competitors from the five modules that
+own those facts, each line labelled with its source. Footprint rows are
+three-valued too — **`not-checked` is not `none`**; a module that never ran and a
+module that found nothing are different answers.
+
+**A bug the live test caught.** Against `hubspot.com` the first run reported **9**
+accounts, two of them TikTok: `@HubSpot` from JSON-LD and `@hubspot` from the
+footer. Handles are case-insensitive on these platforms, so one account was being
+stored and reported as two. Added `foldCase` per platform, with
+`caseSensitivePath` carving out YouTube's `channel/UCxxx` ids, which are *not*
+case-insensitive and would break if lowercased. Re-run: **8 accounts**, TikTok
+deduped, JSON-LD provenance correctly winning the tie.
+
+**Verified:** `digital-presence.smoke.sh` — **35 passed, 0 failed**, including the
+re-scan-preserves-operator-input rule and six false-positive rejections. Live
+against `hubspot.com`: 4 pages, 8 accounts, 5 JSON-LD / 3 page-link, zero false
+positives on a site full of share buttons.
+
+**Left for later:** social *activity* (followers, cadence, engagement) is wave-6
+step 5 via Apify — this module defines the accounts that step will enrich, which
+is why it landed first. Client-facing wording for `unverified` is still open (see
+the analysis doc §9): internally honest, but "found, not verifiable" may read as
+our failure rather than the platform's refusal.
+
+---
+
+## 2026-09-11 — `trial` matrix tiers (wave 6, step 0)
+
+Two small tiers for measuring on a **metered surface with a free allowance**,
+where the credit budget — not the analysis — is the binding constraint.
+
+- `TIER_SIZES` gains **`trial: 5`** and **`trial-wide: 10`**, joining scorecard /
+  standard / full. `MATRIX_TIERS` is now exported and the DTO enums read from it,
+  so the tier list exists in exactly one place.
+- **Approved sizing: `trial` = 5 prompts × 3 engines.** Cross-engine comparison is
+  the thing this audit does that nothing else does, so a scarce budget buys that
+  before it buys breadth. `trial-wide` (10 × 1 engine) answers the breadth
+  question instead.
+
+**The bug this exposed.** The generator floored *every* eligible dimension at one
+prompt before weighting, so a 5-prompt tier produced **10** — the tier meant to cap
+spend would have doubled it, quietly. When `target < eligible.length` the budget
+now goes to the `target` heaviest-weighted dimensions, one prompt each, and every
+unfunded angle is recorded in `skipped` with the reason. Ties break on declaration
+order so the split stays deterministic.
+
+**Verified** against a synthetic context: `trial` → 5 prompts / 5 categories,
+`trial-wide` → 10 / 10, identical across repeat runs, and `competitor-alternatives`
+and `head-to-head` both survive the cut. Smoke coverage added for all of it,
+including the "did the brief's two must-have categories survive" assertion.
+
+**Frontend:** the workspace defaults to `trial` and labels any sub-10 tier
+**"probe only — covers 5 of 10 angles"**. A five-prompt result must not be able to
+read as full coverage.
+
+**Also fixed: the smoke harness had an invisible dependency.** `run-all.sh` claims
+zero-spend via deterministic adapters, but three of those adapters are gated by env
+vars that lived only in a developer's shell — not in `backend/.env`, not in the
+harness. Starting the backend the documented way produced **5/9**, with four
+scripts failing on gate errors that read exactly like code regressions. The gates
+(`MEASUREMENT_ALLOW_MOCK`, `INTERNAL_LINK_ALLOW_FIXTURE`, `SERP_ALLOW_FIXTURE`) are
+now in `backend/.env` and named in the `run-all.sh` header. Verified: **9/9 scripts,
+255 passed, 0 failed, 2 skipped.**
+
+**Left for later:** the size selector shows calls and wall-clock, not
+credits-against-allowance. There is no credit concept until the Cloro adapter lands
+in step 1 — a number invented here would be a guess presented as a budget.
+
+---
+
+## 2026-09-11 — Three answer engines + the customer-facing AEO workspace
+
+**Perplexity and Gemini join ChatGPT**, and the audit now runs the *same* prompt
+matrix on each so they can be compared directly. That comparison is the point:
+"named on Perplexity, invisible on ChatGPT" is a finding a single-engine audit
+cannot produce.
+
+**Search stays in the browser; analysis stays on OpenRouter.** An API answer is
+not what a buyer sees, so every engine is the vendor's consumer product driven in
+headless Chromium with an operator-supplied session. (An OpenRouter-backed
+search adapter was built and then removed once that boundary was set.)
+
+- `browser-surface.adapter.ts` generalises the old ChatGPT-only adapter into one
+  base class plus a `SURFACE_PROFILES` table — only the per-site selectors,
+  block signals and own-host patterns differ. `chatgpt-browser`,
+  `perplexity-browser` and `gemini-browser` are thin subclasses.
+- Same contract as before, now across three vendors: **no CAPTCHA solving, no
+  stealth layer, no credential handling.** A challenge, block, rate limit or
+  signed-out session fails the observation with a typed reason and stops.
+- New typed reason `selector-drift`, which names the constant to update — the
+  failure mode most likely to bite, since each engine breaks whenever its vendor
+  changes the UI.
+
+**A failed engine no longer voids the audit.** New `AeoSurfaceRun` rows track
+each engine independently: status, observations, cost, and a `failureKind`. If
+Gemini is blocked while ChatGPT and Perplexity answer, the audit still completes,
+and the verdict's headline *names the engines absent from every number above*
+rather than quietly reporting a two-engine average as if it were three.
+
+**Schema.** New `AeoSurfaceRun`; `AeoAudit.surfaces` (JSON array, primary kept in
+`surface` for compatibility); `AeoStance.surface` so stance rolls up per engine
+without a join. All additive.
+
+**Verdict.** `counted.bySurface` gives per-engine mention / unbranded / citation
+rates, stance spread and rival-ahead counts. Share of voice deliberately stays
+single-engine — averaging SOV across engines would invent a number no engine
+produced.
+
+**Frontend — `AeoAuditWorkspace`**, a sibling of the SEO and Technical audit
+workspaces, wired to the existing AEO tile and the command palette. Five tabs:
+
+| tab | shows |
+|---|---|
+| Overview | unbranded visibility gauge, branded-vs-unbranded (never averaged), engine comparison, plain-language headlines |
+| Engines | one card per engine — including failures, in plain English |
+| Categories | the ten buyer intents ranked worst-first: the gap map |
+| Rivals | share of voice, and who gets named while you are absent |
+| Prompts | the losing/winning questions with verbatim answer quotes, plus the full matrix |
+
+Two UI decisions worth recording. **Counted and judged are visually separated
+everywhere** — every block carries a `counted` or `judged` tag with a tooltip
+explaining which numbers are safe to quote, so a reader cannot mistake an LLM
+opinion for a measured rate. And the run controls show engine choice, tier and a
+**wall-clock estimate** up front, because three engines at the standard tier is
+1,500 questions and several hours — the UI treats a run as a job, with a staged
+progress view and polling, not as a button that returns a result.
+
+**Verified.** `aeo-audit` smoke **44 passed / 0 failed / 1 skipped**, including
+six new multi-engine assertions: three engines recorded, a comparison row each,
+typed failure reasons on the gated ones, a dead engine not voiding the working
+one, and the headline naming what was not measured. Frontend `tsc` and
+`next build` clean; the workspace was driven in a real browser across all five
+tabs against live data.
+
+**Still unverified:** none of the three browser adapters has been run against a
+live signed-in session. The Perplexity and Gemini selectors in particular are
+written from their current DOM conventions and have **not** been confirmed — the
+first live run should use `AEO_BROWSER_HEADLESS=0` at `scorecard` tier, one
+engine at a time.
+
+## 2026-09-11 — `aeo-audit` analysis passes moved to OpenRouter (cheap model)
+
+The module's three LLM passes — context synthesis, matrix phrasing, stance
+judging — now run through a shared `AeoLlmService` that prefers **OpenRouter**
+and falls back to Anthropic. These are extraction and classification jobs, not
+writing jobs; a frontier model was wasted on them.
+
+**Model chosen by benchmark, not by price.** Candidates were run against the
+module's real stance task (four cases: subject absent / led / placed behind /
+warned about):
+
+| model | cases | avg latency | $/Mtok in → out |
+|---|---|---|---|
+| **`qwen/qwen3-30b-a3b-instruct-2507`** | **4/4** | **1.5s** | 0.048 → 0.193 |
+| `openai/gpt-oss-120b` | 4/4 | 7.7s | 0.037 → 0.170 |
+| `google/gemini-2.5-flash-lite` | 3/4 | 1.1s | 0.100 → 0.400 |
+| `openai/gpt-5-nano` | 0/4 | 16s | 0.050 → 0.400 |
+
+The cheapest passing model was not the right one: `gemini-2.5-flash-lite` failed
+the **absent** case, calling an answer that never named the subject
+`mentioned-neutral`. That single error class turns "you are invisible" into "you
+were mentioned" — the headline the audit exists to produce. `gpt-5-nano` burns
+its budget on reasoning tokens and truncates the JSON.
+
+**Cost comes from OpenRouter's reported `usage.cost`** — the real charge per call,
+not an estimate from a local price table that would drift — so the audit's cost
+governor is fed a true number.
+
+**Verified live, end to end:**
+- context synthesis: **$0.0006**, `extraction=llm-synthesized`
+- stance pass: **125 judgements, 0 failures, $0.0058, ~1.8s each**
+  (extrapolates to ~$0.02 / ~15 min for the 500-observation `standard` tier)
+
+**Four real bugs found by running it for real:**
+
+1. **Synthesis result was being unioned with the deterministic list**, which put
+   back exactly what the model had been asked to drop — `services[]` contained
+   "One accountable owner" and a founder's name alongside real offerings, and
+   every junk entry becomes a prompt like "companies that do <person>". A
+   successful synthesis now **replaces** that field; the deterministic list is
+   only used where the model returned nothing. Result on a real site: 19 noisy
+   candidates → **6 real offerings**, and `painPoints`/`outcomes` went from empty
+   to populated, which unblocked the `problem-framed` and `job-to-be-done`
+   categories that had been skipped entirely.
+2. **The verdict named the wrong judge model.** `judged.judgeModel` was read from
+   the Anthropic fallback env var, so a report said `claude-opus-5` when qwen had
+   actually run. Now read back from the `AeoStance` rows — the model that really
+   produced those judgements.
+3. **The phrasing pass bled the "terse" rule onto conversational prompts**,
+   flattening "Who can help me with RevOps? I run a fund." into "who can help me
+   with revops i run a fund". Fixed in the instruction *and* backstopped in code:
+   a conversational rewrite that lost its sentence case or terminal punctuation
+   is discarded and the template phrasing kept.
+4. **Grammar from placeholder interpolation** — "for a funds", "portfolio
+   companiess", "a service that solves No single owner of outcome". ICP values
+   now carry their own article and pluralisation, and pain/outcome fragments are
+   normalised into clauses. The `problem-framed` templates were reworked so every
+   slot is grammatical for both noun-phrase and clause-shaped pains.
+
+**Config.** `OPENROUTER_API_KEY` is read from the monorepo root `.env` (the
+backend already loads `['.env', '../.env']`). New: `AEO_LLM_MODEL`,
+`AEO_LLM_TIMEOUT_MS`, `AEO_LLM_REFERER`. `AEO_STANCE_JUDGE_MODEL` now applies
+only to the Anthropic fallback path. Removed the triplicated Anthropic client
+code from the three services.
+
+**No new npm dependencies** — OpenRouter is called over raw `fetch`, the same way
+`perplexity.adapter.ts` works.
+
+**Smoke.** Two assertions in `aeo-audit.smoke.sh` asserted "no key → 503", which
+is wrong in an environment that *has* a provider. They now branch on what the
+server actually reports, and the keyed branch is **skipped rather than exercised**
+— judging observations is real spend, and the harness is zero-spend by contract.
+
+## 2026-09-10 — smoke harness: stop `users.smoke.sh` poisoning the shared DB
+
+Three harness bugs found while verifying `aeo-audit` against the full suite. All
+three made *other* modules look broken; none were product defects.
+
+**1. `users.smoke.sh` demoted the shared smoke operator (the bad one).**
+The "cannot demote the last admin → 409" assertion demoted `smoke@cailyx.test`
+itself, assuming it was the only admin. On any dev.db with a second admin the
+demote **succeeds** (the service guard is correct — `adminCount() <= 1`), the
+assertion fails, and the operator every other script logs in as is left as
+`content`. Everything downstream then failed with `Role 'content' cannot access
+this resource`. Observed: a full run dropping to **6/9 scripts passed**, and it
+re-poisoned the DB on every subsequent run.
+Fixed by never touching the shared operator's role: the script now creates a
+throwaway admin and demotes *that*, asserting `200` (a non-last admin *can* be
+demoted — the guard must not over-trigger). The `409` branch needs a sole-admin
+database that cannot be manufactured without demoting the operator's real
+admins, so it is now an explicit `SKIP` with the reason rather than a
+false-failing assertion. Added a `trap EXIT` tripwire that reports loudly if the
+operator is ever left non-admin, and throwaway accounts are cleaned up on every
+exit path.
+
+**2. `serp-intelligence.smoke.sh` could not recover from its own leftovers.**
+Its domain is fixed (the fixture SERPs reference `acme-serp.example`), so a run
+that died before its cleanup trap fired left the project behind and the next
+create 409'd. It had a reuse fallback, but the fallback read `GET /projects` as
+a bare array when the endpoint returns `{projects:[…]}` — so it silently yielded
+nothing and the script hard-exited. Now parses both shapes and says when it
+reused a stale row.
+
+**3. `dashboard.smoke.sh` — a `|` inside a `node -e` body.**
+The journeys assertion built `a.headline+" | "+(a.metric||"")`. On Windows,
+Volta's node shim re-parses the command line and treats the bare `|` as a shell
+pipe: node never starts ("The system cannot find the path specified.") and the
+assertion compares against an empty string, regardless of the payload — which is
+correct and well-formed. Reproduced with no backend running. Separator changed to
+`" - "`; `||` is unaffected.
+
+Both rules are now documented at the top of `smoke/_common.sh` so they do not
+recur: never change the shared operator's role, never put a bare `|` in a
+`node -e` body.
+
+**Verified.** `smoke/run-all.sh` twice back to back against the same dev.db:
+**9/9 scripts both runs, zero failures, exit 0 both times** (was 6/9 before these
+fixes). Afterwards `smoke@cailyx.test` is still `admin`, with no throwaway
+accounts and no orphan `acme-serp.example` project left behind.
+
+Per-module, second run: aeo-audit 39/0, authority 22/0, council 22/0,
+dashboard 28/0 (was 27/1), internal-link 23/0, journey 43/0, persona 24/0,
+serp-intelligence 25/0, users 18/0 + 1 skip.
+
+**Not covered:** the sole-admin `409` branch takes the skip path on any database
+with more than one admin, which includes this one. It runs on a fresh dev.db,
+where the shared operator is the only admin — the environment the harness is
+designed for.
+
+## 2026-09-10 — `aeo-audit` module (ChatGPT-first answer-engine visibility)
+
+**What shipped.** A new `aeo-audit` module that takes a client URL and answers two
+questions: does ChatGPT name them when a real buyer asks, and when a competitor is
+named alongside them, which one does ChatGPT put in front.
+
+Pipeline: site context → prompt matrix → measurement (n≥5) → stance → verdict.
+
+**Built as an orchestrator, not a rewrite.** Most of the pipeline already existed:
+`fetcher` (crawl), `query-set` (versioned prompt storage), `measurement` (run
+orchestration, n≥5 floor, `SurfaceAdapter` registry, mention extraction). Genuinely
+new: the ChatGPT surface adapter, a deeper site-context extractor, the dimensional
+matrix generator, stance analysis, and the orchestrator/verdict.
+
+- **Site context** (`aeo-context.service.ts`) — crawls the client's own site
+  (homepage + sitemap-guided service/pricing/about pages), extracts services, ICP,
+  pains and outcomes. Deterministic layer always runs; one constrained-LLM synthesis
+  pass organises it when `ANTHROPIC_API_KEY` is set, and the row records which.
+- **Prompt matrix** (`aeo-matrix.generator.ts` + `.service.ts`) — ten buyer
+  categories including the two called out explicitly, competitor-alternatives and
+  head-to-head. Deterministic cells define coverage; an optional LLM pass rewrites
+  only the phrasing, and a rewrite that drops the named entity the cell exists to
+  test is rejected. Stored as a versioned `QuerySet` (`source="aeo-matrix"`), so it
+  inherits immutability-on-activation, versioning and client export.
+- **Prompt categorisation is persisted** — `QuerySetItem.dimension` (indexed) plus a
+  `meta` JSON carrying register, branded/unbranded, the service or competitor the
+  cell targets, and the template id. `AeoStance.dimension` copies it so results roll
+  up per category without a join. This is the curation surface: filter by category,
+  see which cells produced signal, hand-edit the rest.
+- **ChatGPT surface** (`measurement/adapters/chatgpt-browser.adapter.ts`) — drives
+  chatgpt.com in Playwright with an operator-supplied session. Added behind the
+  existing `SurfaceAdapter` interface, exactly where `measurement.types.ts` said a
+  ChatGPT adapter would go.
+- **Stance analysis** (`aeo-stance.service.ts`) — judges how each answer positioned
+  the client (`recommended-primary` … `absent`), which competitors it placed above or
+  below them, with a verbatim quote.
+- **Verdict** — `counted` and `judged` in separate blocks and separate tables.
+
+**Counted vs judged.** Every rate (mention, citation, share of voice) comes from
+deterministic counting over n≥5 repeats. Stance is an LLM opinion, stored apart,
+evidence-quoted, and never expressed as a rate — the `claims` module's provenance
+discipline applied to this module's output.
+
+**ToS note on the surface choice.** Decision D1-B: the operator chose the browser
+surface over the OpenAI API after reviewing the trade-offs. Automating chatgpt.com is
+against OpenAI's Terms of Use and the risk sits with whoever supplies the session. The
+adapter contains **no CAPTCHA solving, no stealth/anti-detection layer, and no
+credential handling** — when ChatGPT challenges, blocks or rate-limits, it fails the
+observation with a typed reason and stops. Off by default
+(`AEO_ALLOW_BROWSER_SURFACE=1` + a session file). The API adapter remains available to
+add later behind the same interface.
+
+**Schema.** New: `SiteContext`, `AeoAudit`, `AeoStance`. Modified (nullable-only, no
+data migration): `QuerySetItem.dimension`, `QuerySetItem.meta`, plus two indexes.
+`Surface` union widened with `chatgpt-browser`.
+
+**Dependencies.** No new npm packages, no new paid services.
+
+**Verified.** `backend/smoke/aeo-audit.smoke.sh` — 39/39 assertions, zero API keys,
+zero spend: context → matrix → 125 observations on the mock surface at n=5 → verdict,
+plus honest-gate checks (no key → `extraction=deterministic`, `refined=false`,
+`judged.available=false` with a reason, stance → 503; `runCount=3` → 400; completed
+audit re-run → 409; disabled browser surface → audit marked `failed`, never an empty
+verdict). `npx tsc --noEmit` and `nest build` clean.
+
+Also exercised against a real site (rothenhall.com), which surfaced and fixed three
+real extractor bugs: marketing sentences being captured as service names, a SPA
+catch-all inflating `pagesFetched` (8 phantom pages → 5 real ones, now content
+fingerprinted), and a `"this kind of service"` placeholder leaking into prompts —
+category now falls back to a real extracted service, or the cell is dropped and
+reported in `skipped`. Also tightened service extraction (single-word pricing
+tiers and process steps rejected, team/testimonial blocks excluded, a/an article
+fixed): 19 candidates → 10 on that site. Produced 90 clean prompts across 7
+categories.
+
+**Known limitation, documented not papered over.** Deterministic extraction is
+heading-based, so a site's values and team names can still land in `services[]`
+("One accountable owner", a founder's name) and get interpolated into prompts.
+The LLM synthesis pass is what resolves this — set `ANTHROPIC_API_KEY` for any
+client-facing run, and review `services[]` before activating a matrix built
+without it. Deliberately not chased with more heuristics: telling a value apart
+from a service without reading meaning is guesswork, and a wrong guess silently
+corrupts the matrix.
+
+**Left for later.** The browser surface has not been run against a live ChatGPT
+session — its selectors are written against the current UI but unverified end-to-end.
+First live run should use `AEO_CHATGPT_HEADLESS=0` and a `scorecard` tier to confirm
+the selectors before spending a full run. Multi-geo is recorded but not steered (no
+proxy egress). Frontend page not built.
+
+
 ## 2026-08-31 — Project switching: skeletons, no stale flash, competitors show
 
 - **Cards no longer blank (or show stale data) when you switch project or add a

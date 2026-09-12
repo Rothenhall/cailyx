@@ -78,6 +78,9 @@ Optional / later: `PERPLEXITY_API_KEY`, Google OAuth for GA/GSC, Stripe, Plunk (
 | `PLUNK_API_KEY` | Transactional email — report delivery + testimonial asks (`delivery`) | useplunk.com | `delivery/send` returns `email-unconfigured` 503. Reports are still viewable by link. |
 | `SCORECARD_PUBLIC=1` | Exposes the public Rung-0 scorecard route (`GET /scorecard/public/:token`, `@Public`) | you set it | Public scorecard link `404`s; operator-only scorecard still works. |
 | `REPORT_BRAND_NAME`, `REPORT_BRAND_TAGLINE` | White-labels the generated report | you set it | Falls back to "Cailyx" branding. |
+| `AEO_ALLOW_BROWSER_SURFACE=1` + `AEO_CHATGPT_SESSION_PATH` / `AEO_PERPLEXITY_SESSION_PATH` / `AEO_GEMINI_SESSION_PATH` | The three answer engines `aeo-audit` measures — the consumer ChatGPT, Perplexity and Gemini products | You supply them: sign in to each manually once, save the Playwright `storageState`. **⚠️ See §5.9 before enabling.** | Each engine without a session fails closed (`surface-disabled` / `no-session`) and is reported as "not measured". Other engines still run; context + matrix generation are unaffected. |
+| `OPENROUTER_API_KEY` (+ optional `AEO_LLM_MODEL`) | **All three `aeo-audit` analysis passes** — context synthesis (services/ICP/pains/outcomes), natural prompt phrasing, and competitive stance judging | openrouter.ai → Keys. Lives in the **monorepo root** `.env`; the backend loads `['.env', '../.env']`. Default model `qwen/qwen3-30b-a3b-instruct-2507` was chosen by benchmarking on the real stance task — see `docs/analysis/aeo-audit.md` §11.2 before changing it | Falls back to `ANTHROPIC_API_KEY`; with neither, context falls back to deterministic extraction, the matrix keeps template phrasing, and the stance pass returns 503. **Counted metrics are unaffected** — rates never depended on an LLM. Measured cost: ~$0.02 per 500-observation audit. |
+| `AEO_STANCE_JUDGE_MODEL` (uses `ANTHROPIC_API_KEY`) | The Anthropic **fallback** path for the same three passes, used only when `OPENROUTER_API_KEY` is absent | Already have the key | See above — the OpenRouter path is preferred and much cheaper. |
 
 ### 3.1 What "wire up Google Analytics / Search Console" actually means
 
@@ -209,6 +212,76 @@ Terminate TLS at the load balancer / platform. Force HTTPS. HSTS via `helmet`.
 
 ---
 
+### 5.9 ⚠️ The browser answer-engine surfaces — decide before enabling in prod
+
+`aeo-audit` measures the **consumer ChatGPT, Perplexity and Gemini products** by
+driving them in Playwright with sessions the operator supplies (decision D1-B,
+`docs/analysis/aeo-audit.md`). Before turning this on in production:
+
+- **Automating these products is against their Terms of Use** — OpenAI,
+  Perplexity and Google alike. The risk — account suspension, IP blocks — sits
+  with whoever supplies the session. Point them only at accounts you control and
+  have accepted that risk for. **Never a client's account.**
+- **They are fragile by design.** Each breaks whenever its vendor changes the UI.
+  Budget for the selectors in `SURFACE_PROFILES` (`browser-surface.adapter.ts`)
+  needing maintenance. An engine that drifts reports `selector-drift` and names
+  the constant to update; re-run with `AEO_BROWSER_HEADLESS=0` to see the page.
+- **None of them has been run against a live session yet.** The Perplexity and
+  Gemini selectors especially are unconfirmed. Do a `scorecard`-tier run, one
+  engine at a time, with `AEO_BROWSER_HEADLESS=0`, before trusting a full run.
+- The adapters contain **no CAPTCHA solving, no stealth/anti-detection layer, and
+  no credential handling** — by design. On a challenge, block or rate limit they
+  fail the observation with a typed reason and stop. Do not add bypass machinery.
+- Keep each `*_MIN_GAP_MS` at 8s or higher. It is politeness, and it is also what
+  keeps a long run from looking like an attack.
+- **Budget wall clock, not just money.** Calls = `prompts × runCount × engines`.
+  Three engines at the `standard` tier is 1,500 questions — several hours at an
+  8s gap. The workspace shows this estimate before a run starts.
+
+**One engine failing does not void the audit** — each is measured independently,
+and the report names the engines that produced nothing rather than silently
+averaging over a gap.
+
+**The ToS-clean alternative** is an API adapter per vendor (decision D1-A), which
+slots in behind the same `SurfaceAdapter` interface without touching the
+orchestrator. If these surfaces become a liability, that is the swap.
+
+### 5.10 Digital presence discovery — outbound fetches, and what it deliberately does not do
+
+`digital-presence` reads the **client's own site** and then makes at most one
+request per discovered profile URL. It needs no keys and no env vars, but it does
+reach out, so:
+
+- **Walled platforms are never fetched.** Instagram, Facebook, LinkedIn, X, TikTok
+  and Threads serve a login wall or refuse datacentre IPs, so the module records
+  `unverified` with the reason **without making the request**. Spending a request
+  to be told "log in" produces the same answer more slowly while looking like a
+  scraping attempt. Do not "fix" this by adding sessions or proxies — the value of
+  the row is the URL, not the fetch.
+- **`unverified` is not a defect.** Anyone reading these rows — or building a
+  client report from them — must keep it distinct from `missing`. Collapsing the
+  two reports a working account as an absent one. See the module README.
+- **Verification results are cached 24h** by the fetcher (`verifyUrl`), so a
+  re-scan is cheap and does not hammer the listing sites that *are* fetchable.
+- The classifier's reject patterns (`presence.signatures.ts`) are what stop a
+  share button being reported as a client's account. If a platform changes its
+  URL shapes, the failure mode is a **missing** account, not a wrong one — which
+  is the correct direction to fail in.
+- **The Google sweep is the one billed path** (DataForSEO, the same funded
+  account as `serp-intelligence` and `keyword-research`, one query per platform
+  still missing). It is **opt-in per run** — `POST /discover` with
+  `{"searchWeb": true}` — precisely so a default scan, a scheduled job, or the
+  smoke harness can never bill by accident, and it is additionally gated behind
+  `SWARM_ALLOW_LIVE=1`. `PRESENCE_SERP_MAX_QUERIES` (default 5) caps any single
+  run; responses cache seven days, and a cache hit is not counted as spend. The
+  real charge is recorded per run as `serpCostUsd`, read off DataForSEO's
+  response envelope — never estimated. Credits are prepaid and finite: watch the
+  balance if you wire the sweep into anything automatic.
+- **Never auto-promote a `candidate`.** Search cannot tell a client's profile
+  from a similarly named stranger's, and the name-similarity score is an ordering
+  hint with no code branching on it. A confirmation step that some future caller
+  "helpfully" skips would put another company's account in a client's report.
+
 ## 6. Build, package, deploy
 
 Nothing exists yet. Needed:
@@ -306,6 +379,7 @@ per-campaign `budgetUsd` conservatively, and keep the cost dashboard (§7) in vi
 | `MEASUREMENT_ALLOW_MOCK` | `1` (dev/smoke) | **unset** | §5.6 |
 | `INTERNAL_LINK_ALLOW_FIXTURE` | `1` (smoke) | **unset** | §5.6 |
 | `SERP_ALLOW_FIXTURE` | `1` (smoke) | **unset** | §5.6 |
+| `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD` | set (dev) | set — shared by serp-intelligence, keyword-research and the presence sweep | §5.10 |
 | `MEASUREMENT_MAX_COST_PER_RUN` | `5.00` | tune | cost governor |
 | `JOURNEY_MAX_COST_PER_RUN` | `2.00` | tune | |
 | `SERP_MAX_COST_PER_CAPTURE` | `5.00` | tune | |
