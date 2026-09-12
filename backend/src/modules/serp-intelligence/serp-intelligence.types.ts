@@ -12,9 +12,19 @@ export type SerpProviderName = 'dataforseo' | 'fixture';
 export type SerpSnapshotStatus = 'running' | 'complete' | 'partial' | 'failed';
 export type SerpDevice = 'desktop' | 'mobile';
 
+/** One business row inside a `local_pack` SERP element (the 3-pack of map listings). */
+export interface LocalPackEntry {
+  title: string | null;
+  rating: number | null;
+  reviewCount: number | null;
+  address: string | null;
+  domain: string | null;
+  url: string | null;
+}
+
 /** One normalized item from a SERP, provider-agnostic. */
 export interface SerpItem {
-  type: string; // organic | featured_snippet | ai_overview | people_also_ask | ...
+  type: string; // organic | featured_snippet | ai_overview | people_also_ask | local_pack | ...
   rankAbsolute: number | null;
   domain: string | null;
   url: string | null;
@@ -23,6 +33,8 @@ export interface SerpItem {
   references?: string[];
   /** For ai_overview: the answer text (used for subject-mention detection). */
   text?: string;
+  /** For local_pack: the businesses listed, in the order Google/DataForSEO returned them. */
+  localPack?: LocalPackEntry[];
 }
 
 /** Normalized provider response for one keyword. */

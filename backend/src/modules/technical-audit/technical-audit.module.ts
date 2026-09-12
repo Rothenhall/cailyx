@@ -32,9 +32,10 @@ import { AuditNarrativeService } from './checks/audit-narrative.service';
 import { AuditSchedulerService } from './audit-scheduler.service';
 import { FetcherModule } from '../fetcher/fetcher.module';
 import { SchedulingModule } from '../scheduling/scheduling.module';
+import { JobsModule } from '../jobs/jobs.module';
 
 @Module({
-  imports: [FetcherModule, SchedulingModule],
+  imports: [FetcherModule, SchedulingModule, JobsModule],
   controllers: [TechnicalAuditController],
   providers: [
     TechnicalAuditService,

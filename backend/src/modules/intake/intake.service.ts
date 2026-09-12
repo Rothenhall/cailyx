@@ -3,7 +3,12 @@
  *
  * Accepts a subject via: public form, operator console, bulk CSV, or API.
  * Enrichment steps (PRD FR-1.5):
- *   1. Fetch homepage with browser client, JS disabled (simulates AI crawler)
+ *   1. Fetch homepage with browser client, JS ENABLED — a full render, not the
+ *      non-JS crawler simulation `technical-audit`'s js-render check uses.
+ *      Deliberate: most marketing sites today are JS-templated, and rendering
+ *      with JS disabled would return an empty shell for many of them, making
+ *      brand/competitor extraction worse for the sake of a fidelity this step
+ *      does not need — that question is `technical-audit`'s job, not intake's.
  *   2. Extract JSON-LD Organization/Person schema for company + descriptor
  *   3. Extract positioning copy via cheerio
  *   4. Extract named competitors from copy + outbound links

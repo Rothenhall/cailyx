@@ -287,10 +287,31 @@ export type PageIssueCode =
   | 'h1-missing'
   | 'h1-multiple'
   | 'canonical-missing'
+  /** A canonical tag is present but does not resolve to a valid absolute URL. */
+  | 'canonical-malformed'
+  /** Canonical resolves to a different registrable domain — almost never
+   *  intentional, and a near-certain misconfiguration (stale template value,
+   *  leftover staging URL) rather than a legitimate cross-domain canonical. */
+  | 'canonical-cross-domain'
   | 'json-ld-missing'
   | 'json-ld-invalid'
   | 'thin-content'
-  | 'noindex';
+  /** Images with no `alt` attribute at all (NOT `alt=""`, which is valid). */
+  | 'images-missing-alt'
+  /** This page's body copy is byte-identical to another page's in the same run. */
+  | 'duplicate-content'
+  | 'noindex'
+  /** A heading level appears without the level above it ever having been
+   *  introduced (e.g. an H1 followed directly by an H3) — WCAG 2.4.6 territory. */
+  | 'heading-level-skipped'
+  /** Full URL exceeds the disclosed length band — SERP truncation / usability. */
+  | 'url-too-long'
+  /** Path contains uppercase letters — a case-sensitive-URL duplicate-content risk. */
+  | 'url-has-uppercase'
+  /** Path uses underscores instead of hyphens as word separators (Google's own guidance). */
+  | 'url-has-underscore'
+  /** More query parameters than the disclosed band — faceted-nav / tracking-param bloat. */
+  | 'url-excess-params';
 
 export interface AuditPageResult {
   url: string;
@@ -303,6 +324,10 @@ export interface AuditPageResult {
   h1Count: number | null;
   canonical: string | null;
   wordCount: number | null;
+  /** Content images on the page (decorative ones excluded — see the check). */
+  imageCount: number | null;
+  /** Of those, how many carry no `alt` attribute at all. */
+  imagesMissingAlt: number | null;
   jsonLdTypes: string[];
   jsonLdValid: boolean;
   jsonLdCount: number;
@@ -328,6 +353,22 @@ export interface PageInventoryAnalysis {
   pagesWithoutJsonLd: number;
   pagesWithBadTitle: number;
   pagesWithBadMeta: number;
+  /** Pages under the word-count floor. */
+  pagesThin: number;
+  /** Pages tripping the alt-coverage band. */
+  pagesWithMissingAlt: number;
+  /** Pages sharing body copy with another page in the same run. */
+  pagesWithDuplicateContent: number;
+  /** Content images across every crawled page (decorative ones excluded). */
+  imagesTotal: number;
+  /** Of those, how many carry no `alt` attribute — the site-wide figure. */
+  imagesMissingAlt: number;
+  /** Pages whose heading levels skip a level (e.g. H1 straight to H3). */
+  pagesWithHeadingIssues: number;
+  /** Pages with a missing, malformed, or cross-domain canonical. */
+  pagesWithBadCanonical: number;
+  /** Pages tripping any URL-structure band (length, casing, underscores, param count). */
+  pagesWithUrlIssues: number;
 }
 
 // ─── Run-over-run comparison ────────────────────────────────────────────────

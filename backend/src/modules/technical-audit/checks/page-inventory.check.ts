@@ -23,10 +23,24 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as cheerio from 'cheerio';
 import { FetcherService } from '../../fetcher/fetcher.service';
-import { findPageIssues, scorePage, summarisePages, type PageSignals } from './seo-rubric';
+import { RobotsService } from '../../fetcher/services/robots.service';
+import {
+  findDuplicateContent,
+  findPageIssues,
+  scorePage,
+  summarisePages,
+} from './seo-rubric';
+import { extractPageSignals } from './page-signals';
 import type { AuditPageResult, PageInventoryAnalysis, SitemapEntry } from '../technical-audit.types';
+
+/**
+ * A scored page plus the fingerprint the run-level duplicate pass groups on.
+ * The hash is internal to the run and never reaches `AuditPageResult`.
+ */
+interface ScoredPage extends AuditPageResult {
+  contentHash: string | null;
+}
 
 @Injectable()
 export class PageInventoryCheckService {
@@ -35,6 +49,7 @@ export class PageInventoryCheckService {
   constructor(
     private readonly fetcher: FetcherService,
     private readonly config: ConfigService,
+    private readonly robots: RobotsService,
   ) {}
 
   private get defaultBudget(): number {
@@ -53,18 +68,50 @@ export class PageInventoryCheckService {
     entries: SitemapEntry[],
     runId: string,
     budgetOverride?: number,
+    targetUrl?: string,
   ): Promise<{ analysis: PageInventoryAnalysis; pages: AuditPageResult[] }> {
     const budget = budgetOverride ?? this.defaultBudget;
     const discovered = entries.length;
 
-    const ordered = this.prioritise(entries);
-    const selected = ordered.slice(0, budget);
+    // Falls back to the first sitemap entry's own host when the caller does
+    // not pass `targetUrl` explicitly — keeps this a non-breaking addition
+    // for any other caller of `analyze()`, current or future.
+    const siteHost = this.hostOf(targetUrl) ?? this.hostOf(entries[0]?.url) ?? '';
 
-    const pages: AuditPageResult[] = [];
+    const ordered = this.prioritise(entries);
+    const candidates = ordered.slice(0, budget);
+
+    // Respect the site's own robots.txt before spending a single fetch on a
+    // disallowed URL — this crawler previously fetched whatever the sitemap
+    // listed regardless of Disallow rules. Fails open (RobotsService's own
+    // discipline): a robots.txt that cannot be read blocks nothing.
+    const allowedUrls = new Set(await this.robots.filterAllowed(candidates.map((e) => e.url)));
+    const selected = candidates.filter((e) => allowedUrls.has(e.url));
+    if (selected.length < candidates.length) {
+      this.logger.log(`Page inventory: ${candidates.length - selected.length} sitemap URL(s) skipped — disallowed by robots.txt`);
+    }
+
+    const pages: ScoredPage[] = [];
     for (let i = 0; i < selected.length; i += this.concurrency) {
       const batch = selected.slice(i, i + this.concurrency);
-      const done = await Promise.all(batch.map((e) => this.scoreOne(e, runId)));
+      const done = await Promise.all(batch.map((e) => this.scoreOne(e, runId, siteHost)));
       pages.push(...done);
+    }
+
+    // Duplicate content is the one finding a single page cannot produce — it
+    // only exists relative to the other pages in the run. Applied here, after
+    // the crawl, then re-scored so the deduction actually lands.
+    const duplicates = findDuplicateContent(pages);
+    if (duplicates.size > 0) {
+      for (const page of pages) {
+        if (!duplicates.has(page.url)) continue;
+        // A page that failed to load is already reported as `page-error` and
+        // carries no copy to duplicate; leave it alone.
+        if (page.issues.includes('page-error')) continue;
+        page.issues = [...page.issues, 'duplicate-content'];
+        page.score = scorePage(page.issues);
+      }
+      this.logger.log(`Page inventory: ${duplicates.size} page(s) share body copy with another page`);
     }
 
     this.logger.log(
@@ -90,7 +137,7 @@ export class PageInventoryCheckService {
     });
   }
 
-  private async scoreOne(entry: SitemapEntry, runId: string): Promise<AuditPageResult> {
+  private async scoreOne(entry: SitemapEntry, runId: string, siteHost: string): Promise<ScoredPage> {
     const base = {
       url: entry.url,
       lastmod: entry.lastmod,
@@ -101,6 +148,8 @@ export class PageInventoryCheckService {
       h1Count: null,
       canonical: null,
       wordCount: null,
+      imageCount: null,
+      imagesMissingAlt: null,
       jsonLdTypes: [] as string[],
       jsonLdValid: false,
       jsonLdCount: 0,
@@ -128,14 +177,19 @@ export class PageInventoryCheckService {
         h1Count: 0,
         canonical: null,
         wordCount: 0,
+        imageCount: 0,
+        imagesMissingAlt: 0,
         jsonLdCount: 0,
         jsonLdValid: false,
         noindex: false,
+        url: entry.url,
+        siteHost,
+        headingLevels: [],
       });
-      return { ...base, status, issues, score: scorePage(issues) };
+      return { ...base, status, issues, score: scorePage(issues), contentHash: null };
     }
 
-    const signals = this.extract(html, status);
+    const signals = extractPageSignals(html, status, entry.url, siteHost);
     const issues = findPageIssues(signals);
 
     return {
@@ -148,6 +202,9 @@ export class PageInventoryCheckService {
       h1Count: signals.h1Count,
       canonical: signals.canonical,
       wordCount: signals.wordCount,
+      imageCount: signals.imageCount,
+      imagesMissingAlt: signals.imagesMissingAlt,
+      contentHash: signals.contentHash,
       jsonLdTypes: signals.jsonLdTypes,
       jsonLdValid: signals.jsonLdValid,
       jsonLdCount: signals.jsonLdCount,
@@ -156,57 +213,14 @@ export class PageInventoryCheckService {
     };
   }
 
-  /** Everything the rubric needs, pulled from server HTML with cheerio. */
-  private extract(html: string, status: number): PageSignals & { jsonLdTypes: string[] } {
-    const $ = cheerio.load(html);
-
-    const title = $('head title').first().text().trim() || $('title').first().text().trim() || null;
-    const metaDescription =
-      $('meta[name="description"]').attr('content')?.trim() ||
-      $('meta[property="og:description"]').attr('content')?.trim() ||
-      null;
-    const canonical = $('link[rel="canonical"]').attr('href')?.trim() || null;
-
-    const robots = ($('meta[name="robots"]').attr('content') ?? '').toLowerCase();
-    const noindex = robots.includes('noindex');
-
-    // Strip the parts of the document that are not prose before counting, or
-    // an inline script bundle reads as thousands of words of content.
-    const body = $('body').clone();
-    body.find('script, style, noscript, template, svg').remove();
-    const text = body.text().replace(/\s+/g, ' ').trim();
-    const wordCount = text ? text.split(' ').length : 0;
-
-    const jsonLdTypes: string[] = [];
-    let jsonLdCount = 0;
-    let jsonLdValid = true;
-    $('script[type="application/ld+json"]').each((_, el) => {
-      jsonLdCount++;
-      const raw = $(el).contents().text().trim();
-      if (!raw) {
-        jsonLdValid = false;
-        return;
-      }
-      try {
-        jsonLdTypes.push(...this.collectTypes(JSON.parse(raw)));
-      } catch {
-        jsonLdValid = false;
-      }
-    });
-    if (jsonLdCount === 0) jsonLdValid = false;
-
-    return {
-      status,
-      title,
-      metaDescription,
-      h1Count: $('h1').length,
-      canonical,
-      wordCount,
-      jsonLdCount,
-      jsonLdValid,
-      jsonLdTypes: [...new Set(jsonLdTypes)],
-      noindex,
-    };
+  /** Hostname of a URL, or `null` when it does not parse. */
+  private hostOf(url: string | undefined): string | null {
+    if (!url) return null;
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -214,19 +228,4 @@ export class PageInventoryCheckService {
    * structure rather than reading the top level, or a page whose schema lives
    * entirely in a @graph reads as having none.
    */
-  private collectTypes(node: unknown, depth = 0): string[] {
-    if (depth > 6 || node === null || typeof node !== 'object') return [];
-    if (Array.isArray(node)) return node.flatMap((n) => this.collectTypes(n, depth + 1));
-
-    const obj = node as Record<string, unknown>;
-    const out: string[] = [];
-    const t = obj['@type'];
-    if (typeof t === 'string') out.push(t);
-    else if (Array.isArray(t)) out.push(...t.filter((x): x is string => typeof x === 'string'));
-
-    for (const key of ['@graph', 'mainEntity', 'itemListElement', 'hasPart']) {
-      if (obj[key]) out.push(...this.collectTypes(obj[key], depth + 1));
-    }
-    return out;
-  }
 }

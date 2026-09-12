@@ -30,6 +30,7 @@ import { TechnicalAuditService } from './technical-audit.service';
 import { RunAuditDto, SetScheduleDto } from './dto/technical-audit.dto';
 import { PrismaService } from '../database/prisma.service';
 import { SchedulingService } from '../scheduling/scheduling.service';
+import { PipelineQueueService } from '../jobs/pipeline-queue.service';
 
 @ApiTags('Technical Audit')
 @Controller('projects/:projectId/technical-audit')
@@ -38,23 +39,26 @@ export class TechnicalAuditController {
     private readonly auditService: TechnicalAuditService,
     private readonly prisma: PrismaService,
     private readonly scheduling: SchedulingService,
+    private readonly pipelineQueue: PipelineQueueService,
   ) {}
 
   /**
    * Trigger a manual technical audit for a project's target URL.
    * Executes all 5 checks: robots.txt, CDN probe, JS render, CWV, schema.
    *
-   * Rate-limited to 3 requests per 60s per IP (audit runs are expensive).
+   * Runs on the background pipeline queue — this returns immediately with a
+   * jobId. Poll GET run/jobs/:jobId for status/result. Rate-limited to 3
+   * requests per 60s per IP (audit runs are expensive).
    */
   @Post('run')
-  @HttpCode(HttpStatus.OK)
+  @HttpCode(HttpStatus.ACCEPTED)
   @Throttle({ default: { ttl: 60000, limit: 3 } })
   @ApiOperation({
-    summary: 'Run a technical audit',
-    description: 'Executes all 5 checks: robots.txt, CDN probe, JS render, CWV, schema. Returns findings with reproduction commands and page metadata. Persisted to database. Rate-limited to 3/minute.',
+    summary: 'Queue a technical audit',
+    description: 'Queues all 5 checks (robots.txt, CDN probe, JS render, CWV, schema) on the background pipeline. Returns a jobId immediately — poll GET run/jobs/:jobId for status and, once completed, the result. Rate-limited to 3/minute.',
   })
   @ApiBody({ type: RunAuditDto })
-  @ApiResponse({ status: 200, description: 'Audit completed with findings' })
+  @ApiResponse({ status: 202, description: 'Audit queued' })
   @ApiResponse({ status: 400, description: 'Invalid URL — must be a valid http(s) URL' })
   @ApiResponse({ status: 429, description: 'Too many audit runs — rate limited to 3/minute' })
   async runAudit(
@@ -62,7 +66,22 @@ export class TechnicalAuditController {
     @Body() body: RunAuditDto,
   ) {
     const targetUrl = await this.resolveTarget(projectId, body.targetUrl);
-    return this.auditService.runAudit(targetUrl, projectId, 'manual');
+    const { jobId } = await this.pipelineQueue.enqueue(
+      'technical-audit',
+      { targetUrl, projectId, triggeredBy: 'manual' },
+      { attempts: 2, backoff: { type: 'exponential', delay: 30000 } },
+    );
+    return { jobId, projectId, targetUrl, status: 'queued' };
+  }
+
+  /**
+   * Poll the status of a queued technical audit job.
+   */
+  @Get('run/jobs/:jobId')
+  @ApiOperation({ summary: 'Get the status of a queued technical audit job' })
+  @ApiResponse({ status: 200, description: 'Job status — waiting/active/completed/failed, with result or error' })
+  async getRunJob(@Param('jobId') jobId: string) {
+    return this.pipelineQueue.getStatus(jobId);
   }
 
   /**

@@ -26,7 +26,7 @@ import { PrismaService } from '../database/prisma.service';
 import { FetcherService } from '../fetcher/fetcher.service';
 import { parseCompetitors } from '../../common/utils/subject-match';
 import { DataForSeoProvider, FixtureSerpProvider } from './providers';
-import { analyzeSerp } from './serp-analyzer';
+import { analyzeLocalPack, analyzeSerp } from './serp-analyzer';
 import { SERP_LIMITS } from './serp-intelligence.types';
 import type { CaptureResult, CreateTrackerInput, SerpProvider, SerpProviderName } from './serp-intelligence.types';
 
@@ -161,6 +161,10 @@ export class SerpIntelligenceService {
           device: tracker.device,
         });
         const a = analyzeSerp(resp, subject, competitors);
+        // Local pack is read from the SAME response — DataForSEO returns it
+        // inline on any query Google shows one for, no extra fetch/cost — and
+        // gated on the client's own business type, never run "for everyone".
+        const local = analyzeLocalPack(resp.items, subject.name, project.category);
         cost += resp.costUsd;
         run += 1;
         await this.prisma.serpResult.create({
@@ -178,6 +182,11 @@ export class SerpIntelligenceService {
             sourceCount: a.sourceCount,
             rawItemCount: a.rawItemCount,
             costUsd: Number(resp.costUsd.toFixed(6)),
+            localPackApplicable: local.applicable,
+            localPackReason: local.reason,
+            localPackPresent: local.present,
+            localPackRank: local.rank,
+            localPackEntries: JSON.stringify(local.entries),
           },
         });
       } catch (err) {
@@ -213,6 +222,104 @@ export class SerpIntelligenceService {
   ) {
     const provider = this.resolveProvider((providerName ?? this.defaultProviderName()) as SerpProviderName);
     return provider.fetchSerp(keyword, opts);
+  }
+
+  /**
+   * Stage 6's "Run Geographic/Market Visibility Analysis" → "Visibility by
+   * Area/Market" + "Competitors by Area/Market", in one read.
+   *
+   * Groups every tracker's latest-per-keyword result by `locationName` — an
+   * operator gets this for free the moment they run more than one tracker
+   * with a different location, which is exactly how multi-market visibility
+   * is set up today (one `SerpTracker` per market, decision D8's "operator
+   * picks the markets" precedent for AEO). No new fetch: this reads only
+   * what `capture()` already persisted.
+   */
+  async marketVisibility(projectId: string) {
+    await this.ensureProject(projectId);
+    const trackers = await this.prisma.serpTracker.findMany({ where: { projectId } });
+    if (trackers.length === 0) {
+      return { projectId, markets: [], note: 'No SERP trackers for this project yet — create one to start tracking visibility by market.' };
+    }
+
+    // Latest captured result per query, across every tracker — a query's
+    // history is not this view's concern, only its current state.
+    const results = await this.prisma.serpResult.findMany({
+      where: { snapshot: { trackerId: { in: trackers.map((t) => t.id) } } },
+      orderBy: { capturedAt: 'desc' },
+      include: { query: { select: { id: true, trackerId: true } } },
+    });
+    const latestByQuery = new Map<string, (typeof results)[number]>();
+    for (const r of results) {
+      if (!r.query) continue;
+      if (!latestByQuery.has(r.query.id)) latestByQuery.set(r.query.id, r);
+    }
+
+    const trackerById = new Map(trackers.map((t) => [t.id, t]));
+    const byLocation = new Map<string, { trackerNames: Set<string>; rows: (typeof results)[number][] }>();
+    for (const r of latestByQuery.values()) {
+      const tracker = trackerById.get(r.query!.trackerId);
+      if (!tracker) continue;
+      const bucket = byLocation.get(tracker.locationName) ?? { trackerNames: new Set<string>(), rows: [] };
+      bucket.trackerNames.add(tracker.name);
+      bucket.rows.push(r);
+      byLocation.set(tracker.locationName, bucket);
+    }
+
+    const markets = [...byLocation.entries()].map(([location, bucket]) => {
+      const ranked = bucket.rows.filter((r) => r.subjectRank != null);
+      const averageRank = ranked.length
+        ? Math.round((ranked.reduce((s, r) => s + (r.subjectRank as number), 0) / ranked.length) * 10) / 10
+        : null;
+
+      // "Competitors by Area/Market" — how often each named competitor shows
+      // up across this market's tracked keywords, worst-for-the-client first.
+      const competitorCounts = new Map<string, number>();
+      for (const r of bucket.rows) {
+        let seen: string[] = [];
+        try {
+          seen = JSON.parse(r.competitorsSeen || '[]') as string[];
+        } catch {
+          continue;
+        }
+        for (const name of seen) competitorCounts.set(name, (competitorCounts.get(name) ?? 0) + 1);
+      }
+      const topCompetitors = [...competitorCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([name, keywordsAppearedIn]) => ({ name, keywordsAppearedIn }));
+
+      const localApplicable = bucket.rows.filter((r) => r.localPackApplicable);
+      const localPresent = localApplicable.filter((r) => r.localPackPresent === true);
+
+      return {
+        location,
+        trackers: [...bucket.trackerNames],
+        keywordsTracked: bucket.rows.length,
+        keywordsRanked: ranked.length,
+        averageRank,
+        aiOverviewKeywords: bucket.rows.filter((r) => r.aiOverviewPresent).length,
+        aiOverviewMentioned: bucket.rows.filter((r) => r.aiOverviewPresent && r.aiOverviewMentionsSubject).length,
+        // `applicable: false` means this location's business type made a local
+        // pack question meaningless (analyzeLocalPack's own gate) — never
+        // rendered as "0 of 0 found", which would read as a fabricated zero.
+        localPack:
+          localApplicable.length > 0
+            ? { applicable: true as const, keywordsChecked: localApplicable.length, keywordsPresent: localPresent.length }
+            : { applicable: false as const },
+        topCompetitors,
+      };
+    });
+
+    markets.sort((a, b) => b.keywordsTracked - a.keywordsTracked);
+
+    return {
+      projectId,
+      markets,
+      note:
+        "Aggregated from each tracker's latest captured result per keyword, grouped by tracker locationName — " +
+        'never a fresh SERP fetch. A market with no tracker yet simply does not appear; that is "not measured", not "no visibility".',
+    };
   }
 
   async listSnapshots(trackerId: string) {

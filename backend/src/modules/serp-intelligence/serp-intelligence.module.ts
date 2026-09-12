@@ -13,13 +13,16 @@
 
 import { Module } from '@nestjs/common';
 import { FetcherModule } from '../fetcher/fetcher.module';
+import { DataForSeoSerpService } from './dataforseo-serp.service';
 import { SerpIntelligenceService } from './serp-intelligence.service';
 import { SerpIntelligenceController } from './serp-intelligence.controller';
 
 @Module({
   imports: [FetcherModule],
   controllers: [SerpIntelligenceController],
-  providers: [SerpIntelligenceService],
-  exports: [SerpIntelligenceService],
+  providers: [SerpIntelligenceService, DataForSeoSerpService],
+  // Exported so `digital-presence` can run its account sweep through the same
+  // client rather than paying a second vendor for the same search.
+  exports: [SerpIntelligenceService, DataForSeoSerpService],
 })
 export class SerpIntelligenceModule {}

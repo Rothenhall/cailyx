@@ -14,7 +14,7 @@
  */
 
 import type { FetcherService } from '../fetcher/fetcher.service';
-import type { SerpItem, SerpProvider, SerpResponse } from './serp-intelligence.types';
+import type { LocalPackEntry, SerpItem, SerpProvider, SerpResponse } from './serp-intelligence.types';
 
 const DATAFORSEO_URL = 'https://api.dataforseo.com/v3/serp/google/organic/live/advanced';
 
@@ -75,6 +75,19 @@ interface DataForSeoEnvelope {
     result?: Array<{ items?: DfsItem[] }>;
   }>;
 }
+interface DfsLocalPackItem {
+  title?: string;
+  domain?: string;
+  url?: string;
+  address?: string;
+  // Rating shape is unverified against a live response — DataForSEO's other
+  // families (Business Data reviews, already integrated in
+  // `presence.dataforseo.service.ts`) nest it as `{ value, votes_count }`, and
+  // this reads defensively the same way rather than assuming a flat field.
+  rating?: { value?: number; votes_count?: number } | number;
+  rating_count?: number;
+}
+
 interface DfsItem {
   type?: string;
   rank_absolute?: number;
@@ -84,6 +97,14 @@ interface DfsItem {
   items?: Array<{ domain?: string; url?: string; title?: string; text?: string }>;
   references?: Array<{ url?: string; domain?: string }>;
   text?: string;
+  // Present only on a `local_pack` item — the map-pack's individual listings.
+  // DataForSEO nests the local pack under the SAME `items` field organic/
+  // ai_overview use for their own sub-rows (verified against neither shape
+  // live — Step 1 of any future wiring confirms this against a real
+  // response, same caveat `presence.dataforseo.service.ts` and
+  // `presence.apify.service.ts` already carry for their own unverified
+  // shapes), so it is read from the same key and disambiguated by `type`.
+  local_pack_items?: DfsLocalPackItem[];
 }
 
 function normalizeDfsItem(it: DfsItem): SerpItem {
@@ -94,6 +115,14 @@ function normalizeDfsItem(it: DfsItem): SerpItem {
           ...(it.items ?? []).map((s) => s.url).filter((u): u is string => !!u),
         ]
       : undefined;
+
+  const localPack =
+    it.type === 'local_pack'
+      ? [...(it.local_pack_items ?? []), ...((it.items as DfsLocalPackItem[] | undefined) ?? [])].map(
+          normalizeLocalPackEntry,
+        )
+      : undefined;
+
   return {
     type: it.type ?? 'unknown',
     rankAbsolute: typeof it.rank_absolute === 'number' ? it.rank_absolute : null,
@@ -102,6 +131,28 @@ function normalizeDfsItem(it: DfsItem): SerpItem {
     title: it.title ?? null,
     references,
     text: it.text ?? ((it.items ?? []).map((s) => s.text).filter(Boolean).join(' ') || undefined),
+    localPack: localPack && localPack.length > 0 ? localPack : undefined,
+  };
+}
+
+function normalizeLocalPackEntry(it: DfsLocalPackItem): LocalPackEntry {
+  let rating: number | null = null;
+  let reviewCount: number | null = null;
+  if (it.rating && typeof it.rating === 'object') {
+    rating = typeof it.rating.value === 'number' ? it.rating.value : null;
+    reviewCount = typeof it.rating.votes_count === 'number' ? it.rating.votes_count : null;
+  } else if (typeof it.rating === 'number') {
+    rating = it.rating;
+  }
+  if (reviewCount === null && typeof it.rating_count === 'number') reviewCount = it.rating_count;
+
+  return {
+    title: it.title ?? null,
+    rating,
+    reviewCount,
+    address: it.address ?? null,
+    domain: it.domain ?? null,
+    url: it.url ?? null,
   };
 }
 
@@ -126,6 +177,22 @@ const FIXTURE_SERPS: Record<string, SerpItem[]> = {
     { type: 'ai_overview', rankAbsolute: 1, domain: null, url: null, title: null, text: 'To be cited, publish extractable, well-structured content. Tools like Profound track this.', references: ['https://profound.ai/', 'https://openai.com/'] },
     { type: 'organic', rankAbsolute: 2, domain: 'profound.ai', url: 'https://profound.ai/', title: 'Profound' },
     { type: 'organic', rankAbsolute: 3, domain: 'reddit.com', url: 'https://reddit.com/r/seo', title: 'r/SEO thread' },
+  ],
+  'plumber near me': [
+    {
+      type: 'local_pack',
+      rankAbsolute: 1,
+      domain: null,
+      url: null,
+      title: null,
+      localPack: [
+        { title: 'Acme Plumbing', rating: 4.8, reviewCount: 212, address: '12 Main St', domain: 'acme-serp.example', url: 'https://acme-serp.example/' },
+        { title: 'Dublin Drain Co', rating: 4.5, reviewCount: 88, address: '4 Quay St', domain: 'dublindrain.example', url: 'https://dublindrain.example/' },
+        { title: 'FastFix Plumbers', rating: 4.2, reviewCount: 44, address: '9 Ash Rd', domain: 'fastfix.example', url: 'https://fastfix.example/' },
+      ],
+    },
+    { type: 'organic', rankAbsolute: 2, domain: 'acme-serp.example', url: 'https://acme-serp.example/', title: 'Acme Plumbing — 24/7 emergency plumber' },
+    { type: 'organic', rankAbsolute: 3, domain: 'dublindrain.example', url: 'https://dublindrain.example/', title: 'Dublin Drain Co' },
   ],
 };
 

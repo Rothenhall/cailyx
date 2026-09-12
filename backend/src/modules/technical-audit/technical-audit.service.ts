@@ -26,6 +26,7 @@ import { FetcherService } from '../fetcher/fetcher.service';
 import * as cheerio from 'cheerio';
 import { PrismaService } from '../database/prisma.service';
 import { SchedulingService } from '../scheduling/scheduling.service';
+import { PipelineQueueService } from '../jobs/pipeline-queue.service';
 import { ConfigService } from '@nestjs/config';
 import {
   ALL_PROBEABLE_BOTS,
@@ -71,16 +72,22 @@ export class TechnicalAuditService {
     private readonly fetcher: FetcherService,
     private readonly prisma: PrismaService,
     private readonly scheduling: SchedulingService,
+    private readonly pipelineQueue: PipelineQueueService,
     private readonly configService: ConfigService,
     private readonly sitemapCheck: SitemapCheckService,
     private readonly agentReadinessCheck: AgentReadinessCheckService,
     private readonly pageInventoryCheck: PageInventoryCheckService,
     private readonly narrative: AuditNarrativeService,
   ) {
-    // Register handler for scheduled technical audits
+    // Register handler for scheduled technical audits (cron/BullMQ scheduling backend)
     this.scheduling.registerHandler('technical-audit', async (projectId, targetUrl) => {
       await this.runAudit(targetUrl, projectId, 'scheduled');
     });
+
+    // Register handler for manually-triggered audits queued via PipelineQueueService
+    this.pipelineQueue.registerHandler('technical-audit', (data: {
+      targetUrl: string; projectId: string; triggeredBy: 'manual' | 'scheduled';
+    }) => this.runAudit(data.targetUrl, data.projectId, data.triggeredBy));
   }
 
   // Configurable thresholds (P2 #13)
@@ -150,7 +157,7 @@ export class TechnicalAuditService {
     const entries = (sitemap as SitemapAnalysis | null)?.entries ?? [];
     if (entries.length) {
       await run('page-inventory', async () => {
-        const res = await this.pageInventoryCheck.analyze(entries, runId, this.pageCrawlBudget);
+        const res = await this.pageInventoryCheck.analyze(entries, runId, this.pageCrawlBudget, targetUrl);
         inventory = res.analysis;
         pages = res.pages;
         return this.pageInventoryFinding(res.analysis);
@@ -281,6 +288,8 @@ export class TechnicalAuditService {
               h1Count: pg.h1Count,
               canonical: pg.canonical,
               wordCount: pg.wordCount,
+              imageCount: pg.imageCount,
+              imagesMissingAlt: pg.imagesMissingAlt,
               jsonLdTypes: JSON.stringify(pg.jsonLdTypes),
               jsonLdValid: pg.jsonLdValid,
               jsonLdCount: pg.jsonLdCount,
@@ -1084,7 +1093,21 @@ export class TechnicalAuditService {
         (a.pagesWithoutJsonLd
           ? `${a.pagesWithoutJsonLd} pages carry no JSON-LD — that is the single highest-leverage fix, ` +
             'since it is what lets an assistant quote the page as a source.'
-          : 'Every crawled page carries JSON-LD.'),
+          : 'Every crawled page carries JSON-LD.') +
+        // Stage-4 residue, reported as work items rather than left in
+        // `issueCounts` for someone to notice. Each clause appears only when
+        // there is something to say -- a clean site should not read as a list
+        // of zeros.
+        (a.imagesMissingAlt
+          ? ` ${a.imagesMissingAlt} of ${a.imagesTotal} content images have no alt text` +
+            (a.pagesWithMissingAlt ? ` (${a.pagesWithMissingAlt} pages affected)` : '') +
+            '. Empty alt="" on a decorative image is correct and is not counted here.'
+          : '') +
+        (a.pagesWithDuplicateContent
+          ? ` ${a.pagesWithDuplicateContent} pages serve body copy identical to another page — ` +
+            'consolidate them or set a canonical, or they compete with each other.'
+          : '') +
+        (a.pagesThin ? ` ${a.pagesThin} pages are under the word-count floor.` : ''),
     };
   }
 

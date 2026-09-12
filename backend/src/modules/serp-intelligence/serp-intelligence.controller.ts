@@ -70,6 +70,23 @@ export class SerpIntelligenceController {
     });
   }
 
+  @Get('market-visibility')
+  @ApiOperation({
+    summary: 'Visibility + competitors by area/market',
+    description:
+      "Groups every tracker's latest-per-keyword result by tracker locationName: average organic rank, AI " +
+      "Overview presence/mentions, local-pack presence (gated to locally-relevant businesses), and which named " +
+      'competitors appear most often per market. Reads only what capture() already stored — never a fresh SERP fetch. ' +
+      'Set up one SerpTracker per market to populate this.',
+  })
+  @ApiResponse({ status: 200, description: 'Per-market visibility rollup' })
+  async marketVisibility(@Param('projectId') projectId: string) {
+    return this.service.marketVisibility(projectId);
+  }
+
+  // NOTE: declared BEFORE ':trackerId' — a literal segment route must be
+  // registered ahead of a param route at the same depth, or Nest matches
+  // "market-visibility" as a :trackerId value instead.
   @Get(':trackerId')
   @ApiOperation({ summary: 'Get a tracker with queries + recent snapshots' })
   @ApiResponse({ status: 200, description: 'Tracker detail' })

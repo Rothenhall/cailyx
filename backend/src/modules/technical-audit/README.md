@@ -172,3 +172,21 @@ TechnicalAudit
 - **Persistence E2E:** `runAudit("https://example.com","test-proj-1")` → `audit.id: audit_...` `5 findings` → `prisma.technicalAudit.findUnique` `YES` `Findings in DB:5` `Page metadata: YES`.
 - **Thresholds:** verified via `ConfigService` getters (`jsDependencyPercent` etc.) with `TA_*` env overrides.
 - `npx tsc --noEmit` `0`, `npx nest build` `0`, `projectId` ownership `404` on `GET /:auditId`.
+
+## Stage-4 residue (wave-6 step 7, 2026-09-12)
+
+Two per-page checks closed the stage. `thin-content` (<150 words) already existed.
+
+| Code | Rule |
+|---|---|
+| `images-missing-alt` | Content images with **no `alt` attribute**. `alt=""` is a valid decorative marker and is *not* a fault — nor are `aria-hidden="true"`, `role="presentation"` or 1x1 tracking pixels, all excluded before counting. Band: >25% missing, or all of them. |
+| `duplicate-content` | Body copy identical to another page **in the same run**. Exact matches only; every page in a group is flagged, since nominating one as canonical would be a guess. Errored pages are skipped. |
+
+`AuditPage` gains `imageCount`, `imagesMissingAlt` and `contentHash`. The hash is
+only ever compared within a single run — across runs, a site-wide copy change
+would make every page look newly duplicated.
+
+Verified: 10/10 rule cases (band edges, all-missing, errored pages, null hashes,
+whitespace normalisation) plus the extractor over real markup — 4 content images
+/ 2 missing from a sample containing an empty alt, an `aria-hidden`, a
+`role="presentation"` and a tracking pixel.
