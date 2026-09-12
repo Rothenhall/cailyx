@@ -123,7 +123,9 @@ export class AgentsService {
       });
     }
 
-    // ── GEO Agent (AI visibility) ────────────────────────────
+    // ── AEO Agent (AI visibility) ─────────────────────────────
+    // Formerly split into separate "AEO" (structural best-practice) and "GEO"
+    // (measured visibility) concepts; merged into one discipline, one label.
     {
       const gaps = gapAnalysis
         ? await this.prisma.gap.count({
@@ -137,9 +139,9 @@ export class AgentsService {
       const schemaFails = (entityAudit?.entities ?? []).flatMap((e) => e.schemaChecks).filter((c) => c.status === 'fail').length;
       const status: AgentStatus = gaps > 0 || schemaFails > 0 ? 'attention' : obs.length ? 'ready' : 'idle';
       cards.push({
-        key: 'geo',
-        name: 'GEO Agent',
-        category: 'geo',
+        key: 'aeo',
+        name: 'AEO Agent',
+        category: 'aeo',
         status,
         headline:
           gaps > 0

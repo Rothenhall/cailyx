@@ -102,11 +102,11 @@ SW2=$(curl -s "$API/projects/$PID/journeys/suggestions" "${AUTH[@]}")
 SW2T=$(echo "$SW2" | jget total)
 [ "$SW2T" = "$SWT" ] && ok "wheel is deterministic ($SW2T)" || bad "wheel re-run differs: $SW2T vs $SWT"
 
-# --- AEO/GEO boosts (second Flywheel layer) -----------------------
+# --- AEO boosts (second Flywheel layer) -----------------------
 [ "$(echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);process.stdout.write(Array.isArray(w.boosts)?"1":"0")})')" = "1" ] && ok "wheel carries a boosts array" || bad "boosts not an array"
 BC=$(echo "$SW" | jget boostCount)
-[ "$BC" -ge 2 ] 2>/dev/null && ok "wheel produced $BC AEO/GEO boosts" || bad "boostCount = $BC"
-echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);const lanes=["AEO","GEO","Content","Technical","Authority","Measurement"];const bad=w.boosts.some(b=>!b.id||!b.title||!b.why||!b.action||!b.evidence||!lanes.includes(b.lane)||!["quick","project"].includes(b.effort));process.exit(bad?1:0)})' && ok "every boost has id + lane + title + why + action + evidence + effort" || bad "malformed boost"
+[ "$BC" -ge 2 ] 2>/dev/null && ok "wheel produced $BC AEO boosts" || bad "boostCount = $BC"
+echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);const lanes=["AEO","Content","Technical","Authority","Measurement"];const bad=w.boosts.some(b=>!b.id||!b.title||!b.why||!b.action||!b.evidence||!lanes.includes(b.lane)||!["quick","project"].includes(b.effort));process.exit(bad?1:0)})' && ok "every boost has id + lane + title + why + action + evidence + effort" || bad "malformed boost"
 BID1=$(echo "$SW" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);process.stdout.write(w.boosts.map(b=>b.id).join(","))})')
 BID2=$(echo "$SW2" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const w=JSON.parse(s);process.stdout.write(w.boosts.map(b=>b.id).join(","))})')
 [ "$BID1" = "$BID2" ] && ok "boost ids are deterministic" || bad "boost ids differ across runs"

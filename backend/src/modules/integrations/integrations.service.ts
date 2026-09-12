@@ -107,20 +107,11 @@ export class IntegrationsService {
         docsPath: 'backend/src/modules/serp-intelligence/README.md',
       },
 
-      // ── performance ────────────────────────────────────────
-      {
-        key: 'pagespeed',
-        name: 'Google PageSpeed Insights',
-        category: 'performance',
-        connected: has('PSI_API_KEY'),
-        status: has('PSI_API_KEY') ? 'connected' : 'not-connected',
-        detail: has('PSI_API_KEY')
-          ? 'Core Web Vitals are pulled for the technical audit.'
-          : 'Set PSI_API_KEY to include Core Web Vitals in the technical audit (free 25k/day).',
-        configHint: 'PSI_API_KEY',
-        connectUrl: null,
-        docsPath: 'backend/src/modules/technical-audit/README.md',
-      },
+      // PageSpeed Insights is deliberately NOT listed as a connector. It is a
+      // server-side API key (PSI_API_KEY) consumed by `technical-audit` for Core
+      // Web Vitals, not something an operator connects per workspace. The key is
+      // still read by `fetcher`'s PsiAdapter, which fails that one check with a
+      // stated reason when it is unset.
 
       // ── infrastructure ─────────────────────────────────────
       {

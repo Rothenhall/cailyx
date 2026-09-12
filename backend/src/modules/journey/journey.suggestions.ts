@@ -1,6 +1,6 @@
 /**
  * Suggestion wheel — a deterministic, layered set of buyer search queries for a
- * project (awareness stage → theme → query), plus a list of concrete AEO/GEO
+ * project (awareness stage → theme → query), plus a list of concrete AEO
  * BOOSTS the site should ship. Everything is derived from the project's own
  * data: category, competitors, personas (vocabulary / objections / triggers),
  * real journey queries, the latest technical audit, link graph and authority
@@ -36,8 +36,11 @@ export interface SuggestionStage {
   themes: SuggestionTheme[];
 }
 
-/** Lane a boost belongs to — mirrors how an AEO/GEO engagement is organised. */
-export type BoostLane = 'AEO' | 'GEO' | 'Content' | 'Technical' | 'Authority' | 'Measurement';
+/** Lane a boost belongs to — mirrors how an AEO engagement is organised.
+ *  Was split into 'AEO' (structural best-practice) and 'GEO' (measured
+ *  visibility) lanes; merged into one, since the market treats answer-engine
+ *  and generative-engine optimization as the same discipline. */
+export type BoostLane = 'AEO' | 'Content' | 'Technical' | 'Authority' | 'Measurement';
 
 /** One concrete, site-specific thing to do to improve answer-engine visibility. */
 export interface SuggestionBoost {
@@ -129,7 +132,7 @@ const TEMPLATES: Record<PersonaAwareness, ThemeTemplate[]> = {
     },
     {
       label: 'Is this worth attention',
-      pain: 'Not convinced AEO/GEO affects pipeline for a company at their stage.',
+      pain: 'Not convinced AEO affects pipeline for a company at their stage.',
       fix: 'Model branded-search decline + AI-referral share to show the trajectory of doing nothing.',
       queries: [
         'is {cat} a real problem for a {role}',
@@ -152,7 +155,7 @@ const TEMPLATES: Record<PersonaAwareness, ThemeTemplate[]> = {
   'solution-aware': [
     {
       label: 'AEO vs SEO',
-      pain: 'The team treats AEO/GEO as just more SEO and measures it with rank trackers.',
+      pain: 'The team treats AEO as just more SEO and measures it with rank trackers.',
       fix: 'Separate the scoreboards: AI mention rate + citation rate are not rankings.',
       queries: [
         'aeo vs seo for {cat}',
@@ -465,7 +468,7 @@ function buildStages(input: SuggestionInputs, sig: Signals): SuggestionStage[] {
   });
 }
 
-/* ── boosts (the AEO/GEO to-do list) ─────────────────────────── */
+/* ── boosts (the AEO to-do list) ─────────────────────────── */
 
 const bid = (parts: string[]) => `b_${(hashString(parts.join('|')) >>> 0).toString(36)}`;
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
@@ -690,7 +693,7 @@ function buildBoosts(input: SuggestionInputs, sig: Signals): SuggestionBoost[] {
   if (input.integrations && !input.integrations.serp) {
     push(
       {
-        lane: 'GEO',
+        lane: 'AEO',
         title: 'Connect licensed SERP data',
         why: `AI Overview presence and authority discovery for ${sig.cat} need real SERP data, not a fixture.`,
         action: 'Set DATAFORSEO_LOGIN + DATAFORSEO_PASSWORD so SERP rankings and AI-Overview checks run live.',
@@ -726,7 +729,7 @@ function buildBoosts(input: SuggestionInputs, sig: Signals): SuggestionBoost[] {
   );
 
   // stable order: real-artefact lanes first, best-practice last
-  const laneRank: Record<BoostLane, number> = { Technical: 0, Content: 1, Authority: 2, Measurement: 3, GEO: 4, AEO: 5 };
+  const laneRank: Record<BoostLane, number> = { Technical: 0, Content: 1, Authority: 2, Measurement: 3, AEO: 4 };
   return out
     .filter((b, i, a) => a.findIndex((x) => x.id === b.id) === i)
     .sort((a, b) => laneRank[a.lane] - laneRank[b.lane])

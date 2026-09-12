@@ -51,7 +51,7 @@ ok "seeded personas + journeys + link graph + authority + council"
 AG=$(curl -s "$API/projects/$PID/agents" "${AUTH[@]}")
 AN=$(echo "$AG" | jlen agents)
 [ "$AN" -ge 8 ] 2>/dev/null && ok "agents feed returned $AN cards" || { bad "agents = $AN"; echo "$AG" | head -c 400; }
-for key in seo geo articles authority journeys personas council mentions serp monitoring; do
+for key in seo aeo articles authority journeys personas council mentions serp monitoring; do
   echo "$AG" | grep -q "\"key\":\"$key\"" && ok "agent card: $key" || bad "missing agent: $key"
 done
 # every card well-formed
@@ -61,7 +61,12 @@ BADCARD=$(echo "$AG" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("en
 PA=$(echo "$AG" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const a=JSON.parse(s).agents.find(x=>x.key==="personas");process.stdout.write(a.headline)})')
 echo "$PA" | grep -qE "3 personas active" && ok "personas agent reflects the 3 activated personas" || bad "personas headline: $PA"
 # journeys agent reflects the campaign
-JA=$(echo "$AG" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const a=JSON.parse(s).agents.find(x=>x.key==="journeys");process.stdout.write(a.headline+" | "+(a.metric||""))})')
+# NB: the separator is " - ", not " | ". A literal pipe character inside a
+# `node -e` script is re-parsed as a shell pipe by Volta's Windows shim, so the
+# node process never starts ("The system cannot find the path specified.") and
+# the assertion fails on an empty string regardless of the payload. `||` is fine;
+# a bare `|` is not. Keep pipe characters out of `node -e` bodies in this harness.
+JA=$(echo "$AG" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const a=JSON.parse(s).agents.find(x=>x.key==="journeys");process.stdout.write(a.headline+" - "+(a.metric||""))})')
 echo "$JA" | grep -qiE "journey" && ok "journey agent reflects the campaign ($JA)" || bad "journey headline: $JA"
 # council agent reflects the session
 echo "$AG" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const a=JSON.parse(s).agents.find(x=>x.key==="council");process.exit(/ranked|prioritise/.test(a.headline)?0:1)})' && ok "council agent reflects the debate" || bad "council headline wrong"

@@ -7,10 +7,57 @@
  * @module measurement.types
  */
 
-/** Surfaces measureable in v1 + the test-only mock. */
-export type Surface = 'claude' | 'perplexity' | 'mock';
+/**
+ * Surfaces measureable today + the test-only mock.
+ *
+ * Two families:
+ * - **`*-browser`** — the vendors' consumer products driven in Playwright with
+ *   an operator-supplied session (decision D1-B, `docs/analysis/aeo-audit.md`).
+ *   This is what a buyer actually sees, and what the AEO audit measures. All
+ *   three are gated off by default and carry a ToS caveat — see
+ *   `browser-surface.adapter.ts`.
+ * - **`claude` / `perplexity`** — first-party API adapters, kept for the
+ *   pre-existing measurement flows. Correlated with, but not equal to, the
+ *   consumer products above.
+ * - **`cloro-*`** — the consumer products queried through Cloro's API instead
+ *   of a Playwright session (decision D1, `docs/analysis/wave-6-audit-pipeline.md`).
+ *   Same motivation as `*-browser` without the ToS exposure; a failed
+ *   `cloro-*` surface automatically falls back to its `*-browser` equivalent
+ *   where one exists — see `aeo-audit.service.ts`.
+ */
+export type Surface =
+  | 'chatgpt-browser'
+  | 'perplexity-browser'
+  | 'gemini-browser'
+  | 'claude'
+  | 'perplexity'
+  | 'cloro-chatgpt'
+  | 'cloro-perplexity'
+  | 'cloro-gemini'
+  | 'cloro-ai-overview'
+  | 'cloro-ai-mode'
+  | 'mock';
 
-export const SURFACES: readonly Surface[] = ['claude', 'perplexity', 'mock'];
+export const SURFACES: readonly Surface[] = [
+  'chatgpt-browser',
+  'perplexity-browser',
+  'gemini-browser',
+  'claude',
+  'perplexity',
+  'cloro-chatgpt',
+  'cloro-perplexity',
+  'cloro-gemini',
+  'cloro-ai-overview',
+  'cloro-ai-mode',
+  'mock',
+];
+
+/** The consumer-product surfaces the AEO audit measures. */
+export const BROWSER_SURFACES: readonly Surface[] = [
+  'chatgpt-browser',
+  'perplexity-browser',
+  'gemini-browser',
+];
 
 /** Run lifecycle. */
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed';

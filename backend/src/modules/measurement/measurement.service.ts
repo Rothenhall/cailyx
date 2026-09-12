@@ -17,6 +17,18 @@ import { PrismaService } from '../database/prisma.service';
 import { AnthropicSurfaceAdapter } from './adapters/anthropic.adapter';
 import { PerplexitySurfaceAdapter } from './adapters/perplexity.adapter';
 import { MockSurfaceAdapter } from './adapters/mock.adapter';
+import {
+  ChatGptBrowserAdapter,
+  GeminiBrowserAdapter,
+  PerplexityBrowserAdapter,
+} from './adapters/browser-surface.adapter';
+import {
+  CloroAiModeAdapter,
+  CloroChatGptAdapter,
+  CloroGeminiAdapter,
+  CloroGoogleAiOverviewAdapter,
+  CloroPerplexityAdapter,
+} from './adapters/cloro.adapter';
 import type { Surface, SurfaceAdapter, MeasurementSummary } from './measurement.types';
 
 /** Absolute minimum observations per prompt (design principle — n≥5, no exceptions). */
@@ -38,11 +50,27 @@ export class MeasurementService {
     private readonly config: ConfigService,
     anthropic: AnthropicSurfaceAdapter,
     perplexity: PerplexitySurfaceAdapter,
+    chatgptBrowser: ChatGptBrowserAdapter,
+    perplexityBrowser: PerplexityBrowserAdapter,
+    geminiBrowser: GeminiBrowserAdapter,
+    cloroChatGpt: CloroChatGptAdapter,
+    cloroPerplexity: CloroPerplexityAdapter,
+    cloroGemini: CloroGeminiAdapter,
+    cloroAiOverview: CloroGoogleAiOverviewAdapter,
+    cloroAiMode: CloroAiModeAdapter,
     mock: MockSurfaceAdapter,
   ) {
     this.adapters = new Map<Surface, SurfaceAdapter>([
+      ['chatgpt-browser', chatgptBrowser],
+      ['perplexity-browser', perplexityBrowser],
+      ['gemini-browser', geminiBrowser],
       ['claude', anthropic],
       ['perplexity', perplexity],
+      ['cloro-chatgpt', cloroChatGpt],
+      ['cloro-perplexity', cloroPerplexity],
+      ['cloro-gemini', cloroGemini],
+      ['cloro-ai-overview', cloroAiOverview],
+      ['cloro-ai-mode', cloroAiMode],
       ['mock', mock],
     ]);
   }

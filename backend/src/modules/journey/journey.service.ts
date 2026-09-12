@@ -111,7 +111,7 @@ export class JourneyService {
    *   - `stages` — buyer search queries grouped by awareness stage, built from
    *     personalised templates + the project's personas (vocabulary /
    *     objections / triggers) + queries real journeys already produced.
-   *   - `boosts` — concrete AEO/GEO actions derived from the project's own
+   *   - `boosts` — concrete AEO actions derived from the project's own
    *     latest technical audit, link graph and authority scan.
    * Feeds the frontend Flywheel card. No LLM, no spend.
    */

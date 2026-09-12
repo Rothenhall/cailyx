@@ -15,6 +15,7 @@ import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { GoogleConnectionService } from '../google/google-connection.service';
 import { SearchConsoleService, type SaRow } from '../google/search-console.service';
+import { PipelineQueueService } from '../jobs/pipeline-queue.service';
 import {
   buildFindings,
   buildQueryRows,
@@ -46,7 +47,12 @@ export class SeoAuditService {
     private readonly prisma: PrismaService,
     private readonly connections: GoogleConnectionService,
     private readonly gsc: SearchConsoleService,
-  ) {}
+    private readonly pipelineQueue: PipelineQueueService,
+  ) {
+    this.pipelineQueue.registerHandler('seo-audit', (data: {
+      projectId: string; userId: string; triggeredBy: 'manual' | 'scheduled'; windowDays: number;
+    }) => this.run(data.projectId, data.userId, data.triggeredBy, data.windowDays));
+  }
 
   /* ── window helpers ─────────────────────────────────────────────────── */
   private windows(days: number) {

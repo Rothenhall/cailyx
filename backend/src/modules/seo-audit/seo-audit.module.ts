@@ -16,9 +16,10 @@ import { SeoAuditController } from './seo-audit.controller';
 import { SeoAuditService } from './seo-audit.service';
 import { SeoAuditSchedulerService } from './seo-audit-scheduler.service';
 import { GoogleModule } from '../google/google.module';
+import { JobsModule } from '../jobs/jobs.module';
 
 @Module({
-  imports: [GoogleModule],
+  imports: [GoogleModule, JobsModule],
   controllers: [SeoAuditController],
   providers: [SeoAuditService, SeoAuditSchedulerService],
   exports: [SeoAuditService],

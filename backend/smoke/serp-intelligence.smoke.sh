@@ -17,8 +17,13 @@ AUTH=(-H "authorization: Bearer $TOKEN")
 PROJ=$(curl -s -X POST "$API/projects" "${AUTH[@]}" -H 'content-type: application/json' -d "{\"name\":\"Acme\",\"domain\":\"acme-serp.example\",\"category\":\"AI visibility diagnostics\"}")
 PID=$(echo "$PROJ" | jget id)
 if [ -z "$PID" ] || [ "$PID" = "__ERR__" ]; then
-  # domain is unique — reuse the existing project for this fixed domain
-  PID=$(curl -s "$API/projects?search=acme-serp.example" "${AUTH[@]}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const a=JSON.parse(s);process.stdout.write(a[0]?a[0].id:"")})')
+  # The domain is fixed (the fixture SERPs reference it) and unique, so a run
+  # that died before its cleanup trap fired leaves the project behind and this
+  # create 409s. Reuse that row instead of failing.
+  # GET /projects returns {projects:[…]} — reading it as a bare array made this
+  # fallback silently yield nothing, turning a stale row into a hard failure.
+  PID=$(curl -s "$API/projects?search=acme-serp.example" "${AUTH[@]}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);const a=Array.isArray(j)?j:(j.projects||[]);const m=a.find(p=>p.domain==="acme-serp.example");process.stdout.write(m?m.id:"")}catch(e){process.stdout.write("")}})')
+  [ -n "$PID" ] && echo "  NOTE  reused the existing acme-serp.example project (previous run left it behind)"
 fi
 [ -n "$PID" ] && ok "project $PID (domain acme-serp.example)" || { bad "project"; echo "$PROJ"; exit 1; }
 cleanup() { curl -s -X DELETE "$API/projects/$PID" "${AUTH[@]}" >/dev/null 2>&1; echo "(smoke project deleted)"; }

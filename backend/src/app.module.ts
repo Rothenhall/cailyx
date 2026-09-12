@@ -14,9 +14,11 @@ import { HealthModule } from './modules/health/health.module';
 import { DatabaseModule } from './modules/database/database.module';
 import { FetcherModule } from './modules/fetcher/fetcher.module';
 import { SchedulingModule } from './modules/scheduling/scheduling.module';
+import { JobsModule } from './modules/jobs/jobs.module';
 import { TechnicalAuditModule } from './modules/technical-audit/technical-audit.module';
 import { EntityAuditModule } from './modules/entity-audit/entity-audit.module';
 import { GapAnalysisModule } from './modules/gap-analysis/gap-analysis.module';
+import { StrategyModule } from './modules/strategy/strategy.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { IntakeModule } from './modules/intake/intake.module';
@@ -45,6 +47,11 @@ import { AuthorityModule } from './modules/authority/authority.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { GoogleModule } from './modules/google/google.module';
 import { SeoAuditModule } from './modules/seo-audit/seo-audit.module';
+import { AeoAuditModule } from './modules/aeo-audit/aeo-audit.module';
+import { DigitalPresenceModule } from './modules/digital-presence/digital-presence.module';
+import { TechStackModule } from './modules/tech-stack/tech-stack.module';
+import { KeywordResearchModule } from './modules/keyword-research/keyword-research.module';
+import { CompetitorsModule } from './modules/competitors/competitors.module';
 import { AgentsModule } from './modules/agents/agents.module';
 import { UsersModule } from './modules/users/users.module';
 
@@ -83,11 +90,18 @@ import { UsersModule } from './modules/users/users.module';
     // Internal module — no REST endpoints, injected via DI
     SchedulingModule,
 
+    // Pipeline job queue — runs technical/SEO/presence/AEO audits in the
+    // background via BullMQ instead of inline on the HTTP request. Always
+    // on (unlike SchedulingModule's cron/bullmq toggle): Redis is required.
+    // Internal module — no REST endpoints, injected via DI
+    JobsModule,
+
     // Feature modules
     HealthModule,
     TechnicalAuditModule,
     EntityAuditModule,
     GapAnalysisModule,
+    StrategyModule,
     ReportingModule,
     ProjectsModule,
     IntakeModule,
@@ -136,6 +150,25 @@ import { UsersModule } from './modules/users/users.module';
 
     // SEO audit — Search Console data + fixes
     SeoAuditModule,
+
+    // AEO audit — answer-engine visibility (ChatGPT first)
+    AeoAuditModule,
+    DigitalPresenceModule,
+
+    // Wave 6 step 3 — technology-stack fingerprinting (headers/HTML/scripts,
+    // no vendor). Runs against any domain, so competitor profiling reuses it.
+    TechStackModule,
+
+    // Wave 6 step 4 — keyword research (DataForSEO Keywords Data: volume,
+    // competition/CPC, related/long-tail). Same vendor account as
+    // serp-intelligence; pulled forward from stage 10 per decision D5.
+    KeywordResearchModule,
+
+    // Wave 6 step 6 — promotes Project.competitors (JSON) into first-class
+    // rows, builds a light per-competitor profile (tech-stack + schema +
+    // attached SERP/AEO presence), and produces the client-vs-competitor gap.
+    CompetitorsModule,
+
     AgentsModule,
 
     // Operator administration (admin only)

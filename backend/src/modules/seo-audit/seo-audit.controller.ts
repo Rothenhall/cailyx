@@ -19,6 +19,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   NotFoundException,
   Param,
   Post,
@@ -29,15 +31,24 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthedRequestUser } from '../auth/strategies/jwt.strategy';
 import { SeoAuditService } from './seo-audit.service';
+import { PipelineQueueService } from '../jobs/pipeline-queue.service';
 
 @ApiTags('SEO Audit')
 @ApiBearerAuth()
 @Controller('projects/:projectId/seo-audit')
 export class SeoAuditController {
-  constructor(private readonly seo: SeoAuditService) {}
+  constructor(
+    private readonly seo: SeoAuditService,
+    private readonly pipelineQueue: PipelineQueueService,
+  ) {}
 
+  /**
+   * Queues the audit on the background pipeline and returns immediately with
+   * a jobId. Poll GET run/jobs/:jobId for status/result.
+   */
   @Post('run')
-  @ApiOperation({ summary: 'Run an SEO audit from Search Console data' })
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({ summary: 'Queue an SEO audit from Search Console data' })
   async run(
     @CurrentUser() user: AuthedRequestUser,
     @Param('projectId') projectId: string,
@@ -47,7 +58,18 @@ export class SeoAuditController {
     if (!Number.isInteger(days) || days < 7 || days > 90) {
       throw new BadRequestException('windowDays must be an integer between 7 and 90');
     }
-    return this.seo.run(projectId, user.userId, 'manual', days);
+    const { jobId } = await this.pipelineQueue.enqueue(
+      'seo-audit',
+      { projectId, userId: user.userId, triggeredBy: 'manual', windowDays: days },
+      { attempts: 2, backoff: { type: 'exponential', delay: 30000 } },
+    );
+    return { jobId, projectId, status: 'queued' };
+  }
+
+  @Get('run/jobs/:jobId')
+  @ApiOperation({ summary: 'Get the status of a queued SEO audit job' })
+  async getRunJob(@Param('jobId') jobId: string) {
+    return this.pipelineQueue.getStatus(jobId);
   }
 
   @Get()
