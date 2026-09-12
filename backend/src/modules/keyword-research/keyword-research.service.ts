@@ -51,6 +51,9 @@ export interface KeywordSetResult {
 /** 4+ words is the auditable long-tail line — no vendor field for this. */
 const LONG_TAIL_MIN_WORDS = 4;
 
+/** Same fallback convention as `SERP_LIMITS.defaultMaxCostPerCapture` in serp-intelligence. */
+const DEFAULT_MAX_COST_PER_RUN = 5;
+
 @Injectable()
 export class KeywordResearchService {
   private readonly logger = new Logger(KeywordResearchService.name);
@@ -107,7 +110,14 @@ export class KeywordResearchService {
         rows.push({ keyword: kw, item: byKeyword.get(kw) ?? null, isRelated: false });
       }
 
-      if (dto.includeRelated !== false) {
+      // The DTO's 200-keyword / 20-related-seed caps bound request SIZE, but
+      // nothing previously bounded actual vendor-reported SPEND the way
+      // `serp-intelligence`'s SERP_MAX_COST_PER_CAPTURE does for its own
+      // DataForSEO calls — an audit flagged this as the one real gap against
+      // that established pattern. Checked between the two calls (this module
+      // only ever makes at most two) rather than pre-loop, since there is no
+      // loop to gate mid-run.
+      if (dto.includeRelated !== false && costUsd < this.maxCostPerRun()) {
         try {
           const relResp = await provider.relatedKeywords(keywords.slice(0, RELATED_SEED_LIMIT), lookupOpts);
           costUsd += relResp.costUsd;
@@ -121,17 +131,21 @@ export class KeywordResearchService {
           error = `Seed volumes saved; related-keyword expansion failed: ${(relErr as Error).message}`;
           this.logger.warn(`keyword set ${set.id} related-expansion failed: ${(relErr as Error).message}`);
         }
+      } else if (dto.includeRelated !== false) {
+        // Distinguish "not requested" from "skipped to stay under budget" —
+        // an operator seeing partial results should know why, not guess.
+        error = `Seed volumes saved; related-keyword expansion skipped — cost cap ($${this.maxCostPerRun().toFixed(2)}) reached after the seed call ($${costUsd.toFixed(4)}).`;
+        this.logger.warn(`keyword set ${set.id} related-expansion skipped — cost cap reached ($${costUsd.toFixed(4)} spent)`);
       }
     } catch (err) {
       error = (err as Error).message;
       this.logger.warn(`keyword set ${set.id} search-volume call failed: ${error}`);
     }
 
-    const status: 'completed' | 'partial' | 'failed' = rows.some((r) => r.item) || rows.length > 0
-      ? error
-        ? 'partial'
-        : 'completed'
-      : 'failed';
+    // `rows` is only ever empty when the seed call threw before pushing
+    // anything — the `some(r => r.item)` half of the old condition was
+    // redundant with `rows.length > 0` given the control flow above.
+    const status: 'completed' | 'partial' | 'failed' = rows.length > 0 ? (error ? 'partial' : 'completed') : 'failed';
 
     const updated = await this.prisma.keywordSet.update({
       where: { id: set.id },
@@ -230,6 +244,13 @@ export class KeywordResearchService {
       );
     }
     return new DataForSeoKeywordsProvider(this.fetcher, login, password);
+  }
+
+  /** Same env-var-with-fallback pattern as `serp-intelligence.service.ts`'s `maxCostPerCapture()`. */
+  private maxCostPerRun(): number {
+    const raw = this.config.get<string>('KEYWORD_RESEARCH_MAX_COST_PER_RUN');
+    const n = raw === undefined || raw === '' ? NaN : Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : DEFAULT_MAX_COST_PER_RUN;
   }
 
   private toSetResult(set: {

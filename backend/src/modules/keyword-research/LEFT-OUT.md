@@ -17,14 +17,15 @@ keep this module's v1 boundary simple and auditable.
 operator still confirming before any vendor spend — consistent with D8's
 "ranked suggestion, never auto-applied" pattern for markets.
 
-## 2. AEO matrix demand weighting
+## 2. AEO matrix demand weighting — RESOLVED, no longer left out
 
 Wave-6 §4 step 4 notes this module "feeds the AEO matrix generator an
-optional demand weighting" later. That integration touches
-`backend/src/modules/aeo-audit/aeo-matrix.service.ts`, which the build
-instructions explicitly marked out of scope unless this module is fully
-built, tested and documented first — treat it as a stretch goal for a future
-pass, not part of this module.
+optional demand weighting" later. At the time this file was written that was
+out of scope pending this module shipping first. It has since been built —
+`backend/src/modules/aeo-audit/aeo-matrix.service.ts`'s `demandIndex()`
+reads this module's `KeywordSet`/`Keyword` tables directly via Prisma, and
+`aeo-matrix.generator.ts` orders services by matched volume when one exists.
+Kept here as a record of the original scoping call, not as an open item.
 
 ## 3. Offline/fixture mode
 

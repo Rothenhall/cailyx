@@ -56,7 +56,7 @@ keyword-research/
 | List/filter | ✅ | `GET ?setId=` for one set, `?minVolume=` to filter keyword rows either way |
 | Real vendor cost tracking | ✅ | `KeywordSet.costUsd` = DataForSEO's own reported `cost`, summed across the 1-2 calls |
 | Automatic seed derivation from site context | ❌ Deferred | See LEFT-OUT.md — v1 is explicit `keywords[]` input only |
-| AEO matrix demand weighting | ❌ Deferred (stretch) | See LEFT-OUT.md — touches `aeo-audit`, out of this module's scope |
+| AEO matrix demand weighting | ✅ Built | `aeo-matrix.service.ts`'s `demandIndex()` reads this module's own `KeywordSet`/`Keyword` rows directly via Prisma and reorders `generateMatrix()`'s services by volume — see below |
 
 ## REST API
 
@@ -78,9 +78,15 @@ closed with a `503` — see SETUP-STATUS.md.
 
 ## Consumers
 
-None yet. Wave-6 §4 step 4 notes this could later feed
-`aeo-audit/aeo-matrix.service.ts` an optional demand weighting — explicitly
-out of scope for this build (see LEFT-OUT.md §2).
+`aeo-audit/aeo-matrix.service.ts`'s `demandIndex(projectId)` reads this
+project's latest `completed`/`partial` `KeywordSet` (plus its `Keyword` rows)
+directly via Prisma — this module has no service-level API for it, and
+doesn't need one, since Prisma is the shared contract. `generateMatrix()`
+orders services by matched search volume when a demand index is available and
+degrades to unordered when it isn't (no keyword research run yet), never
+inventing or dropping a service based on volume. This was built as part of
+the `aeo-audit` module rather than here — see LEFT-OUT.md §2 for why the
+history reads like this was deferred; it was picked back up later.
 
 ## PRD / wave-6 alignment
 
@@ -89,7 +95,7 @@ out of scope for this build (see LEFT-OUT.md §2).
 | D5 — DataForSEO Keywords Data: volume, difficulty/competition, CPC | ✅ | `search_volume/live`; "difficulty" reported honestly as advertiser `competition`/`competitionIndex`, see SPEC.md |
 | D5 — related and long-tail keywords | ✅ | `keywords_for_keywords/live`, default on, `isRelated`/`isLongTail` flags |
 | §6 API surface — research + list endpoints | ✅ | `POST`/`GET /projects/:id/keyword-research`, filterable by `setId`/`minVolume` |
-| §4 step 4 — "feeds the AEO matrix generator an optional demand weighting" | ❌ Deferred (explicit stretch) | Out of scope per build instructions unless this module ships first with time to spare — not attempted |
+| §4 step 4 — "feeds the AEO matrix generator an optional demand weighting" | ✅ Built | Implemented in `aeo-audit/aeo-matrix.service.ts` + `aeo-matrix.generator.ts`, reading this module's tables directly |
 | Fail closed without vendor credentials | ✅ | `503`, no row written, verified by smoke test |
 
 ## Testing notes

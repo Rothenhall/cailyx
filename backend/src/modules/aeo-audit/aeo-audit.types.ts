@@ -507,9 +507,17 @@ export interface SurfaceRunResult {
   observations: number;
   stanceJudged: number;
   costUsd: number;
-  /** Typed adapter reason — `blocked`, `rate-limited`, `selector-drift`, … */
+  /** Typed adapter reason — `blocked`, `rate-limited`, `selector-drift`, `cost-capped-partial`, … */
   failureKind: string | null;
   error: string | null;
+  /**
+   * The surface that ACTUALLY answered, when it differs from `surface` — set
+   * when a failed `cloro-*` surface falls back to its `*-browser` equivalent
+   * (wave-6 D1). Equal to `surface` on every normal run. Reading only
+   * `surface` here would report a browser-fallback answer as if it were a
+   * genuine Cloro measurement — the one thing this design explicitly forbids.
+   */
+  attemptedVia: AeoSurface | null;
 }
 
 /** Per-surface slice of the counted metrics, for the comparison view. */

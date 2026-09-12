@@ -339,6 +339,14 @@ export class AeoAuditService {
             costUsd: { increment: built.costUsd },
           },
         });
+        // `audit` was fetched once at the top of this method and is never
+        // re-read — without this, every Cloro pre-flight budget check below
+        // reads the pre-matrix `promptCount` (0, floored to 1 by
+        // cloroFitsBudget), estimating cost for ONE prompt instead of the
+        // real matrix size on every first-time run. An audit caught this:
+        // the "refuse to start a run that cannot finish inside budget" guard
+        // was silently checking the wrong number for the common case.
+        audit.promptCount = built.promptCount;
       }
 
       // ── 3. Measurement, one run per engine (n>=5 each) ─────────────────
@@ -353,8 +361,30 @@ export class AeoAuditService {
         orderBy: { createdAt: 'asc' },
       });
 
+      // AEO_MAX_COST_PER_AUDIT ("stops the run and records why", per this
+      // module's own README) was previously checked only in the stance pass —
+      // an audit found the MEASUREMENT stage had no audit-wide ceiling at all,
+      // only measurement's own PER-RUN cap (MEASUREMENT_MAX_COST_PER_RUN,
+      // independently per surface x market). With up to 4 surfaces x 5
+      // markets, total spend could reach far past the documented $10 default
+      // with nothing enforcing it. Tracked locally rather than re-read from
+      // `audit.costUsd`, which — like `promptCount` above — is a snapshot
+      // that Prisma's `increment` writes never update in this in-memory object.
+      let auditSpent = audit.costUsd ?? 0;
+      const auditBudget = this.costCap();
+
       for (const surfaceRun of surfaceRuns) {
         if (surfaceRun.status === 'completed') continue;
+
+        if (auditSpent >= auditBudget) {
+          const reason = `Audit-wide cost cap reached ($${auditSpent.toFixed(2)} >= $${auditBudget.toFixed(2)} AEO_MAX_COST_PER_AUDIT) — remaining surfaces left unrun.`;
+          await this.prisma.aeoSurfaceRun.update({
+            where: { id: surfaceRun.id },
+            data: { status: 'failed', failureKind: 'audit-budget-exceeded', error: reason, finishedAt: new Date() },
+          });
+          this.logger.warn(`Audit ${auditId}: ${surfaceRun.surface} skipped — ${reason}`);
+          continue;
+        }
 
         // Pre-flight budget guard for Cloro surfaces: refuse to start a run
         // that cannot finish inside the remaining monthly credit allowance
@@ -425,6 +455,20 @@ export class AeoAuditService {
           return executed;
         };
 
+        // `executeRun` marks its own `MeasurementRun.status: 'failed'` (with
+        // `error` set to the cost-cap message) when MEASUREMENT_MAX_COST_PER_RUN
+        // trips mid-run — but only AFTER completedRequests already went above
+        // zero. An audit found that case fell through the `completedRequests
+        // === 0` check above and got recorded as an ordinary clean
+        // `'completed'` surface, with the verdict's counted rates then built
+        // from a partial sample indistinguishable from a full one. This
+        // extracts that signal so the surface run — and anyone reading it —
+        // knows the tier's promised prompt x runCount was not fully measured.
+        const truncationFields = (executed: { error: string | null }) =>
+          executed.error
+            ? { failureKind: 'cost-capped-partial', error: executed.error.slice(0, 500) }
+            : { failureKind: null, error: null };
+
         try {
           const executed = await attempt(attemptedVia);
 
@@ -436,6 +480,7 @@ export class AeoAuditService {
               costUsd: executed.costTotal,
               attemptedVia,
               finishedAt: new Date(),
+              ...truncationFields(executed),
             },
           });
           await this.prisma.aeoAudit.update({
@@ -445,8 +490,11 @@ export class AeoAuditService {
               costUsd: { increment: executed.costTotal },
             },
           });
+          auditSpent += executed.costTotal;
           this.logger.log(
-            `Audit ${auditId}: ${surfaceRun.surface} completed with ${executed.completedRequests} observations`,
+            executed.error
+              ? `Audit ${auditId}: ${surfaceRun.surface} completed PARTIALLY (cost-capped) with ${executed.completedRequests} observations — ${executed.error}`
+              : `Audit ${auditId}: ${surfaceRun.surface} completed with ${executed.completedRequests} observations`,
           );
         } catch (err) {
           const message = (err as Error).message;
@@ -469,6 +517,7 @@ export class AeoAuditService {
                   costUsd: executed.costTotal,
                   attemptedVia,
                   finishedAt: new Date(),
+                  ...truncationFields(executed),
                 },
               });
               await this.prisma.aeoAudit.update({
@@ -478,6 +527,7 @@ export class AeoAuditService {
                   costUsd: { increment: executed.costTotal },
                 },
               });
+              auditSpent += executed.costTotal;
               this.logger.log(
                 `Audit ${auditId}: ${surfaceRun.surface} completed via fallback ${fallback} with ${executed.completedRequests} observations`,
               );
@@ -588,11 +638,40 @@ export class AeoAuditService {
 
   // ─── Reads ─────────────────────────────────────────────────────────────
 
-  /** One audit, with its verdict parsed. @throws NotFoundException when missing. */
+  /**
+   * One audit, with its verdict parsed.
+   *
+   * `verdict` only exists once a run has reached the verdict stage — this
+   * also returns the live `surfaceRuns` rows (including `attemptedVia`) so a
+   * caller polling a still-`running` audit, or one whose surface fell back
+   * from Cloro to its browser equivalent, has real per-surface status/
+   * provenance before (or independent of) a finished verdict. An audit found
+   * `attemptedVia` was persisted but unreachable from this endpoint.
+   *
+   * @throws NotFoundException when missing.
+   */
   async get(auditId: string) {
-    const audit = await this.prisma.aeoAudit.findUnique({ where: { id: auditId } });
+    const audit = await this.prisma.aeoAudit.findUnique({
+      where: { id: auditId },
+      include: { surfaceRuns: { orderBy: { createdAt: 'asc' } } },
+    });
     if (!audit) throw new NotFoundException('Audit not found: ' + auditId);
-    return { ...audit, verdict: this.parseVerdict(audit.verdict) };
+    return {
+      ...audit,
+      verdict: this.parseVerdict(audit.verdict),
+      surfaceRuns: audit.surfaceRuns.map((sr) => ({
+        surface: sr.surface,
+        market: sr.market,
+        status: sr.status,
+        runId: sr.runId,
+        observations: sr.observations,
+        stanceJudged: sr.stanceJudged,
+        costUsd: sr.costUsd,
+        failureKind: sr.failureKind,
+        error: sr.error,
+        attemptedVia: sr.attemptedVia,
+      })),
+    };
   }
 
   /** Audits for a project, newest first. */
@@ -921,6 +1000,7 @@ export class AeoAuditService {
       costUsd: sr.costUsd,
       failureKind: sr.failureKind,
       error: sr.error,
+      attemptedVia: (sr.attemptedVia as AeoSurface | null) ?? null,
     }));
 
     // ── Judged ────────────────────────────────────────────────────────────
