@@ -28,6 +28,15 @@
  * mentioned". `gpt-5-nano` spends its budget on reasoning tokens and truncates.
  * Rerun the comparison before changing `AEO_LLM_MODEL`.
  *
+ * **2026-09-13: the default below was changed to `deepseek/deepseek-v4.1-flash`
+ * anyway, per an explicit "use this model for everything" operator
+ * instruction — it was NOT re-run through the four-case benchmark above.**
+ * The risk this module's own docs warn about (a model silently turning
+ * "absent" into "mentioned-neutral") has not been re-verified against
+ * DeepSeek. If AEO stance verdicts start looking too generous — a
+ * competitor's "invisible" reading you'd expect starts coming back
+ * "mentioned" — this benchmark is the first thing to re-run.
+ *
  * ## Cost
  *
  * OpenRouter reports the true charge per call in `usage.cost`, so the audit's
@@ -44,7 +53,7 @@ import Anthropic from '@anthropic-ai/sdk';
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 /** Benchmarked default — see the table in this module's docblock. */
-const DEFAULT_OPENROUTER_MODEL = 'qwen/qwen3-30b-a3b-instruct-2507';
+const DEFAULT_OPENROUTER_MODEL = 'deepseek/deepseek-v4.1-flash';
 
 /** Fallback $/MTok when Anthropic is used and no live cost is reported. */
 const ANTHROPIC_INPUT_PER_MTOK = 5;

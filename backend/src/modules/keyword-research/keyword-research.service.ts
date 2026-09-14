@@ -18,7 +18,7 @@ import { PrismaService } from '../database/prisma.service';
 import { FetcherService } from '../fetcher/fetcher.service';
 import { DataForSeoKeywordsProvider, RELATED_SEED_LIMIT, type KeywordVolumeItem } from './keyword-research.provider';
 import { KEYWORD_RESEARCH_LIMITS } from './dto/keyword-research.dto';
-import type { RunKeywordResearchDto, ListKeywordSetsQueryDto } from './dto/keyword-research.dto';
+import type { RunKeywordResearchDto, ListKeywordSetsQueryDto, PriorityKeywordsQueryDto } from './dto/keyword-research.dto';
 
 export interface KeywordResult {
   id: string;
@@ -32,6 +32,27 @@ export interface KeywordResult {
   isRelated: boolean;
   isLongTail: boolean;
   createdAt: Date;
+}
+
+export interface PriorityKeyword extends KeywordResult {
+  /**
+   * 0-100, disclosed weights (see `PRIORITY_WEIGHTS`): 55% search volume
+   * (normalized against the max volume in the ranked set), 25% inverse
+   * advertiser-competition (a demand-pressure proxy, not organic ranking
+   * difficulty — see the module's SPEC.md caveat), 20% commercial intent
+   * (CPC, capped). Never a black-box number — every input is a real,
+   * disclosed field on the row.
+   */
+  priorityScore: number;
+}
+
+export interface PriorityKeywordsResult {
+  setId: string;
+  rankedAt: string;
+  weights: typeof PRIORITY_WEIGHTS;
+  keywords: PriorityKeyword[];
+  /** Keywords with no `searchVolume` (a failed per-keyword lookup) — excluded from ranking, never silently dropped. */
+  unscored: KeywordResult[];
 }
 
 export interface KeywordSetResult {
@@ -53,6 +74,20 @@ const LONG_TAIL_MIN_WORDS = 4;
 
 /** Same fallback convention as `SERP_LIMITS.defaultMaxCostPerCapture` in serp-intelligence. */
 const DEFAULT_MAX_COST_PER_RUN = 5;
+
+/**
+ * "Select Priority Keywords to Target" (stage 10's fourth flowchart leaf).
+ * Weights are disclosed rather than baked silently into one opaque number —
+ * same discipline `scoring`'s versioned rubric and `page-analysis`'s
+ * structureScore already follow.
+ */
+const PRIORITY_WEIGHTS = { volume: 0.55, competition: 0.25, commercialIntent: 0.2 } as const;
+
+/** Above this, more CPC stops meaningfully changing the commercial-intent signal. */
+const CPC_CAP_USD = 20;
+
+const DEFAULT_PRIORITY_LIMIT = 20;
+const MAX_PRIORITY_LIMIT = 100;
 
 @Injectable()
 export class KeywordResearchService {
@@ -203,6 +238,65 @@ export class KeywordResearchService {
     return { sets: sets.map((s) => this.toSetResult(s)) };
   }
 
+  /**
+   * Rank a set's keywords into a priority-to-target order — the flowchart's
+   * "Select Priority Keywords to Target" leaf, which had no implementation
+   * anywhere before this. Deterministic: same rows in, same ranking out,
+   * every input a disclosed field (see `PriorityKeyword.priorityScore`).
+   *
+   * Defaults to the project's most recent set with at least one scored
+   * keyword (`completed` or `partial`) when `setId` is omitted.
+   *
+   * @throws NotFoundException  unknown project, unknown/foreign setId, or no eligible set exists yet
+   */
+  async priority(projectId: string, query: PriorityKeywordsQueryDto): Promise<PriorityKeywordsResult> {
+    await this.ensureProject(projectId);
+
+    const set = query.setId
+      ? await this.prisma.keywordSet.findUnique({ where: { id: query.setId }, include: { keywords: true } })
+      : await this.prisma.keywordSet.findFirst({
+          where: { projectId, status: { in: ['completed', 'partial'] } },
+          orderBy: { createdAt: 'desc' },
+          include: { keywords: true },
+        });
+
+    if (!set || set.projectId !== projectId) {
+      throw new NotFoundException(
+        query.setId
+          ? `Keyword set ${query.setId} not found for project ${projectId}`
+          : `No completed/partial keyword set exists yet for project ${projectId} — POST .../keyword-research first`,
+      );
+    }
+
+    const limit = Math.min(query.limit ?? DEFAULT_PRIORITY_LIMIT, MAX_PRIORITY_LIMIT);
+    const results = set.keywords.map((k) => this.toKeywordResult(k));
+    const scorable = results.filter((k) => k.searchVolume != null && k.searchVolume > 0);
+    const unscored = results.filter((k) => k.searchVolume == null || k.searchVolume <= 0);
+
+    const maxVolume = scorable.reduce((max, k) => Math.max(max, k.searchVolume ?? 0), 0) || 1;
+
+    const ranked: PriorityKeyword[] = scorable
+      .map((k) => {
+        const volumeNorm = (k.searchVolume ?? 0) / maxVolume;
+        // competitionIndex is 0-100 advertiser-competition pressure; missing
+        // data is treated as mid-competition (50) rather than best-case (0),
+        // so an unscored gap can never inflate a keyword's priority.
+        const competitionNorm = 1 - (k.competitionIndex ?? 50) / 100;
+        const cpcNorm = Math.min(k.cpc ?? 0, CPC_CAP_USD) / CPC_CAP_USD;
+        const priorityScore = Math.round(
+          100 *
+            (PRIORITY_WEIGHTS.volume * volumeNorm +
+              PRIORITY_WEIGHTS.competition * competitionNorm +
+              PRIORITY_WEIGHTS.commercialIntent * cpcNorm),
+        );
+        return { ...k, priorityScore };
+      })
+      .sort((a, b) => b.priorityScore - a.priorityScore)
+      .slice(0, limit);
+
+    return { setId: set.id, rankedAt: new Date().toISOString(), weights: PRIORITY_WEIGHTS, keywords: ranked, unscored };
+  }
+
   // ─── internals ─────────────────────────────────────────────
 
   private async ensureProject(projectId: string): Promise<void> {
@@ -289,19 +383,35 @@ export class KeywordResearchService {
       costUsd: set.costUsd,
       createdAt: set.createdAt,
       finishedAt: set.finishedAt,
-      keywords: set.keywords.map((k) => ({
-        id: k.id,
-        keyword: k.keyword,
-        searchVolume: k.searchVolume,
-        competition: k.competition,
-        competitionIndex: k.competitionIndex,
-        cpc: k.cpc,
-        lowTopOfPageBid: k.lowTopOfPageBid,
-        highTopOfPageBid: k.highTopOfPageBid,
-        isRelated: k.isRelated,
-        isLongTail: k.isLongTail,
-        createdAt: k.createdAt,
-      })),
+      keywords: set.keywords.map((k) => this.toKeywordResult(k)),
+    };
+  }
+
+  private toKeywordResult(k: {
+    id: string;
+    keyword: string;
+    searchVolume: number | null;
+    competition: string | null;
+    competitionIndex: number | null;
+    cpc: number | null;
+    lowTopOfPageBid: number | null;
+    highTopOfPageBid: number | null;
+    isRelated: boolean;
+    isLongTail: boolean;
+    createdAt: Date;
+  }): KeywordResult {
+    return {
+      id: k.id,
+      keyword: k.keyword,
+      searchVolume: k.searchVolume,
+      competition: k.competition,
+      competitionIndex: k.competitionIndex,
+      cpc: k.cpc,
+      lowTopOfPageBid: k.lowTopOfPageBid,
+      highTopOfPageBid: k.highTopOfPageBid,
+      isRelated: k.isRelated,
+      isLongTail: k.isLongTail,
+      createdAt: k.createdAt,
     };
   }
 }

@@ -25,7 +25,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Anthropic from '@anthropic-ai/sdk';
+import { LlmService } from '../../common/llm/llm.service';
 import { PrismaService } from '../database/prisma.service';
 import { generatePersona, planGeneration } from './persona.generator';
 import { PERSONA_ROLES } from './persona.types';
@@ -44,18 +44,15 @@ import type {
 const DEFAULT_MAX_PER_PROJECT = 100;
 /** Default USD budget for the LLM refinement pass of a single generate() call. */
 const DEFAULT_MAX_COST_PER_GENERATE = 1.0;
-/** Opus fallback $/MTok — matches measurement/anthropic.adapter. */
-const OPUS_INPUT_PER_MTOK = 5;
-const OPUS_OUTPUT_PER_MTOK = 25;
 
 @Injectable()
 export class PersonaService {
   private readonly logger = new Logger(PersonaService.name);
-  private anthropic: Anthropic | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly llm: LlmService,
   ) {}
 
   /** List a project's personas (newest first), optionally filtered by status. */
@@ -81,7 +78,7 @@ export class PersonaService {
    *
    * @throws NotFoundException          project missing.
    * @throws ConflictException          project is already at its persona cap.
-   * @throws ServiceUnavailableException `useLlm` requested without ANTHROPIC_API_KEY.
+   * @throws ServiceUnavailableException `useLlm` requested without a configured LLM provider.
    */
   async generate(projectId: string, input: GeneratePersonasInput): Promise<{ personas: PersonaDto[]; llmRefined: number; llmCostUsd: number; capped: boolean }> {
     const project = await this.ensureProject(projectId);
@@ -89,9 +86,9 @@ export class PersonaService {
     // Capability gate before business rules: "this feature is unavailable" (503)
     // is a clearer signal than "you are at cap" (409) when both are true.
     const useLlm = input.useLlm === true;
-    if (useLlm && !this.config.get<string>('ANTHROPIC_API_KEY')) {
+    if (useLlm && !this.llm.isAvailable()) {
       throw new ServiceUnavailableException(
-        'ANTHROPIC_API_KEY not configured — persona LLM refinement unavailable (omit useLlm for the deterministic generator)',
+        'No LLM provider configured (OPENROUTER_API_KEY or ANTHROPIC_API_KEY) — persona LLM refinement unavailable (omit useLlm for the deterministic generator)',
       );
     }
 
@@ -296,9 +293,6 @@ export class PersonaService {
     profile: PersonaProfile,
     ctx: PersonaGenerationContext,
   ): Promise<{ profile: PersonaProfile; costUsd: number; model: string }> {
-    const model = this.config.get<string>('PERSONA_LLM_MODEL', 'claude-opus-5');
-    const client = this.ensureClient();
-
     const system =
       'You sharpen synthetic B2B buyer personas for market research. You are given a persona ' +
       'draft as JSON. Rewrite ONLY the freeform text fields so they read as one specific real ' +
@@ -325,28 +319,22 @@ export class PersonaService {
       },
     });
 
-    const res = await client.messages.create({
-      model,
-      max_tokens: 1200,
-      system,
-      messages: [{ role: 'user', content: user }],
-    });
-
-    const text = res.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('')
-      .trim();
-
-    const parsed = this.parseRefinement(text);
-    const inputTokens = res.usage?.input_tokens ?? 0;
-    const outputTokens = res.usage?.output_tokens ?? 0;
-    const costUsd =
-      (inputTokens / 1_000_000) * OPUS_INPUT_PER_MTOK + (outputTokens / 1_000_000) * OPUS_OUTPUT_PER_MTOK;
+    const result = await this.llm.json(
+      {
+        purpose: 'persona LLM refinement',
+        maxTokens: 1200,
+        openRouterModel: this.config.get<string>('PERSONA_LLM_MODEL'),
+        anthropicModel: this.config.get<string>('PERSONA_LLM_ANTHROPIC_MODEL'),
+        system,
+        user,
+      },
+      (raw) => this.parseRefinement(raw),
+    );
+    const parsed = result.data;
 
     return {
-      model,
-      costUsd,
+      model: result.model,
+      costUsd: result.costUsd,
       profile: {
         ...profile,
         label: parsed.label ?? profile.label,
@@ -360,38 +348,25 @@ export class PersonaService {
     };
   }
 
-  /** Tolerant JSON extraction — model may wrap the object in prose or a fence. */
-  private parseRefinement(text: string): Partial<Record<
+  /** Tolerant field extraction — LlmService has already parsed the JSON (fence/prose-tolerant); this just narrows shape, dropping anything malformed rather than throwing. */
+  private parseRefinement(raw: unknown): Partial<Record<
     'label' | 'primaryGoal' | 'researchObjective' | 'painPoints' | 'buyingTriggers' | 'objections' | 'vocabulary',
     string & string[]
   >> {
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start === -1 || end === -1 || end <= start) return {};
-    try {
-      const obj = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
-      const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
-      const arr = (v: unknown) =>
-        Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0) : undefined;
-      return {
-        label: str(obj.label) as never,
-        primaryGoal: str(obj.primaryGoal) as never,
-        researchObjective: str(obj.researchObjective) as never,
-        painPoints: arr(obj.painPoints) as never,
-        buyingTriggers: arr(obj.buyingTriggers) as never,
-        objections: arr(obj.objections) as never,
-        vocabulary: arr(obj.vocabulary) as never,
-      };
-    } catch {
-      return {};
-    }
-  }
-
-  private ensureClient(): Anthropic {
-    if (!this.anthropic) {
-      this.anthropic = new Anthropic({ apiKey: this.config.get<string>('ANTHROPIC_API_KEY') || undefined });
-    }
-    return this.anthropic;
+    if (typeof raw !== 'object' || raw === null) return {};
+    const obj = raw as Record<string, unknown>;
+    const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+    const arr = (v: unknown) =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0) : undefined;
+    return {
+      label: str(obj.label) as never,
+      primaryGoal: str(obj.primaryGoal) as never,
+      researchObjective: str(obj.researchObjective) as never,
+      painPoints: arr(obj.painPoints) as never,
+      buyingTriggers: arr(obj.buyingTriggers) as never,
+      objections: arr(obj.objections) as never,
+      vocabulary: arr(obj.vocabulary) as never,
+    };
   }
 
   private maxPerProject(): number {

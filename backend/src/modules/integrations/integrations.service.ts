@@ -160,12 +160,12 @@ export class IntegrationsService {
         key: 'plunk',
         name: 'Plunk (transactional email)',
         category: 'email',
-        connected: has('PLUNK_API_KEY'),
-        status: has('PLUNK_API_KEY') ? 'connected' : 'not-connected',
-        detail: has('PLUNK_API_KEY')
+        connected: has('PLUNK_SECRET_KEY'),
+        status: has('PLUNK_SECRET_KEY') ? 'connected' : 'not-connected',
+        detail: has('PLUNK_SECRET_KEY')
           ? 'Report-delivery + testimonial emails can send.'
-          : 'Set PLUNK_API_KEY to send report-delivery emails.',
-        configHint: 'PLUNK_API_KEY',
+          : 'Set PLUNK_SECRET_KEY to send report-delivery emails.',
+        configHint: 'PLUNK_SECRET_KEY',
         connectUrl: null,
         docsPath: 'backend/src/modules/delivery/README.md',
       },

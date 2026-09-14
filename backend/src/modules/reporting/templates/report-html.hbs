@@ -132,6 +132,79 @@
     {{/unless}}
     </tbody>
   </table>
+
+  <h2>Prioritized Growth Roadmap</h2>
+  {{#if report.growthPlan.actionPlan}}
+  <table>
+    <thead><tr><th>Priority</th><th>Recommended Action</th><th>Quick wins</th><th>Major projects</th></tr></thead>
+    <tbody>
+    {{#each report.growthPlan.actionPlan.recommendations}}
+      <tr>
+        <td>{{priorityRank}}</td>
+        <td><strong>{{title}}</strong><div class="fix">{{summary}}</div></td>
+        <td>{{quickWinCount}}</td>
+        <td>{{majorProjectCount}}</td>
+      </tr>
+    {{/each}}
+    </tbody>
+  </table>
+  {{#if report.growthPlan.actionPlan.notCovered}}
+  <p class="sev-low">No open gap in: {{#each report.growthPlan.actionPlan.notCovered}}{{this}}{{#unless @last}}, {{/unless}}{{/each}}.</p>
+  {{/if}}
+  {{else}}
+  <p class="sev-low">No action plan built yet — POST /projects/:id/strategy/build first.</p>
+  {{/if}}
+
+  {{#if report.growthPlan.findingsCopy}}
+  <h2>Issue + Evidence (detailed)</h2>
+  {{#each report.growthPlan.findingsCopy}}
+  <div class="ev">
+    <strong>{{title}}</strong>{{#if thinRun}} <span class="sev-medium">(thin evidence)</span>{{/if}}
+    <p>{{whatExecutive}}</p>
+    <p><em>Why:</em> {{whyExecutive}}</p>
+    <p><em>Fix (implementation guidance):</em> {{fixExecutive}}</p>
+  </div>
+  {{/each}}
+  {{/if}}
+
+  <p class="sev-low">{{report.growthPlan.assetsNote}}</p>
+
+  <h2>Backlinks</h2>
+  {{#if report.backlinks}}
+  {{#if_eq report.backlinks.status "failed"}}
+  <p class="sev-low">Backlinks pull failed: {{report.backlinks.error}}</p>
+  {{else}}
+  <div class="sub-scores">
+    <div class="sub"><div class="dim">Referring Domains</div><div class="val">{{report.backlinks.referringDomains}}</div></div>
+    <div class="sub"><div class="dim">Total Backlinks</div><div class="val">{{report.backlinks.backlinks}}</div></div>
+    <div class="sub"><div class="dim">Rank</div><div class="val">{{report.backlinks.rank}}</div></div>
+    <div class="sub"><div class="dim">Spam Score</div><div class="val">{{report.backlinks.backlinksSpamScore}}</div></div>
+    <div class="sub"><div class="dim">Broken Backlinks</div><div class="val">{{report.backlinks.brokenBacklinks}}</div></div>
+    <div class="sub"><div class="dim">Referring IPs / Subnets</div><div class="val">{{report.backlinks.referringIps}} / {{report.backlinks.referringSubnets}}</div></div>
+  </div>
+  {{#if report.backlinks.topBacklinks}}
+  <table>
+    <thead><tr><th>Source</th><th>Anchor</th><th>Follow</th><th>Domain Rank</th><th>First Seen</th></tr></thead>
+    <tbody>
+    {{#each report.backlinks.topBacklinks}}
+      <tr>
+        <td>{{urlFrom}}</td>
+        <td>{{anchor}}</td>
+        <td>{{#if dofollow}}dofollow{{else}}<span class="sev-medium">nofollow</span>{{/if}}</td>
+        <td>{{domainFromRank}}</td>
+        <td>{{firstSeen}}</td>
+      </tr>
+    {{/each}}
+    </tbody>
+  </table>
+  {{/if}}
+  {{#if_eq report.backlinks.status "partial"}}
+  <p class="sev-low">{{report.backlinks.error}}</p>
+  {{/if_eq}}
+  {{/if_eq}}
+  {{else}}
+  <p class="sev-low">No backlinks data yet — POST /projects/:id/backlinks/refresh first.</p>
+  {{/if}}
   {{/if_eq}}
 
   {{#if_eq view "executive"}}

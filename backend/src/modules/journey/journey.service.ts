@@ -27,7 +27,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Anthropic from '@anthropic-ai/sdk';
+import { LlmService } from '../../common/llm/llm.service';
 import { PrismaService } from '../database/prisma.service';
 import { AnthropicSurfaceAdapter } from '../measurement/adapters/anthropic.adapter';
 import { PerplexitySurfaceAdapter } from '../measurement/adapters/perplexity.adapter';
@@ -53,12 +53,12 @@ const DEFAULT_MAX_COST_PER_RUN = 2.0;
 @Injectable()
 export class JourneyService {
   private readonly logger = new Logger(JourneyService.name);
-  private anthropic: Anthropic | null = null;
   private readonly adapters: Map<JourneySurface, SurfaceAdapter>;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly llm: LlmService,
     anthropic: AnthropicSurfaceAdapter,
     perplexity: PerplexitySurfaceAdapter,
     mock: MockSurfaceAdapter,
@@ -75,7 +75,7 @@ export class JourneyService {
   /**
    * Plan a journey for one persona. Persists Journey + its JourneyStep tree.
    * @throws NotFoundException          project or persona missing (persona must belong to project).
-   * @throws ServiceUnavailableException `useLlm` without ANTHROPIC_API_KEY.
+   * @throws ServiceUnavailableException `useLlm` without a configured LLM provider.
    */
   async planJourney(projectId: string, input: PlanJourneyInput) {
     const project = await this.ensureProject(projectId);
@@ -85,9 +85,9 @@ export class JourneyService {
     }
 
     const useLlm = input.useLlm === true;
-    if (useLlm && !this.config.get<string>('ANTHROPIC_API_KEY')) {
+    if (useLlm && !this.llm.isAvailable()) {
       throw new ServiceUnavailableException(
-        'ANTHROPIC_API_KEY not configured — journey LLM planning unavailable (omit useLlm for the deterministic planner)',
+        'No LLM provider configured (OPENROUTER_API_KEY or ANTHROPIC_API_KEY) — journey LLM planning unavailable (omit useLlm for the deterministic planner)',
       );
     }
 
@@ -372,8 +372,8 @@ export class JourneyService {
     const useLlm = input.useLlm === true;
     const autoRun = input.autoRun !== false;
 
-    if (useLlm && !this.config.get<string>('ANTHROPIC_API_KEY')) {
-      throw new ServiceUnavailableException('ANTHROPIC_API_KEY not configured — campaign LLM planning unavailable');
+    if (useLlm && !this.llm.isAvailable()) {
+      throw new ServiceUnavailableException('No LLM provider configured (OPENROUTER_API_KEY or ANTHROPIC_API_KEY) — campaign LLM planning unavailable');
     }
     if (autoRun) this.assertLiveAllowed(surface); // fail before we persist anything
 
@@ -644,10 +644,8 @@ export class JourneyService {
     ctx: PlannerContext,
     opts: { maxDepth: number; maxBranches: number },
   ): Promise<JourneyPlan> {
-    const model = this.config.get<string>('JOURNEY_LLM_MODEL', 'claude-opus-5');
     const deterministic = planJourney(persona, ctx, opts);
     try {
-      const client = this.ensureClient();
       const system =
         'You design realistic B2B buyer search journeys for market research. Given a persona and ' +
         'context, output ONLY minified JSON: {"steps":[{"localId","parentLocalId","depth","ordinal",' +
@@ -668,38 +666,27 @@ export class JourneyService {
           objections: persona.objections,
         },
       });
-      const res = await client.messages.create({
-        model,
-        max_tokens: 2000,
-        system,
-        messages: [{ role: 'user', content: user }],
-      });
-      const text = res.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('')
-        .trim();
-      const steps = this.parsePlannedSteps(text, opts);
-      if (steps.length === 0) return deterministic;
-      return { ...deterministic, source: 'llm', model, steps };
+      const result = await this.llm.json(
+        {
+          purpose: 'journey LLM planning',
+          maxTokens: 2000,
+          openRouterModel: this.config.get<string>('JOURNEY_LLM_MODEL'),
+          anthropicModel: this.config.get<string>('JOURNEY_LLM_ANTHROPIC_MODEL'),
+          system,
+          user,
+        },
+        (raw) => this.parsePlannedSteps(raw, opts),
+      );
+      return { ...deterministic, source: 'llm', model: result.model, steps: result.data };
     } catch (err) {
       this.logger.warn(`journey LLM planning failed (${(err as Error).message}) — using deterministic plan`);
       return deterministic;
     }
   }
 
-  private parsePlannedSteps(text: string, opts: { maxDepth: number; maxBranches: number }): PlannedStep[] {
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start === -1 || end <= start) return [];
-    let raw: unknown;
-    try {
-      raw = JSON.parse(text.slice(start, end + 1));
-    } catch {
-      return [];
-    }
-    const arr = (raw as { steps?: unknown }).steps;
-    if (!Array.isArray(arr)) return [];
+  private parsePlannedSteps(raw: unknown, opts: { maxDepth: number; maxBranches: number }): PlannedStep[] {
+    const arr = (raw as { steps?: unknown })?.steps;
+    if (!Array.isArray(arr)) throw new Error('planner response had no steps array');
     const kinds = new Set(['query', 'refinement', 'branch', 'comparison', 'objection']);
     const aware = new Set(['problem-aware', 'solution-aware', 'product-aware', 'most-aware']);
     const out: PlannedStep[] = [];
@@ -724,8 +711,10 @@ export class JourneyService {
     // Must have exactly one root and every parent reference must resolve.
     const ids = new Set(out.map((s) => s.localId));
     const roots = out.filter((s) => s.parentLocalId === null);
-    if (roots.length !== 1) return [];
-    if (out.some((s) => s.parentLocalId !== null && !ids.has(s.parentLocalId))) return [];
+    if (roots.length !== 1) throw new Error('planner response did not have exactly one root step');
+    if (out.some((s) => s.parentLocalId !== null && !ids.has(s.parentLocalId))) {
+      throw new Error('planner response had an unresolved parentLocalId');
+    }
     // Order parent-before-child (stable) so persistence can resolve ids.
     return this.topoOrder(out);
   }
@@ -745,12 +734,5 @@ export class JourneyService {
       for (const c of byParent.get(n.localId) ?? []) queue.push(c);
     }
     return ordered.length === steps.length ? ordered : steps;
-  }
-
-  private ensureClient(): Anthropic {
-    if (!this.anthropic) {
-      this.anthropic = new Anthropic({ apiKey: this.config.get<string>('ANTHROPIC_API_KEY') || undefined });
-    }
-    return this.anthropic;
   }
 }

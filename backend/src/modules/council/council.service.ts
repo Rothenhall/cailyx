@@ -17,7 +17,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Anthropic from '@anthropic-ai/sdk';
+import { LlmService } from '../../common/llm/llm.service';
 import { PrismaService } from '../database/prisma.service';
 import { buildCandidates } from './council.candidates';
 import { runDebate } from './council.engine';
@@ -28,26 +28,26 @@ import type { AgentContribution, AgentRole, RankedIntervention, RunCouncilInput 
 @Injectable()
 export class CouncilService {
   private readonly logger = new Logger(CouncilService.name);
-  private anthropic: Anthropic | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly llm: LlmService,
   ) {}
 
   /**
    * Run a council session for a project.
    * @throws NotFoundException          project missing.
-   * @throws ServiceUnavailableException useLlm without ANTHROPIC_API_KEY.
+   * @throws ServiceUnavailableException useLlm without a configured LLM provider.
    */
   async run(projectId: string, input: RunCouncilInput) {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found: ' + projectId);
 
     const useLlm = input.useLlm === true;
-    if (useLlm && !this.config.get<string>('ANTHROPIC_API_KEY')) {
+    if (useLlm && !this.llm.isAvailable()) {
       throw new ServiceUnavailableException(
-        'ANTHROPIC_API_KEY not configured — council LLM debate unavailable (omit useLlm for the deterministic engine)',
+        'No LLM provider configured (OPENROUTER_API_KEY or ANTHROPIC_API_KEY) — council LLM debate unavailable (omit useLlm for the deterministic engine)',
       );
     }
 
@@ -266,63 +266,50 @@ export class CouncilService {
     candidates: ReturnType<typeof buildCandidates>['candidates'],
     roles: AgentRole[],
     rounds: number,
-  ): Promise<{ contributions: AgentContribution[]; rankings: RankedIntervention[]; model: string }> {
-    const model = this.config.get<string>('COUNCIL_LLM_MODEL', 'claude-opus-5');
+  ): Promise<{ contributions: AgentContribution[]; rankings: RankedIntervention[]; model: string | null }> {
     const deterministic = runDebate(candidates, roles, rounds);
     try {
-      const client = this.ensureClient();
-      const res = await client.messages.create({
-        model,
-        max_tokens: 2500,
-        system:
-          'You facilitate a panel of B2B AI-visibility specialists debating which interventions to prioritise. ' +
-          'Roles: ' +
-          roles.join(', ') +
-          '. Use ONLY the provided candidate interventions and their evidence. Return ONLY minified JSON: ' +
-          '{"contributions":[{"round","agentRole","summary","positions":[{"interventionKey","vote","weight","rationale"}]}],' +
-          '"rankings":[{"rank","interventionKey","title","rationale","consensus","expectedImpact","effort","confidence","dissent"}]}. ' +
-          'vote ∈ for|against|conditional; weight 0..1; consensus 0..1; expectedImpact 0..100; effort/confidence ∈ low|medium|high. ' +
-          'interventionKey MUST be one of the provided keys.',
-        messages: [
-          {
-            role: 'user',
-            content: JSON.stringify({ question, rounds, candidates }),
-          },
-        ],
-      });
-      const text = res.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('')
-        .trim();
-      const parsed = this.parseDebate(text, new Set(candidates.map((c) => c.key)));
-      if (!parsed) return { ...deterministic, model };
-      return { ...parsed, model };
+      const result = await this.llm.json(
+        {
+          purpose: 'council LLM debate',
+          maxTokens: 2500,
+          openRouterModel: this.config.get<string>('COUNCIL_LLM_MODEL'),
+          anthropicModel: this.config.get<string>('COUNCIL_LLM_ANTHROPIC_MODEL'),
+          system:
+            'You facilitate a panel of B2B AI-visibility specialists debating which interventions to prioritise. ' +
+            'Roles: ' +
+            roles.join(', ') +
+            '. Use ONLY the provided candidate interventions and their evidence. Return ONLY minified JSON: ' +
+            '{"contributions":[{"round","agentRole","summary","positions":[{"interventionKey","vote","weight","rationale"}]}],' +
+            '"rankings":[{"rank","interventionKey","title","rationale","consensus","expectedImpact","effort","confidence","dissent"}]}. ' +
+            'vote ∈ for|against|conditional; weight 0..1; consensus 0..1; expectedImpact 0..100; effort/confidence ∈ low|medium|high. ' +
+            'interventionKey MUST be one of the provided keys.',
+          user: JSON.stringify({ question, rounds, candidates }),
+        },
+        (raw) => this.parseDebate(raw, new Set(candidates.map((c) => c.key))),
+      );
+      return { ...result.data, model: result.model };
     } catch (err) {
       this.logger.warn(`council LLM debate failed (${(err as Error).message}) — using deterministic engine`);
-      return { ...deterministic, model };
+      return { ...deterministic, model: null };
     }
   }
 
   private parseDebate(
-    text: string,
+    raw: unknown,
     validKeys: Set<string>,
-  ): { contributions: AgentContribution[]; rankings: RankedIntervention[] } | null {
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start === -1 || end <= start) return null;
-    let raw: { contributions?: unknown; rankings?: unknown };
-    try {
-      raw = JSON.parse(text.slice(start, end + 1));
-    } catch {
-      return null;
+  ): { contributions: AgentContribution[]; rankings: RankedIntervention[] } {
+    const r = raw as { contributions?: unknown; rankings?: unknown };
+    if (!Array.isArray(r.contributions) || !Array.isArray(r.rankings)) {
+      throw new Error('debate response missing contributions/rankings arrays');
     }
-    if (!Array.isArray(raw.contributions) || !Array.isArray(raw.rankings)) return null;
+    const rawContributions = r.contributions;
+    const rawRankings = r.rankings;
 
     const votes = new Set(['for', 'against', 'conditional']);
     const grades = new Set(['low', 'medium', 'high']);
     const contributions: AgentContribution[] = [];
-    for (const c of raw.contributions as Array<Record<string, unknown>>) {
+    for (const c of rawContributions as Array<Record<string, unknown>>) {
       if (!c || typeof c.agentRole !== 'string' || typeof c.summary !== 'string') continue;
       const positions = Array.isArray(c.positions)
         ? (c.positions as Array<Record<string, unknown>>)
@@ -344,30 +331,25 @@ export class CouncilService {
 
     const rankings: RankedIntervention[] = [];
     let rank = 1;
-    for (const r of raw.rankings as Array<Record<string, unknown>>) {
-      if (!r || typeof r.interventionKey !== 'string' || !validKeys.has(r.interventionKey)) continue;
+    for (const rk of rawRankings as Array<Record<string, unknown>>) {
+      if (!rk || typeof rk.interventionKey !== 'string' || !validKeys.has(rk.interventionKey)) continue;
       rankings.push({
         rank: rank++,
-        interventionKey: r.interventionKey,
-        title: typeof r.title === 'string' ? r.title.slice(0, 200) : r.interventionKey,
-        rationale: typeof r.rationale === 'string' ? r.rationale.slice(0, 400) : '',
-        consensus: clamp(Number(r.consensus) || 0, 0, 1),
-        expectedImpact: Math.round(clamp(Number(r.expectedImpact) || 0, 0, 100)),
-        effort: grades.has(r.effort as string) ? (r.effort as RankedIntervention['effort']) : 'medium',
-        confidence: grades.has(r.confidence as string) ? (r.confidence as RankedIntervention['confidence']) : 'medium',
+        interventionKey: rk.interventionKey,
+        title: typeof rk.title === 'string' ? rk.title.slice(0, 200) : rk.interventionKey,
+        rationale: typeof rk.rationale === 'string' ? rk.rationale.slice(0, 400) : '',
+        consensus: clamp(Number(rk.consensus) || 0, 0, 1),
+        expectedImpact: Math.round(clamp(Number(rk.expectedImpact) || 0, 0, 100)),
+        effort: grades.has(rk.effort as string) ? (rk.effort as RankedIntervention['effort']) : 'medium',
+        confidence: grades.has(rk.confidence as string) ? (rk.confidence as RankedIntervention['confidence']) : 'medium',
         sourceRefs: [],
-        dissent: typeof r.dissent === 'string' && r.dissent.trim() ? r.dissent.slice(0, 300) : null,
+        dissent: typeof rk.dissent === 'string' && rk.dissent.trim() ? rk.dissent.slice(0, 300) : null,
       });
     }
-    if (contributions.length === 0 || rankings.length === 0) return null;
-    return { contributions, rankings };
-  }
-
-  private ensureClient(): Anthropic {
-    if (!this.anthropic) {
-      this.anthropic = new Anthropic({ apiKey: this.config.get<string>('ANTHROPIC_API_KEY') || undefined });
+    if (contributions.length === 0 || rankings.length === 0) {
+      throw new Error('debate response produced no usable contributions/rankings');
     }
-    return this.anthropic;
+    return { contributions, rankings };
   }
 }
 

@@ -12,7 +12,7 @@ import { Controller, Post, Get, Param, Query, Body } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { KeywordResearchService } from './keyword-research.service';
-import { RunKeywordResearchDto, ListKeywordSetsQueryDto } from './dto/keyword-research.dto';
+import { RunKeywordResearchDto, ListKeywordSetsQueryDto, PriorityKeywordsQueryDto } from './dto/keyword-research.dto';
 
 @ApiTags('Keyword Research')
 @Controller('projects/:projectId/keyword-research')
@@ -50,5 +50,22 @@ export class KeywordResearchController {
   @ApiResponse({ status: 404, description: 'Project not found, or setId does not belong to this project' })
   async list(@Param('projectId') projectId: string, @Query() query: ListKeywordSetsQueryDto) {
     return this.keywordResearch.list(projectId, query);
+  }
+
+  /**
+   * "Select Priority Keywords to Target" — ranks a set's keywords by
+   * disclosed weights over volume/competition/CPC. No vendor call, no cost;
+   * pure computation over already-stored rows.
+   */
+  @Get('priority')
+  @ApiOperation({
+    summary: 'Rank keywords into a priority-to-target order',
+    description:
+      'Deterministic ranking over volume (55%), inverse advertiser-competition (25%) and CPC-derived commercial intent (20%) — weights returned in the response, never a black-box number. Defaults to the project\'s most recent completed/partial set.',
+  })
+  @ApiResponse({ status: 200, description: 'Ranked keywords + the ones excluded for having no search-volume data' })
+  @ApiResponse({ status: 404, description: 'Project not found, setId not found/foreign, or no eligible set exists yet' })
+  async priority(@Param('projectId') projectId: string, @Query() query: PriorityKeywordsQueryDto) {
+    return this.keywordResearch.priority(projectId, query);
   }
 }

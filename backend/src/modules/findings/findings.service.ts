@@ -2,20 +2,22 @@
  * Findings Service — gap rows turned into what/why/fix copy in two registers
  * (PRD FR-9.1–9.3), passed through the claims-discipline filter before storage.
  *
- * LLM choice (docs/analysis/wave-2.md): Anthropic SDK with a strict JSON
- * schema and a claims-discipline post-check — never free-form copy.
+ * LLM choice (docs/analysis/wave-2.md; provider migrated 2026-09-13 to the
+ * shared `LlmService` — OpenRouter preferred, Anthropic fallback): a strict
+ * JSON schema and a claims-discipline post-check — never free-form copy.
  * FR-9.1 degrades honestly: when evidence is thin, the finding is stored
  * `thinRun` with a disclosed gap, not inflated prose.
  *
- * Generation requires ANTHROPIC_API_KEY. One Finding row per generated gap;
- * re-generating creates a fresh batch.
+ * Generation requires a configured LLM provider (OPENROUTER_API_KEY or
+ * ANTHROPIC_API_KEY). One Finding row per generated gap; re-generating
+ * creates a fresh batch.
  *
  * @module findings.service
  */
 
 import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Anthropic from '@anthropic-ai/sdk';
+import { LlmService } from '../../common/llm/llm.service';
 import { PrismaService } from '../database/prisma.service';
 import { ClaimsService } from '../claims/claims.service';
 import { BANNED_PHRASES } from '../claims/claims.types';
@@ -38,11 +40,11 @@ interface FindingContext {
 @Injectable()
 export class FindingsService {
   private readonly logger = new Logger(FindingsService.name);
-  private anthropic: Anthropic | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly llm: LlmService,
     private readonly claims: ClaimsService,
   ) {}
 
@@ -50,14 +52,14 @@ export class FindingsService {
    * Generate findings copy for a project: ranks its open gaps, picks the top
    * ones by priority score, constrains an LLM per finding, filters through
    * claims discipline, and stores Finding rows.
-   * @throws ServiceUnavailableException when ANTHROPIC_API_KEY is missing.
+   * @throws ServiceUnavailableException when no LLM provider is configured.
    * @throws NotFoundException when the project or its gap analysis is missing.
    */
   async generate(projectId: string, input?: { limit?: number }): Promise<{ findings: GeneratedFinding[]; thinRun: boolean }> {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found: ' + projectId);
-    if (!this.config.get<string>('ANTHROPIC_API_KEY')) {
-      throw new ServiceUnavailableException('ANTHROPIC_API_KEY not configured — findings copy generation unavailable');
+    if (!this.llm.isAvailable()) {
+      throw new ServiceUnavailableException('No LLM provider configured (OPENROUTER_API_KEY or ANTHROPIC_API_KEY) — findings copy generation unavailable');
     }
 
     const limit = Math.min(Math.max(input?.limit ?? 5, 1), 10);
@@ -167,50 +169,38 @@ export class FindingsService {
     ctx: FindingContext,
     opts?: { bannedMatches?: string[] },
   ): Promise<FindingCopy> {
-    const client = this.ensureClient();
     const avoid =
       opts?.bannedMatches && opts.bannedMatches.length > 0
         ? '\n\nSTRICTLY BANNED (you already used these — never repeat them): ' +
           opts.bannedMatches.map((b) => '"' + b + '"').join(', ')
         : '';
 
-    const response = await client.messages.create({
-      model: this.config.get<string>('FINDINGS_MODEL', 'claude-opus-5'),
-      max_tokens: 1500,
-      system:
-        'You write findings copy for an AI-visibility audit product. Two registers, always:\n' +
-        '- executive: 2 sentences max, no jargon, no hedging\n' +
-        '- technical: precise, references only the concrete evidence given\n' +
-        'Never state numbers that are not in the evidence. Never use these phrases or close synonyms of them: ' +
-        BANNED_PHRASES.map((p) => '"' + p + '"').join(', ') +
-        '.\nRespond with ONLY JSON matching: ' +
-        '{"whatExecutive":string,"whatTechnical":string,"whyExecutive":string,"whyTechnical":string,"fixExecutive":string,"fixTechnical":string}',
-      messages: [
-        {
-          role: 'user',
-          content:
-            'Finding for client "' + projectName + '":\n' +
-            'Title: ' + ctx.title + '\n' +
-            'Dimension: ' + ctx.dimension + '\n' +
-            'Action: ' + ctx.action + '\n' +
-            'Severity: ' + (ctx.severity ?? 'unknown') + (ctx.thinRun ? ' (thin evidence run — say what is missing in why-technical)' : '') + '\n' +
-            'Description: ' + ctx.description + '\n' +
-            'Evidence (the only facts you may reference): ' + (ctx.evidence.join('; ') || 'none') + avoid,
-        },
-      ],
-    });
-
-    const text = response.content
-      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-      .map((block) => block.text)
-      .join('');
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error('Model returned non-JSON copy for "' + ctx.title + '"');
-    }
-    return this.validateCopyShape(parsed);
+    const result = await this.llm.json(
+      {
+        purpose: 'findings copy generation',
+        maxTokens: 1500,
+        openRouterModel: this.config.get<string>('FINDINGS_MODEL'),
+        anthropicModel: this.config.get<string>('FINDINGS_ANTHROPIC_MODEL'),
+        system:
+          'You write findings copy for an AI-visibility audit product. Two registers, always:\n' +
+          '- executive: 2 sentences max, no jargon, no hedging\n' +
+          '- technical: precise, references only the concrete evidence given\n' +
+          'Never state numbers that are not in the evidence. Never use these phrases or close synonyms of them: ' +
+          BANNED_PHRASES.map((p) => '"' + p + '"').join(', ') +
+          '.\nRespond with ONLY JSON matching: ' +
+          '{"whatExecutive":string,"whatTechnical":string,"whyExecutive":string,"whyTechnical":string,"fixExecutive":string,"fixTechnical":string}',
+        user:
+          'Finding for client "' + projectName + '":\n' +
+          'Title: ' + ctx.title + '\n' +
+          'Dimension: ' + ctx.dimension + '\n' +
+          'Action: ' + ctx.action + '\n' +
+          'Severity: ' + (ctx.severity ?? 'unknown') + (ctx.thinRun ? ' (thin evidence run — say what is missing in why-technical)' : '') + '\n' +
+          'Description: ' + ctx.description + '\n' +
+          'Evidence (the only facts you may reference): ' + (ctx.evidence.join('; ') || 'none') + avoid,
+      },
+      (raw) => this.validateCopyShape(raw),
+    );
+    return result.data;
   }
 
   /** Narrow the parsed JSON to the six-attribute copy shape; throw on any gap. */
@@ -282,10 +272,4 @@ export class FindingsService {
     return [copy.whatExecutive, copy.whatTechnical, copy.whyExecutive, copy.whyTechnical, copy.fixExecutive, copy.fixTechnical].join(' ');
   }
 
-  private ensureClient(): Anthropic {
-    if (!this.anthropic) {
-      this.anthropic = new Anthropic({ apiKey: this.config.getOrThrow<string>('ANTHROPIC_API_KEY') });
-    }
-    return this.anthropic;
-  }
 }

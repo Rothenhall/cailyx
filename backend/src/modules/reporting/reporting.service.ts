@@ -6,10 +6,17 @@
  *   - SchemaCheck + PlatformRecord (entity-audit)
  *   - Gap + GapAnalysis (gap-analysis)
  *
+ * Consumes (via injected service, all pure reads — never a rebuild/LLM/vendor call):
+ *   - StrategyService.getActionPlan() — stage 9's ranked recommendations
+ *   - FindingsService.list() — stage 8's LLM what/why/fix copy
+ *   - BacklinksService.latest() — the project's latest DataForSEO backlinks pull
+ *
  * Produces:
  *   - Scored report (PRD §8: Machine access 25, Entity clarity 25, Shortlist 20,
  *     Extractability 20, Authority 10)
  *   - Executive summary
+ *   - Growth plan: stage 12's "Comprehensive Audit & Growth Report" →
+ *     "Prioritized Growth Roadmap" (see `GrowthPlanDto`)
  *   - Branded HTML (FR-10.1, FR-10.4), stable slug URL, noindex default (FR-10.5)
  *
  * @module reporting.service
@@ -21,15 +28,20 @@ import { join } from 'path';
 import { readFileSync } from 'fs';
 import { PrismaService } from '../database/prisma.service';
 import { ScoringService } from '../scoring/scoring.service';
+import { StrategyService } from '../strategy/strategy.service';
+import { FindingsService } from '../findings/findings.service';
+import { BacklinksService } from '../backlinks/backlinks.service';
 import type {
   ReportData,
   ReportFindingDto,
   ReportRoadmapDto,
+  GrowthPlanDto,
   ScoreSummary,
   SubScore,
   ScoreBand,
   BrandingConfig,
 } from './reporting.types';
+import type { BacklinksSummaryDto } from '../backlinks/backlinks.types';
 
 
 // Handlebars helper: {{#if_eq a b}}...{{/if_eq}}
@@ -49,6 +61,9 @@ export class ReportingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly scoring: ScoringService,
+    private readonly strategy: StrategyService,
+    private readonly findings: FindingsService,
+    private readonly backlinksService: BacklinksService,
   ) {}
 
   // ─── Generate report ──────────────────────────────────────────
@@ -67,6 +82,8 @@ export class ReportingService {
     }
 
     const roadmap = await this.getRoadmapSnapshot(projectId);
+    const growthPlan = await this.getGrowthPlanSnapshot(projectId);
+    const backlinks = await this.backlinksService.latest(projectId);
     // §8 scoring moved into the versioned-rubric scoring module (FR-8.1–8.4):
     // real measurement inputs, evidence-linked sub-scores, rubric version recorded.
     const scoreResult = await this.scoring.scoreProject(projectId);
@@ -88,7 +105,7 @@ export class ReportingService {
       createdAt: audit.createdAt.toISOString(),
     }));
 
-    const executiveSummary = this.buildExecutiveSummary(title, audit.targetUrl, score, findings, roadmap);
+    const executiveSummary = this.buildExecutiveSummary(title, audit.targetUrl, score, findings, roadmap, growthPlan);
     const slug = this.buildSlug(title);
 
     const record = await this.prisma.report.create({
@@ -104,6 +121,8 @@ export class ReportingService {
         subScores: JSON.stringify(score.subScores),
         findingsSnapshot: JSON.stringify(findings),
         roadmapSnapshot: JSON.stringify(roadmap),
+        growthPlanSnapshot: JSON.stringify(growthPlan),
+        backlinksSnapshot: backlinks ? JSON.stringify(backlinks) : null,
         branding: JSON.stringify(this.defaultBranding),
       },
     });
@@ -123,6 +142,8 @@ export class ReportingService {
       subScores: score.subScores,
       findings,
       roadmap,
+      growthPlan,
+      backlinks,
       createdAt: record.createdAt.toISOString(),
     };
   }
@@ -169,6 +190,7 @@ export class ReportingService {
     score: ScoreSummary,
     findings: ReportFindingDto[],
     roadmap: ReportRoadmapDto[],
+    growthPlan: GrowthPlanDto,
   ): string {
     const failures = findings.filter((f) => f.status === 'fail');
     const highSev = failures.filter((f) => f.severity === 'high');
@@ -204,6 +226,15 @@ export class ReportingService {
       lines.push('Roadmap: ' + fixes + ' fix, ' + builds + ' build, ' + influences + ' influence items.');
     }
 
+    if (growthPlan.actionPlan && growthPlan.actionPlan.recommendations.length > 0) {
+      const top = growthPlan.actionPlan.recommendations[0]; // already ranked quick-wins-first
+      lines.push('');
+      lines.push(
+        'Growth plan: ' + growthPlan.actionPlan.recommendations.length + ' recommendation categor' +
+          (growthPlan.actionPlan.recommendations.length === 1 ? 'y' : 'ies') + ', top priority — ' + top.title + '.',
+      );
+    }
+
     return lines.join('\n');
   }
 
@@ -224,6 +255,57 @@ export class ReportingService {
       priorityScore: g.priorityScore,
       status: g.status,
     }));
+  }
+
+  // ─── Growth plan snapshot (stage 12 "Prioritized Growth Roadmap") ──
+
+  /**
+   * Both sources are pure reads — `strategy.getActionPlan()` returns the
+   * last-built plan (null if `POST .../strategy/build` was never called);
+   * `findings.list()` returns whatever `findings.generate()` has already
+   * stored. Report generation never triggers either module to do fresh work.
+   */
+  private async getGrowthPlanSnapshot(projectId: string): Promise<GrowthPlanDto> {
+    const [actionPlan, findingsResult] = await Promise.all([
+      this.strategy.getActionPlan(projectId),
+      this.findings.list(projectId),
+    ]);
+
+    return {
+      actionPlan: actionPlan
+        ? {
+            recommendations: actionPlan.recommendations.map((r) => ({
+              category: r.category,
+              label: r.label,
+              title: r.title,
+              summary: r.summary,
+              priorityRank: r.priorityRank,
+              quickWinCount: r.quickWinCount,
+              majorProjectCount: r.majorProjectCount,
+              fillInCount: r.fillInCount,
+              thanklessTaskCount: r.thanklessTaskCount,
+              gapIds: r.gapIds,
+            })),
+            notCovered: actionPlan.notCovered,
+            updatedAt: actionPlan.updatedAt,
+          }
+        : null,
+      findingsCopy: findingsResult.findings.map((f: any) => ({
+        gapId: f.gapId,
+        title: f.title,
+        whatExecutive: f.whatExecutive,
+        whatTechnical: f.whatTechnical,
+        whyExecutive: f.whyExecutive,
+        whyTechnical: f.whyTechnical,
+        fixExecutive: f.fixExecutive,
+        fixTechnical: f.fixTechnical,
+        thinRun: f.thinRun,
+        disclosedGap: f.disclosedGap,
+      })),
+      assetsNote:
+        'Stage 11 "Marketing & Growth Execution" (blog topics, ad angles, generated content/ad/landing-page assets) ' +
+        'has no module yet — this section intentionally has no data rather than a fabricated one.',
+    };
   }
 
   // ─── HTML render (FR-10.1, FR-10.3) ──────────────────────────
@@ -270,6 +352,9 @@ export class ReportingService {
       subScores: (this.safeParse(record.subScores) as SubScore[]) || [],
       findings: (this.safeParse(record.findingsSnapshot) as ReportFindingDto[]) || [],
       roadmap: (this.safeParse(record.roadmapSnapshot) as ReportRoadmapDto[]) || [],
+      // Reports generated before this field existed have no column value at all.
+      growthPlan: record.growthPlanSnapshot ? (this.safeParse(record.growthPlanSnapshot) as GrowthPlanDto) : null,
+      backlinks: record.backlinksSnapshot ? (this.safeParse(record.backlinksSnapshot) as BacklinksSummaryDto) : null,
       createdAt: record.createdAt.toISOString(),
     };
   }

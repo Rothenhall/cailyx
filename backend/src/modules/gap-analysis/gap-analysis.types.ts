@@ -78,7 +78,14 @@ export type GapSourceType =
   | 'serp-strength'
   | 'aeo-gap'
   | 'aeo-risk'
-  | 'aeo-strength';
+  | 'aeo-strength'
+  | 'market-competitor-risk'
+  | 'competitor-seo-gap'
+  | 'competitor-seo-strength'
+  | 'competitor-review-gap'
+  | 'competitor-review-risk'
+  | 'competitor-review-strength'
+  | 'keyword-opportunity';
 
 /**
  * The nine buckets stage 9 ("Strategy & Recommendations") groups an action

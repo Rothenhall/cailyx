@@ -20,11 +20,21 @@ export const ROLES: readonly Role[] = [
   'sales',
 ];
 
+/**
+ * operator | client — a User row is one or the other, never both. `role` above
+ * stays meaningless for a client-type row (left at its default); RolesGuard
+ * gates on `type` first, `role` second. See `clients` module.
+ */
+export type UserType = 'operator' | 'client';
+
 /** Claims carried in the (short-lived) access token. */
 export interface AccessTokenClaims {
   sub: string;
   email: string;
   role: Role;
+  type: UserType;
+  /** Present only when type = "client". */
+  clientId?: string;
 }
 
 /** Public shape of a user — never exposes passwordHash or token hashes. */
@@ -33,6 +43,8 @@ export interface SafeUserDto {
   email: string;
   name: string;
   role: Role;
+  type: UserType;
+  clientId: string | null;
   createdAt: string;
 }
 

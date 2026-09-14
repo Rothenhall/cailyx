@@ -391,11 +391,82 @@ model Project {
   notes       String?
   userId      String? // owning operator (nullable: pre-auth rows);
   competitors String? // JSON array of {name, domain} — seeded by intake, used by share-of-voice
+  /// The Client this project belongs to. Nullable: pre-`clients`-module rows,
+  /// and operator-only exploratory projects with no client attached yet.
+  clientId    String?
+  /// pending | running | completed | failed — the "Day-1 pipeline" orchestrated
+  /// by the `clients` module (technical-audit -> digital-presence ->
+  /// tech-stack -> gap-analysis sync -> strategy build -> report). Untouched
+  /// (stays "pending") for projects created outside that orchestrator.
+  onboardingStatus String  @default("pending")
+  /// Human-readable name of whichever stage is currently running/failed —
+  /// e.g. "technical-audit", "gap-analysis". Null once completed.
+  onboardingStep   String?
+  onboardingError  String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  client Client? @relation(fields: [clientId], references: [id])
+
   @@unique([domain])
   @@index([status])
+  @@index([clientId])
+}
+
+// ---------------------------------------------------------------------------
+// clients — lean admin/client-portal layer (2026-09-13). NOT the full
+// docs/analysis/client-portal.md plan (that doc's Engagement/Milestone/
+// Approval/Escalation machinery and Postgres-migration prerequisite are
+// deliberately deferred) — this is exactly the scope the operator asked for:
+// admin can create/manage clients and see their projects' status; a client
+// logs in to see their own project status, their reports, and a message
+// thread with the operator. Nothing more.
+// ---------------------------------------------------------------------------
+
+model Client {
+  id           String   @id @default(cuid())
+  name         String
+  contactName  String?
+  contactEmail String?
+  /// active | paused | churned — set by the admin, not derived.
+  status       String   @default("active")
+  /// Operator id (User.id, type=operator) who owns this client. Informal
+  /// reference, not a relation: an owner leaving must never cascade-touch
+  /// the client's own data.
+  ownerUserId  String?
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  projects Project[]
+  users    User[]
+  messages ClientMessage[]
+
+  @@index([status])
+}
+
+/// A single message thread per client — "leave messages", not a ticketing
+/// system with SLAs/priorities/assignees. Append-only; both operator and
+/// client type users can post and read.
+model ClientMessage {
+  id           String   @id @default(cuid())
+  clientId     String
+  /// Optional: scope a message to one of the client's projects. Null = a
+  /// client-wide message (e.g. "when's the next audit?").
+  projectId    String?
+  authorUserId String
+  /// operator | client — denormalized off the author's User.type at post
+  /// time, so rendering the thread never needs a join, and the label a
+  /// client sees for their own message never changes if their login is
+  /// later deleted and recreated.
+  authorType   String
+  body         String
+  createdAt    DateTime @default(now())
+
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+  @@index([projectId])
 }
 
 // ─── Self-report attribution ──────────────────────────────────
@@ -434,6 +505,17 @@ model Report {
   subScores        String
   findingsSnapshot String
   roadmapSnapshot  String
+  /// JSON GrowthPlanDto — stage 9's ranked ActionPlan (strategy module) +
+  /// stage 8's LLM-authored what/why/fix copy (findings module), snapshotted
+  /// at generation time same as the other *Snapshot fields. Null on reports
+  /// generated before this field existed, or when neither source had run yet
+  /// for the project — never backfilled with invented data.
+  growthPlanSnapshot String?
+  /// JSON BacklinksSummaryDto — the project's latest DataForSEO backlinks
+  /// snapshot at generation time, same frozen-at-publish discipline as the
+  /// other *Snapshot fields. Null when `POST .../backlinks/refresh` had
+  /// never been run for this project yet.
+  backlinksSnapshot String?
   branding         String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -487,14 +569,28 @@ model User {
   email        String   @unique
   passwordHash String
   name         String
-  // admin | delivery-lead | content | technical | outreach | sales
+  // admin | delivery-lead | content | technical | outreach | sales — meaningless
+  // (left at its default, unused) when type = "client".
   role         String   @default("technical")
+  /// operator | client. Reuses this same table/JWT/refresh machinery for both —
+  /// deliberate, per docs/analysis/client-portal.md's own recommendation: the
+  /// hashing, rotation and revocation are already built and tested, so a
+  /// parallel ClientUser table would just be a second copy of that.
+  type         String   @default("operator")
+  /// Set only when type = "client" — which Client this login belongs to.
+  /// RolesGuard blocks a client-type user from every route not explicitly
+  /// marked @ClientPortal(), so a null clientId on an operator row is never
+  /// load-bearing for access control.
+  clientId     String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   refreshTokens RefreshToken[]
+  client        Client?  @relation(fields: [clientId], references: [id])
 
   @@index([role])
+  @@index([type])
+  @@index([clientId])
 }
 
 model RefreshToken {
@@ -961,6 +1057,56 @@ model DataAsset {
   createdAt       DateTime  @default(now())
 
   @@index([projectId])
+}
+
+// ---------------------------------------------------------------------------
+// growth-execution — stage 11, "Marketing & Growth Execution" (12-stage flow)
+// ---------------------------------------------------------------------------
+
+/// One recommended growth asset — "Create Recommended Assets", the
+/// flowchart's stage-11 leaf. A BRIEF (title + angle + why), not finished
+/// long-form copy: full articles/landing pages are a different, much larger
+/// product surface than a recommendation a content/ad team acts on. Lifecycle
+/// mirrors DataAsset's own planned->fielding->published pattern.
+model GrowthAsset {
+  id             String    @id @default(cuid())
+  projectId      String
+  /// article | ad-copy | social-content | email-campaign | landing-page |
+  /// structured-data | seo-fix | faq | review-campaign — the flowchart's nine
+  /// "Create Recommended Assets" leaves, exactly.
+  assetType      String
+  title          String
+  /// The recommendation itself: angle, key point, what it should cover.
+  /// Deterministic template by default; one constrained LLM pass when
+  /// useLlm=true (same opt-in-refinement shape as `persona`/`journey`).
+  brief          String
+  /// The keyword this asset targets, if generated from a priority keyword
+  /// (stage 10). Null for gap-sourced assets with no single target keyword.
+  targetKeyword  String?
+  /// The Gap row this asset addresses, if any — traceability back to stage 8.
+  /// Not a foreign key: gaps are pruned/resynced independently, and a
+  /// dangling reference here must never delete a recommendation someone may
+  /// already be acting on.
+  sourceGapId    String?
+  status         String    @default("recommended") // recommended | in-progress | published
+  /// deterministic (template) | generated-llm — same honesty convention as
+  /// Persona.source: a reader must be able to tell which one produced this.
+  source         String    @default("deterministic")
+  generationModel String?
+  /// JSON, shape depends on assetType — ArticleContent {title, metaDescription,
+  /// bodyMarkdown} for "article", AdCopyContent {variants:[{headline,
+  /// description}]} for "ad-copy". Null for every other asset type and for
+  /// article/ad-copy rows created before content generation existed (brief
+  /// only) — never backfilled with invented copy.
+  content        String?
+  publishedAt    DateTime?
+  assetUrl       String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([projectId])
+  @@index([projectId, assetType])
+  @@index([projectId, status])
 }
 
 // ---------------------------------------------------------------------------
@@ -1801,6 +1947,57 @@ model Keyword {
   @@unique([setId, keyword])
   @@index([setId])
   @@index([setId, searchVolume])
+}
+
+// ─── Backlinks (DataForSEO Backlinks API, added 2026-09-13) ───────────────
+// Same vendor account, same Basic-Auth + SWARM_ALLOW_LIVE convention as
+// serp-intelligence/keyword-research — see backlinks/README.md.
+
+/// One pull of a domain's backlink profile — `backlinks/summary/live`
+/// (one billed row: $0.024 + $0.000036/row, effectively a fixed ~$0.024-0.03
+/// per call) plus a small sample of actual top backlinks from
+/// `backlinks/backlinks/live` for evidence, not just aggregate counts.
+model BacklinksSummary {
+  id     String @id @default(cuid())
+  projectId String
+  /// The domain/subdomain/page actually queried — normalized from
+  /// Project.domain unless the caller overrides it.
+  target String
+
+  status String  @default("pending") // completed | partial | failed
+  error  String?
+  /// Real vendor charge — DataForSEO's own reported `cost`, both calls summed.
+  costUsd Float  @default(0)
+
+  rank                 Int?
+  backlinks            Int?
+  backlinksSpamScore   Int?
+  referringDomains     Int?
+  referringMainDomains Int?
+  referringPages       Int?
+  referringIps         Int?
+  referringSubnets     Int?
+  brokenBacklinks      Int?
+  brokenPages          Int?
+  firstSeen            DateTime?
+  lostDate             DateTime?
+
+  /// JSON Record<string, number> distribution breakdowns, straight off the
+  /// vendor response — never re-derived.
+  referringLinksTld           String? // JSON
+  referringLinksTypes         String? // JSON
+  referringLinksAttributes    String? // JSON
+  referringLinksPlatformTypes String? // JSON
+  referringLinksCountries     String? // JSON
+
+  /// JSON BacklinkSampleItem[] — up to `topBacklinksLimit` individual
+  /// backlinks (evidence a report can actually show, not just a count).
+  topBacklinks String @default("[]")
+
+  createdAt DateTime @default(now())
+
+  @@index([projectId])
+  @@index([projectId, createdAt])
 }
 
 // ─── Competitors (wave-6 D4/step 6) ────────────────────────────────────────

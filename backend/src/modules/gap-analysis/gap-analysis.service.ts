@@ -34,6 +34,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { PresenceService } from '../digital-presence/presence.service';
 import type { PresenceGroup } from '../digital-presence/presence.types';
+import { KeywordResearchService } from '../keyword-research/keyword-research.service';
 import {
   computeQuadrant,
   type ClassificationRule,
@@ -108,6 +109,23 @@ export const CLASSIFICATION_RULES: ClassificationRule[] = [
   { sourceType: 'aeo-risk', sourceKey: 'losing-to-competitor', match: 'losing-to-competitor', dimension: 'demand', action: 'influence', category: 'risk', recommendationCategory: 'search-aeo-strategy', impact: 4, effort: 3, title: 'A named competitor is winning while this site is absent' },
   { sourceType: 'aeo-strength', sourceKey: 'sov-leader', match: 'sov-leader', dimension: 'demand', action: 'influence', category: 'strength', recommendationCategory: null, impact: null, effort: null, title: 'Leading share of voice across measured answer engines' },
 
+  // ── AEO audit — stage 6 "Competitors by Area / Market" ────────────────
+  // Only fires on multi-market audits (see syncAeoAudit) — on a single-market
+  // audit this would just duplicate the aeo-risk row above.
+  { sourceType: 'market-competitor-risk', sourceKey: 'losing-in-market', match: 'losing-in-market', dimension: 'demand', action: 'influence', category: 'risk', recommendationCategory: 'market-expansion', impact: 4, effort: 3, title: 'A named competitor is winning in a specific market while this site is absent' },
+
+  // ── Competitors — SEO/content + reviews (wave-6 step 6 completion) ────
+  // Client-vs-rival comparisons live in syncCompetitors(); titles vary per
+  // competitor/platform name, so these carry only the shared banding.
+  { sourceType: 'competitor-seo-gap', sourceKey: 'seo-ahead', match: 'seo-ahead', dimension: 'topic', action: 'build', category: 'gap', recommendationCategory: 'content-strategy', impact: 3, effort: 4, title: "A competitor's homepage scores higher on-page SEO than this site's average" },
+  { sourceType: 'competitor-seo-strength', sourceKey: 'seo-ahead-client', match: 'seo-ahead-client', dimension: 'topic', action: 'build', category: 'strength', recommendationCategory: null, impact: null, effort: null, title: "This site's average on-page SEO score beats a tracked competitor's homepage" },
+  { sourceType: 'competitor-review-gap', sourceKey: 'no-reviews', match: 'no-reviews', dimension: 'web-mentions', action: 'influence', category: 'gap', recommendationCategory: 'reputation-strategy', impact: 3, effort: 3, title: 'Competitor(s) have a published rating where this site has none' },
+  { sourceType: 'competitor-review-risk', sourceKey: 'lower-rating', match: 'lower-rating', dimension: 'web-mentions', action: 'influence', category: 'risk', recommendationCategory: 'reputation-strategy', impact: 3, effort: 4, title: 'Rated lower than a competitor on a shared review platform' },
+  { sourceType: 'competitor-review-strength', sourceKey: 'higher-rating', match: 'higher-rating', dimension: 'web-mentions', action: 'influence', category: 'strength', recommendationCategory: null, impact: null, effort: null, title: 'Rated higher than every tracked competitor on a shared review platform' },
+
+  // ── Keyword research — stage 10 "Select Priority Keywords to Target" ──
+  { sourceType: 'keyword-opportunity', sourceKey: 'priority-keyword', match: 'priority-keyword', dimension: 'topic', action: 'build', category: 'opportunity', recommendationCategory: 'content-strategy', impact: 3, effort: 3, title: 'High-priority keyword with real search demand, uncovered by a tracked content push' },
+
   // Presence gap/review/strength titles are built inline (per-platform text),
   // so they carry no static row here — see syncDigitalPresence(). Competitor
   // gap/strength similarly vary per platform/tech name — see syncCompetitors().
@@ -164,6 +182,7 @@ export class GapAnalysisService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly presence: PresenceService,
+    private readonly keywordResearch: KeywordResearchService,
   ) {}
 
   private async getOrCreateAnalysis(projectId: string) {
@@ -290,6 +309,7 @@ export class GapAnalysisService {
     await run('competitors', () => this.syncCompetitors(analysis.id, projectId, validSourceIds, bump));
     await run('serp-intelligence', () => this.syncSerpIntelligence(analysis.id, projectId, validSourceIds, bump));
     await run('aeo-audit', () => this.syncAeoAudit(analysis.id, projectId, validSourceIds, bump));
+    await run('keyword-research', () => this.syncKeywordOpportunities(analysis.id, projectId, validSourceIds, bump));
 
     // Prune stale gaps: source no longer qualifies (finding now passes, or a
     // re-run of the same module produced a different set of source ids).
@@ -882,6 +902,224 @@ export class GapAnalysisService {
         }),
       );
     }
+
+    await this.syncCompetitorSeo(analysisId, projectId, competitors, validSourceIds, bump);
+    await this.syncCompetitorReviews(analysisId, projectId, competitors, validSourceIds, bump);
+  }
+
+  /**
+   * Stage 7 "Competitor SEO"/"Competitor Content" vs the client. Reads
+   * `CompetitorProfile.seoScore` (homepage-only, `seo-rubric.ts`) against the
+   * client's own latest `technical-audit` run's **average** page score — the
+   * two are not the same methodology (homepage-only vs site-wide average),
+   * so that difference is disclosed in every gap/strength this produces
+   * rather than presented as an apples-to-apples number. No live fetch: both
+   * sides are already-stored data (`competitors`'s own `/gap` endpoint reads
+   * a fresh client homepage score instead, which is why gap-analysis does
+   * not call it — see gap-analysis.module.ts).
+   */
+  private async syncCompetitorSeo(
+    analysisId: string,
+    projectId: string,
+    competitors: Array<{ id: string; name: string; profiles: Array<{ seoScore: number | null; seoStatus: string }> }>,
+    validSourceIds: Set<string>,
+    bump: (r: { created: boolean }) => void,
+  ): Promise<void> {
+    const audit = await this.prisma.technicalAudit.findFirst({
+      where: { projectId },
+      orderBy: { createdAt: 'desc' },
+      include: { pages: true },
+    });
+    if (!audit || audit.pages.length === 0) return;
+
+    const ok = audit.pages.filter((p) => {
+      try {
+        return !(JSON.parse(p.issues || '[]') as string[]).includes('page-error');
+      } catch {
+        return true;
+      }
+    });
+    if (ok.length === 0) return;
+    const clientAvgScore = Math.round(ok.reduce((s, p) => s + (p.score ?? 0), 0) / ok.length);
+
+    const SEO_GAP_THRESHOLD = 15; // meaningfully ahead, not noise
+    let strongestAhead: { name: string; score: number } | null = null;
+    let strongestBehind: { name: string; score: number } | null = null;
+
+    for (const c of competitors) {
+      const profile = c.profiles[0];
+      if (!profile || profile.seoScore == null) continue;
+      const delta = profile.seoScore - clientAvgScore;
+      if (delta >= SEO_GAP_THRESHOLD && (!strongestAhead || profile.seoScore > strongestAhead.score)) {
+        strongestAhead = { name: c.name, score: profile.seoScore };
+      } else if (-delta >= SEO_GAP_THRESHOLD && (!strongestBehind || profile.seoScore < strongestBehind.score)) {
+        strongestBehind = { name: c.name, score: profile.seoScore };
+      }
+    }
+
+    if (strongestAhead) {
+      const cls = classify('competitor-seo-gap', 'seo-ahead')!;
+      const sourceId = `${projectId}:seo-ahead`;
+      validSourceIds.add(`competitor-seo-gap:${sourceId}`);
+      bump(
+        await this.upsertGap(analysisId, {
+          sourceType: 'competitor-seo-gap',
+          sourceId,
+          dimension: cls.dimension,
+          action: cls.action,
+          category: cls.category,
+          recommendationCategory: cls.recommendationCategory,
+          impact: cls.impact,
+          effort: cls.effort,
+          title: `${cls.title}: ${strongestAhead.name} (${strongestAhead.score}/100 vs this site's ${clientAvgScore}/100 average)`,
+          description: `${strongestAhead.name}'s homepage scores ${strongestAhead.score}/100 on the same on-page SEO rubric (\`seo-rubric.ts\`) this site's pages are scored by. This site's average across ${ok.length} crawled pages is ${clientAvgScore}/100 — homepage-only vs site-wide average, not a like-for-like number, but a ${SEO_GAP_THRESHOLD}+ point gap is worth a look.`,
+          severity: 'medium',
+        }),
+      );
+    }
+
+    if (strongestBehind) {
+      const cls = classify('competitor-seo-strength', 'seo-ahead-client')!;
+      const sourceId = `${projectId}:seo-ahead-client`;
+      validSourceIds.add(`competitor-seo-strength:${sourceId}`);
+      bump(
+        await this.upsertGap(analysisId, {
+          sourceType: 'competitor-seo-strength',
+          sourceId,
+          dimension: cls.dimension,
+          action: cls.action,
+          category: 'strength',
+          recommendationCategory: null,
+          impact: null,
+          effort: null,
+          title: `${cls.title}: ${strongestBehind.name} (${strongestBehind.score}/100 vs this site's ${clientAvgScore}/100 average)`,
+          description: `This site's average on-page SEO score (${clientAvgScore}/100 across ${ok.length} pages) beats ${strongestBehind.name}'s homepage score (${strongestBehind.score}/100) on the same rubric.`,
+          severity: 'low',
+        }),
+      );
+    }
+  }
+
+  /**
+   * Stage 7 "Competitor Reviews" vs the client. Reads `PresenceReview` (the
+   * client's own already-stored ratings — `digital-presence`, no fresh
+   * lookup) against `CompetitorProfile.reviewRatings` per platform.
+   */
+  private async syncCompetitorReviews(
+    analysisId: string,
+    projectId: string,
+    competitors: Array<{ id: string; name: string; profiles: Array<{ reviewRatings: string; reviewStatus: string }> }>,
+    validSourceIds: Set<string>,
+    bump: (r: { created: boolean }) => void,
+  ): Promise<void> {
+    const clientRows = await this.prisma.presenceReview.findMany({ where: { projectId }, orderBy: { fetchedAt: 'desc' } });
+    const clientRatingByPlatform = new Map<string, number>();
+    for (const r of clientRows) {
+      if (r.rating == null || clientRatingByPlatform.has(r.platform)) continue; // first = latest, orderBy desc
+      clientRatingByPlatform.set(r.platform, r.rating);
+    }
+
+    // platform -> competitor names with a published rating there, client absent
+    const noReviewGaps = new Map<string, string[]>();
+    // platform -> the single highest-rated competitor beating the client's own rating
+    const lowerRatingRisk = new Map<string, { name: string; rating: number }>();
+    // platform -> true if every competitor with data on it rates below the client
+    const platformsWithCompetitorData = new Set<string>();
+    const platformBeatsAll = new Map<string, boolean>();
+
+    for (const c of competitors) {
+      const profile = c.profiles[0];
+      if (!profile) continue;
+      let ratings: Array<{ platform: string; rating: number | null; found: boolean }> = [];
+      try {
+        ratings = JSON.parse(profile.reviewRatings || '[]');
+      } catch {
+        continue;
+      }
+      for (const r of ratings) {
+        if (!r.found || r.rating == null) continue;
+        platformsWithCompetitorData.add(r.platform);
+        const clientRating = clientRatingByPlatform.get(r.platform);
+        if (clientRating == null) {
+          const names = noReviewGaps.get(r.platform) ?? [];
+          names.push(c.name);
+          noReviewGaps.set(r.platform, names);
+          platformBeatsAll.set(r.platform, false);
+          continue;
+        }
+        if (!platformBeatsAll.has(r.platform)) platformBeatsAll.set(r.platform, true);
+        if (r.rating > clientRating) {
+          platformBeatsAll.set(r.platform, false);
+          const current = lowerRatingRisk.get(r.platform);
+          if (!current || r.rating > current.rating) lowerRatingRisk.set(r.platform, { name: c.name, rating: r.rating });
+        }
+      }
+    }
+
+    for (const [platform, names] of noReviewGaps) {
+      const cls = classify('competitor-review-gap', 'no-reviews')!;
+      const sourceId = `${projectId}:${platform}`;
+      validSourceIds.add(`competitor-review-gap:${sourceId}`);
+      bump(
+        await this.upsertGap(analysisId, {
+          sourceType: 'competitor-review-gap',
+          sourceId,
+          dimension: cls.dimension,
+          action: cls.action,
+          category: cls.category,
+          recommendationCategory: cls.recommendationCategory,
+          impact: cls.impact,
+          effort: cls.effort,
+          title: `${cls.title} on ${platform}: ${names.length === 1 ? names[0] : `${names.length} competitors`}`,
+          description: `Competitor(s) with a published rating on ${platform}: ${names.join(', ')}. This site has none recorded there.`,
+          severity: names.length >= 2 ? 'high' : 'medium',
+        }),
+      );
+    }
+
+    for (const [platform, rival] of lowerRatingRisk) {
+      const cls = classify('competitor-review-risk', 'lower-rating')!;
+      const sourceId = `${projectId}:${platform}`;
+      validSourceIds.add(`competitor-review-risk:${sourceId}`);
+      bump(
+        await this.upsertGap(analysisId, {
+          sourceType: 'competitor-review-risk',
+          sourceId,
+          dimension: cls.dimension,
+          action: cls.action,
+          category: cls.category,
+          recommendationCategory: cls.recommendationCategory,
+          impact: cls.impact,
+          effort: cls.effort,
+          title: `${cls.title} on ${platform}: ${rival.name} (${rival.rating} vs this site's ${clientRatingByPlatform.get(platform)})`,
+          description: `${rival.name} rates ${rival.rating} on ${platform}; this site rates ${clientRatingByPlatform.get(platform)} there.`,
+          severity: 'medium',
+        }),
+      );
+    }
+
+    for (const [platform, rating] of clientRatingByPlatform) {
+      if (!platformsWithCompetitorData.has(platform)) continue; // no rival data to compare against — not a claim either way
+      if (platformBeatsAll.get(platform) !== true) continue;
+      const cls = classify('competitor-review-strength', 'higher-rating')!;
+      const sourceId = `${projectId}:${platform}`;
+      validSourceIds.add(`competitor-review-strength:${sourceId}`);
+      bump(
+        await this.upsertGap(analysisId, {
+          sourceType: 'competitor-review-strength',
+          sourceId,
+          dimension: cls.dimension,
+          action: cls.action,
+          category: 'strength',
+          recommendationCategory: null,
+          impact: null,
+          effort: null,
+          title: `${cls.title} on ${platform} (${rating})`,
+          description: `Rated ${rating} on ${platform}, ahead of every tracked competitor with a published rating there.`,
+          severity: 'low',
+        }),
+      );
+    }
   }
 
   // ── Source 8: serp-intelligence (rank gaps, AI Overview, local pack) ──
@@ -1111,6 +1349,86 @@ export class GapAnalysisService {
           title: `${cls.title} (${Math.round(clientRow.share * 100)}% share)`,
           description: `Leads share of voice at ${Math.round(clientRow.share * 100)}% across measured answer engines (audit ${audit.id}).`,
           severity: 'low',
+        }),
+      );
+    }
+
+    // Stage 6 "Competitors by Area / Market". Only fires on a genuinely
+    // multi-market audit — on a single-market run this array's one entry
+    // carries the same standings as `counted.competitors` above (see
+    // MarketCompetitorStandings' own doc comment), so firing here too would
+    // just duplicate the aeo-risk row already created.
+    const byMarketCompetitors: Array<{
+      market: string;
+      competitors: Array<{ name: string; clientAheadCount: number; clientBehindCount: number; wonWhileClientAbsent: number }>;
+    }> = counted.byMarketCompetitors ?? [];
+    if (byMarketCompetitors.length > 1) {
+      for (const marketRow of byMarketCompetitors) {
+        for (const c of marketRow.competitors) {
+          if (c.wonWhileClientAbsent > 0 && c.clientBehindCount > c.clientAheadCount) {
+            const cls = classify('market-competitor-risk', 'losing-in-market')!;
+            const sourceId = `${audit.id}:${marketRow.market}:${c.name}`;
+            validSourceIds.add(`market-competitor-risk:${sourceId}`);
+            bump(
+              await this.upsertGap(analysisId, {
+                sourceType: 'market-competitor-risk',
+                sourceId,
+                dimension: cls.dimension,
+                action: cls.action,
+                category: cls.category,
+                recommendationCategory: cls.recommendationCategory,
+                impact: cls.impact,
+                effort: cls.effort,
+                title: `${cls.title} in ${marketRow.market}: ${c.name}`,
+                description: `In the ${marketRow.market} market, ${c.name} was named ahead of this site ${c.clientBehindCount} time(s) and named while this site was absent ${c.wonWhileClientAbsent} time(s) (audit ${audit.id}).`,
+                severity: 'high',
+              }),
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // ── Source 10: keyword-research (stage 10 "Select Priority Keywords") ──
+
+  private async syncKeywordOpportunities(
+    analysisId: string,
+    projectId: string,
+    validSourceIds: Set<string>,
+    bump: (r: { created: boolean }) => void,
+  ): Promise<void> {
+    // Pure read + compute, no vendor call — see gap-analysis.module.ts for
+    // why this is the one other service (besides PresenceService) this
+    // module is allowed to inject.
+    let priority: Awaited<ReturnType<KeywordResearchService['priority']>>;
+    try {
+      priority = await this.keywordResearch.priority(projectId, {});
+    } catch {
+      return; // no keyword set run yet for this project — nothing to surface
+    }
+
+    const PRIORITY_THRESHOLD = 50;
+    const TOP_N = 10; // a report-worthy shortlist, not every keyword above the bar
+    const top = priority.keywords.filter((k) => k.priorityScore >= PRIORITY_THRESHOLD).slice(0, TOP_N);
+
+    for (const k of top) {
+      const cls = classify('keyword-opportunity', 'priority-keyword')!;
+      const sourceId = `${priority.setId}:${k.id}`;
+      validSourceIds.add(`keyword-opportunity:${sourceId}`);
+      bump(
+        await this.upsertGap(analysisId, {
+          sourceType: 'keyword-opportunity',
+          sourceId,
+          dimension: cls.dimension,
+          action: cls.action,
+          category: cls.category,
+          recommendationCategory: cls.recommendationCategory,
+          impact: cls.impact,
+          effort: cls.effort,
+          title: `${cls.title}: "${k.keyword}" (priority ${k.priorityScore}/100, volume ${k.searchVolume ?? 'n/a'}/mo)`,
+          description: `Search volume ${k.searchVolume ?? 'n/a'}/mo, competition ${k.competition ?? 'n/a'} (${k.competitionIndex ?? 'n/a'}/100), CPC $${k.cpc ?? 'n/a'} — ranked ${k.priorityScore}/100 on disclosed weights (keyword-research/priority).`,
+          severity: k.priorityScore >= 75 ? 'high' : 'medium',
         }),
       );
     }

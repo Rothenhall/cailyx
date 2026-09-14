@@ -24,7 +24,7 @@ service** (the smoke test asserts the payload contains no key-shaped strings).
 | `database` | infrastructure | always (the request proves it) |
 | `redis` | infrastructure | a 700 ms `PING` to `REDIS_URL` returns `PONG` |
 | `stripe` | monetization | `STRIPE_CHECKOUT_URL_FULL` or `_MONITORING` set |
-| `plunk` | email | `PLUNK_API_KEY` set |
+| `plunk` | email | `PLUNK_SECRET_KEY` set |
 | `swarm-live` | mode | `SWARM_ALLOW_LIVE=1` |
 
 ## API

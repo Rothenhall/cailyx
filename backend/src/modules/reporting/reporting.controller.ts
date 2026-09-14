@@ -9,7 +9,7 @@
  * @module reporting.controller
  */
 
-import { Controller, Get, Post, Put, Param, Body, HttpCode, HttpStatus, NotFoundException, Header } from '@nestjs/common';
+import { Controller, Get, Post, Put, Param, Query, Body, HttpCode, HttpStatus, NotFoundException, Header } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { ReportingService } from './reporting.service';
@@ -59,9 +59,13 @@ export class ReportingController {
   @Get(':slug/view')
   @ApiOperation({ summary: 'Get report JSON by slug' })
   @ApiResponse({ status: 200, description: 'Full report data' })
-  @ApiResponse({ status: 404, description: 'Report not found or private' })
+  @ApiResponse({ status: 404, description: 'Report not found' })
   async getBySlug(@Param('projectId') projectId: string, @Param('slug') slug: string) {
-    return this.reportingService.getBySlug(slug, false);
+    // Authenticated + operator-only (RolesGuard default-denies client-type JWTs on
+    // non-@ClientPortal routes) — there is no separate unauthenticated public report
+    // viewer, so this must see private reports too or an operator can never view
+    // their own project's (private-by-default) reports.
+    return this.reportingService.getBySlug(slug, true);
   }
 
   /**
@@ -77,8 +81,12 @@ export class ReportingController {
   async renderHtml(
     @Param('projectId') projectId: string,
     @Param('slug') slug: string,
+    @Query('view') view?: string,
   ) {
-    return this.reportingService.renderHtml(slug, 'executive');
+    // Pre-existing bug found while verifying the stage-12 growth-plan
+    // section: this handler ignored ?view entirely and always rendered
+    // executive, despite its own docstring above promising detailed.
+    return this.reportingService.renderHtml(slug, view === 'detailed' ? 'detailed' : 'executive');
   }
 
   /**

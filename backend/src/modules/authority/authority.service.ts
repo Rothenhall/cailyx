@@ -7,8 +7,8 @@
  *                   that aren't the client or a direct competitor.
  *   - `citations` — domains that AI answers already cite in this project's
  *                   journeys / measurement runs.
- *   - `llm`       — ask Claude for publications/communities/podcasts in the
- *                   category (gated on ANTHROPIC_API_KEY).
+ *   - `llm`       — ask an LLM for publications/communities/podcasts in the
+ *                   category (gated on a configured provider).
  *
  * Promotion turns a chosen candidate into a `mention-tracking` MentionTarget —
  * a to-do for a human. Nothing here contacts anyone or creates accounts.
@@ -24,7 +24,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Anthropic from '@anthropic-ai/sdk';
+import { LlmService } from '../../common/llm/llm.service';
 import { PrismaService } from '../database/prisma.service';
 import { SerpIntelligenceService } from '../serp-intelligence/serp-intelligence.service';
 import { MentionTrackingService } from '../mention-tracking/mention-tracking.service';
@@ -37,11 +37,11 @@ import type { ExcludeSet } from './authority.discovery';
 @Injectable()
 export class AuthorityService {
   private readonly logger = new Logger(AuthorityService.name);
-  private anthropic: Anthropic | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly llm: LlmService,
     private readonly serp: SerpIntelligenceService,
     private readonly mentions: MentionTrackingService,
   ) {}
@@ -52,9 +52,9 @@ export class AuthorityService {
 
     const method: AuthorityMethod = input.method ?? 'combined';
     const useLlm = input.useLlm === true || method === 'llm';
-    if (useLlm && !this.config.get<string>('ANTHROPIC_API_KEY')) {
+    if (useLlm && !this.llm.isAvailable()) {
       throw new ServiceUnavailableException(
-        'ANTHROPIC_API_KEY not configured — authority LLM discovery unavailable (use method=serp or citations)',
+        'No LLM provider configured (OPENROUTER_API_KEY or ANTHROPIC_API_KEY) — authority LLM discovery unavailable (use method=serp or citations)',
       );
     }
 
@@ -261,32 +261,26 @@ export class AuthorityService {
   private async llmCandidates(
     category: string,
     ex: ExcludeSet,
-  ): Promise<{ candidates: WorkingCandidate[]; model: string }> {
-    const model = this.config.get<string>('AUTHORITY_LLM_MODEL', 'claude-opus-5');
+  ): Promise<{ candidates: WorkingCandidate[]; model: string | null }> {
     try {
-      const client = this.ensureClient();
-      const res = await client.messages.create({
-        model,
-        max_tokens: 1500,
-        system:
-          'You list REAL, well-known publications, communities, podcasts, directories, and newsletters ' +
-          `where a B2B company in "${category}" could plausibly earn an unpaid mention or be reviewed. ` +
-          'Return ONLY minified JSON: {"items":[{"domain","url","title","type","why"}]}. ' +
-          'type ∈ listicle|community|podcast|publication|directory|newsletter. 8-15 items. No paid placements, no PR wires.',
-        messages: [{ role: 'user', content: `category: ${category}` }],
-      });
-      const text = res.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('')
-        .trim();
-      const start = text.indexOf('{');
-      const end = text.lastIndexOf('}');
-      if (start === -1 || end <= start) return { candidates: [], model };
-      const parsed = JSON.parse(text.slice(start, end + 1)) as { items?: Array<Record<string, unknown>> };
+      const result = await this.llm.json(
+        {
+          purpose: 'authority LLM discovery',
+          maxTokens: 1500,
+          openRouterModel: this.config.get<string>('AUTHORITY_LLM_MODEL'),
+          anthropicModel: this.config.get<string>('AUTHORITY_LLM_ANTHROPIC_MODEL'),
+          system:
+            'You list REAL, well-known publications, communities, podcasts, directories, and newsletters ' +
+            `where a B2B company in "${category}" could plausibly earn an unpaid mention or be reviewed. ` +
+            'Return ONLY minified JSON: {"items":[{"domain","url","title","type","why"}]}. ' +
+            'type ∈ listicle|community|podcast|publication|directory|newsletter. 8-15 items. No paid placements, no PR wires.',
+          user: `category: ${category}`,
+        },
+        (raw) => (raw as { items?: Array<Record<string, unknown>> }).items ?? [],
+      );
       const types = new Set(['listicle', 'community', 'podcast', 'publication', 'directory', 'newsletter']);
       const candidates: WorkingCandidate[] = [];
-      for (const it of parsed.items ?? []) {
+      for (const it of result.data) {
         const domain = typeof it.domain === 'string' ? it.domain.toLowerCase().replace(/^www\./, '') : hostOf(String(it.url ?? ''));
         if (!domain || ex.subjectHost === domain || ex.competitorHosts.includes(domain)) continue;
         const type = (types.has(it.type as string) ? it.type : classify(domain, String(it.title ?? ''))) as AuthorityCandidateType;
@@ -301,18 +295,11 @@ export class AuthorityService {
           rationale: typeof it.why === 'string' ? it.why.slice(0, 400) : 'Suggested by category research.',
         });
       }
-      return { candidates, model };
+      return { candidates, model: result.model };
     } catch (err) {
       this.logger.warn(`authority LLM discovery failed (${(err as Error).message})`);
-      return { candidates: [], model };
+      return { candidates: [], model: null };
     }
-  }
-
-  private ensureClient(): Anthropic {
-    if (!this.anthropic) {
-      this.anthropic = new Anthropic({ apiKey: this.config.get<string>('ANTHROPIC_API_KEY') || undefined });
-    }
-    return this.anthropic;
   }
 
   private async getOr404(scanId: string) {

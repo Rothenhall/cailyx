@@ -112,11 +112,14 @@ aeo-audit/
 └── dto/aeo-audit.dto.ts      Validated request bodies
 ```
 
-The three engine adapters live with the other surfaces, in
-[`../measurement/adapters/browser-surface.adapter.ts`](../measurement/adapters/browser-surface.adapter.ts) —
-`measurement` owns the `SurfaceAdapter` registry, and its own type comment
-anticipated this exact addition. One base class drives all three; only the
-per-site selectors differ (`SURFACE_PROFILES`).
+The engine adapters live with the other surfaces, in
+[`../measurement/adapters/browser-surface.adapter.ts`](../measurement/adapters/browser-surface.adapter.ts)
+(the three `*-browser` surfaces) and
+[`../measurement/adapters/cloro.adapter.ts`](../measurement/adapters/cloro.adapter.ts)
+(the five `cloro-*` surfaces) — `measurement` owns the `SurfaceAdapter`
+registry, and its own type comment anticipated both additions. One base class
+drives each family; only the per-site selectors (browser) or per-engine
+payload/response shape (Cloro) differ.
 
 ---
 
@@ -142,21 +145,95 @@ Full request/response shapes: [`docs/API.md`](../../../../docs/API.md#aeo-audit)
 
 ## The engines
 
-| Surface | Product driven | Session env var |
+| Surface | Product driven | Gate |
 |---|---|---|
-| `chatgpt-browser` | `chatgpt.com` | `AEO_CHATGPT_SESSION_PATH` |
-| `perplexity-browser` | `perplexity.ai` | `AEO_PERPLEXITY_SESSION_PATH` |
-| `gemini-browser` | `gemini.google.com` | `AEO_GEMINI_SESSION_PATH` |
+| `cloro-chatgpt` | ChatGPT, via Cloro's API | `CLORO_API_KEY` |
+| `cloro-perplexity` | Perplexity, via Cloro's API | `CLORO_API_KEY` |
+| `cloro-gemini` | Gemini, via Cloro's API | `CLORO_API_KEY` |
+| `cloro-ai-overview` | Google's AI Overview box, via Cloro's API | `CLORO_API_KEY` |
+| `cloro-ai-mode` | Google AI Mode, via Cloro's API | `CLORO_API_KEY` |
+| `chatgpt-browser` | `chatgpt.com`, driven directly | `AEO_ALLOW_BROWSER_SURFACE=1` + `AEO_CHATGPT_SESSION_PATH` |
+| `perplexity-browser` | `perplexity.ai`, driven directly | `AEO_ALLOW_BROWSER_SURFACE=1` + `AEO_PERPLEXITY_SESSION_PATH` |
+| `gemini-browser` | `gemini.google.com`, driven directly | `AEO_ALLOW_BROWSER_SURFACE=1` + `AEO_GEMINI_SESSION_PATH` |
 | `mock` | test-only, deterministic | — |
 
 **A failed engine never voids the audit.** Each is measured independently; one
 that is blocked, signed out, or hit by a UI change records a typed reason
-(`blocked`, `session-expired`, `selector-drift`, …) and contributes nothing,
-while the others still report. The verdict's headline names the engines that
-were not measured, so a number is never quietly missing an engine.
+(`blocked`, `session-expired`, `selector-drift`, `cloro-disabled`,
+`cloro-budget-exceeded`, …) and contributes nothing, while the others still
+report. The verdict's headline names the engines that were not measured, so a
+number is never quietly missing an engine.
 
-Search runs in the browser; **analysis does not** — context synthesis, prompt
-phrasing and stance judging go through OpenRouter (see below).
+Search runs in the browser, or via Cloro; **analysis does not** — context
+synthesis, prompt phrasing and stance judging go through OpenRouter (see
+below).
+
+### Cloro (wave-6 D1) — the default way to measure
+
+[Cloro](https://cloro.dev) queries the *consumer* products on our behalf via
+API — same motivation as the browser surfaces ("an API answer is not what a
+buyer sees") without the ToS exposure of automating a signed-in session
+ourselves. It is the **primary** measurement path; the browser surfaces above
+are the fallback.
+
+- **Async, never sync.** `cloro.adapter.ts` submits via `POST /v1/async/task`
+  and polls `GET /v1/async/task/{id}` — the sync `/v1/monitor/*` endpoints
+  carry a surcharge for nothing this module needs.
+- **Cost is the real charge, not an estimate.** `costUsd = creditsCharged ×
+  CLORO_CREDIT_USD`, read back from the completed task. A failed task charges
+  `0` credits.
+- **Pre-flight budget guard.** Before running a `cloro-*` surface,
+  `cloroFitsBudget()` estimates `prompts × runCount × perTaskCredits` against
+  `GET /v1/credits` and refuses to start a surface that cannot finish inside
+  the remaining allowance — burning most of a free month's credits and
+  stopping half way is worse than not starting. The surface run records why
+  (`cloro-budget-exceeded`) rather than silently truncating mid-run.
+- **`cloro-ai-overview` is a `GOOGLE` task, not its own `taskType`.** The box
+  appears at `response.aioverview` only when `include.aioverview` is set — a
+  different flag (`include.paaAioverview`) answers expanded "People Also Ask"
+  questions instead, which is not the same feature.
+- **Fallback chain.** `cloro-chatgpt` / `cloro-perplexity` / `cloro-gemini`
+  each fall back once to their `*-browser` equivalent when that Cloro surface
+  fails **and** the browser surface is itself enabled
+  (`AEO_ALLOW_BROWSER_SURFACE=1` + a valid session) — never a second silent
+  attempt with nothing to show. `AeoSurfaceRun.attemptedVia` records which
+  surface actually answered, so a fallback run is never reported as a Cloro
+  measurement. `cloro-ai-overview` and `cloro-ai-mode` have no browser
+  equivalent and fail closed.
+- **Typed failures**, distinguished so the report can say *why* an engine
+  produced nothing: `cloro-disabled` (no key), `cloro-budget-exceeded` (won't
+  fit the remaining allowance), `cloro-task-failed`, `cloro-timeout`,
+  `cloro-api-error`.
+
+See [`../measurement/adapters/cloro.adapter.ts`](../measurement/adapters/cloro.adapter.ts)
+for the client and per-engine adapters.
+
+---
+
+## Markets (wave-6 D8) — derived from the client, not configured globally
+
+Markets are **not** a fixed list and **not** a single country guessed from the
+ccTLD. They come from what the client's own site says it serves, in this
+precedence order:
+
+1. **Explicit override** — `RunAuditDto.markets` (ISO-3166 alpha-2 codes) on
+   the `POST /audits` request. Given, this fans out `surface × market`
+   immediately — one `AeoSurfaceRun` per combination.
+2. **Extracted service areas** — `SiteContext.markets[]`, ranked, from what the
+   site names as served.
+3. **Client HQ / registered geo** — `SiteContext.geo`.
+4. **`'US'`** — last resort.
+
+A run with no override defaults to **one market** (the highest-ranked) —
+never all of them — because markets multiply cost: `prompts × runCount ×
+engines × markets`. A naive "use every extracted market" would silently
+multiply a bill the operator never asked to pay.
+
+**Provenance is never mixed.** Browser surfaces report geo as **not steered**
+(§FR-6.3 below); Cloro surfaces report it as real, via the `country` parameter
+on every request. `verdict.counted.byMarket` and per-`AeoSurfaceRun.market`
+carry this apart from the aggregate `overall` numbers, so a market column
+never quietly averages a real number with a fictional one.
 
 ---
 
@@ -228,12 +305,15 @@ orchestrator.
 |---|---|---|
 | Module | `measurement` | Run orchestration, n≥5 floor, surface adapters, mention extraction |
 | Module | `fetcher` | Site crawl — UA rotation, rate limits, Playwright render |
-| Module | `database` | `SiteContext`, `AeoAudit`, `AeoStance`, reused `QuerySet` tables |
+| Module | `database` | `SiteContext`, `AeoAudit`, `AeoSurfaceRun`, `AeoStance`, reused `QuerySet` tables |
 | npm | `playwright` | Already a dependency (`technical-audit` JS render diff) |
 | npm | `@anthropic-ai/sdk`, `cheerio` | Already dependencies |
-| External | ChatGPT session | Operator-supplied, see above |
+| External | Cloro (cloro.dev) | `CLORO_API_KEY` — the primary measurement path (wave-6 D1) |
+| External | ChatGPT/Perplexity/Gemini session | Operator-supplied, browser fallback only |
 
-**No new npm packages and no new paid services were added by this module.**
+**No new npm packages were added.** Cloro (wave-6 D1) is the one new paid
+service this module talks to; it is metered and gated behind `CLORO_API_KEY`,
+with a pre-flight budget guard so a run cannot overspend the free allowance.
 
 ---
 
@@ -267,9 +347,6 @@ not an estimate from a local price table that would drift. Measured on a live
 125-observation stance pass: **$0.0058 total, 0 failures, ~1.8s per judgement**.
 Extrapolated to the `standard` tier (500 observations): **~$0.02 and ~15 minutes**.
 
-`OPENROUTER_API_KEY` lives in the **monorepo root** `.env` — the backend's
-`ConfigModule` loads `['.env', '../.env']`, so a shared key is not duplicated.
-
 | Name | Default | Description |
 |---|---|---|
 | `AEO_LLM_MODEL` | `qwen/qwen3-30b-a3b-instruct-2507` | OpenRouter model for all three analysis passes. |
@@ -286,6 +363,8 @@ Extrapolated to the `standard` tier (500 observations): **~$0.02 and ~15 minutes
 | `AEO_MATRIX_TIER` | `standard` | `scorecard`=25, `standard`=100, `full`=300 prompts. |
 | `AEO_MAX_COST_PER_AUDIT` | `10.00` | USD ceiling. Stops the run and records why. |
 | `AEO_CONTEXT_MAX_PAGES` | `12` | Page ceiling for the site crawl. |
+| `CLORO_API_KEY` | — | Enables the five `cloro-*` surfaces. Absent → `cloro-disabled`, fails closed. |
+| `CLORO_CREDIT_USD` | `0.0004` | Price per credit, for the reported `costUsd` only — the real free-tier spend is `$0`. Update if on a different Cloro plan. |
 
 Every LLM path degrades honestly when **no** provider is configured: context
 falls back to deterministic extraction, the matrix keeps template phrasing, and
@@ -338,9 +417,9 @@ price would corrupt the cost governor, so it reports the truth. The LLM passes
 | FR-5.4 (export) | ✅ | Inherited from `QuerySet` export |
 | FR-6.1 (n≥5) | ✅ | Enforced by `measurement`; DTO rejects `runCount < 5` |
 | FR-6.2 (fresh sessions) | ✅ | A new chat per prompt, so repeats stay independent |
-| FR-6.3 (multi-geo) | ⚠️ | `geo` is recorded on the run but **not steered** — the browser surface cannot change region without proxy egress. Documented, not faked |
+| FR-6.3 (multi-geo) | ✅ / ⚠️ | **Real** on `cloro-*` surfaces via the `country` parameter (wave-6 D1/D8) — `SiteContext.markets[]`, `AeoAudit.markets`, `AeoSurfaceRun.market`, `verdict.counted.byMarket`. Still **not steered** on the `*-browser` surfaces (no proxy egress); the two are never mixed in one number |
 | FR-6.4 (Observation schema) | ✅ | Reuses `measurement`'s |
-| FR-6.5 (surface adapters) | ✅ | `chatgpt-browser` added behind the existing interface |
+| FR-6.5 (surface adapters) | ✅ | `chatgpt-browser`/`perplexity-browser`/`gemini-browser` plus five `cloro-*` surfaces, all behind the existing `SurfaceAdapter` interface |
 | FR-7.1–7.3 (share of voice) | ✅ | From `measurement.summary`, plus per-competitor standings |
 | FR-9.4 (claims discipline) | ✅ | Counted/judged split; judged output is never expressed as a rate |
 

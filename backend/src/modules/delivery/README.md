@@ -33,7 +33,7 @@ delivery/
 
 ## Honest guards
 
-- Email without `PLUNK_API_KEY` → **503 `email-unconfigured`**, nothing sent.
+- Email without `PLUNK_SECRET_KEY` → **503 `email-unconfigured`**, nothing sent.
 - Plunk non-2xx or transport error → **503 `email-send-failed`** (never a
   silent loss).
 - Upgrades without the tier's checkout URL env → **503
@@ -44,13 +44,13 @@ delivery/
 
 | Var | Purpose |
 |---|---|
-| `PLUNK_API_KEY` | Enables the send path (https://api.useplunk.com/v1/send) |
+| `PLUNK_SECRET_KEY` | Enables the send path (https://api.useplunk.com/v1/send) |
 | `PLUNK_SENDER_EMAIL` | Verified Plunk sender (claimed in the adapter docs) |
 | `STRIPE_CHECKOUT_URL_FULL` / `STRIPE_CHECKOUT_URL_MONITORING` | Pricing-page Checkout links per tier |
 
 ## e2e evidence (2026-08-30, :3111)
 
-1. `POST /send` without `PLUNK_API_KEY` → honest **503 `email-unconfigured`**.
+1. `POST /send` without `PLUNK_SECRET_KEY` → honest **503 `email-unconfigured`**.
 2. Lead (source `scorecard`, `scorecardRunId` linked) → 201; `book-call` CTA appended; `type:"bogus"` → **400** (append-only log preserved); PATCH → `status:"booked"`.
 3. `GET /leads/export` → CSV with header `email,name,source,status,ctaEvents,createdAt`.
 4. `POST /upgrades {"tier":"full"}` without env → honest **503 `payment-unconfigured`**, nothing persisted; `tier:"nope"` → **400**.

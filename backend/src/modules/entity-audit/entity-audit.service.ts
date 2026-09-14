@@ -17,7 +17,7 @@
 
 import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Anthropic from '@anthropic-ai/sdk';
+import { LlmService } from '../../common/llm/llm.service';
 import { FetcherService } from '../fetcher/fetcher.service';
 import { PrismaService } from '../database/prisma.service';
 import { AnthropicSurfaceAdapter } from '../measurement/adapters/anthropic.adapter';
@@ -33,12 +33,12 @@ import { resolveConsistency } from './entity-audit.consistency';
 @Injectable()
 export class EntityAuditService {
   private readonly logger = new Logger(EntityAuditService.name);
-  private anthropic: Anthropic | null = null;
 
   constructor(
     private readonly fetcher: FetcherService,
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly llm: LlmService,
     private readonly anthropicSurface: AnthropicSurfaceAdapter,
     private readonly perplexitySurface: PerplexitySurfaceAdapter,
   ) {}
@@ -556,33 +556,23 @@ export class EntityAuditService {
     if (answers.length < 2) {
       return null;
     }
-    const configured = this.config.get<string>('ANTHROPIC_API_KEY');
-    if (!configured) {
-      return 'judge-unavailable: divergence scoring needs ANTHROPIC_API_KEY';
+    if (!this.llm.isAvailable()) {
+      return 'judge-unavailable: divergence scoring needs OPENROUTER_API_KEY or ANTHROPIC_API_KEY';
     }
     try {
-      if (!this.anthropic) {
-        this.anthropic = new Anthropic({ apiKey: configured });
-      }
-      const response = await this.anthropic.messages.create({
-        model: this.config.get<string>('MEASUREMENT_CLAUDE_MODEL', 'claude-opus-5'),
-        max_tokens: 700,
+      const result = await this.llm.text({
+        purpose: 'entity-audit divergence judge',
+        maxTokens: 700,
+        openRouterModel: this.config.get<string>('MEASUREMENT_LLM_MODEL'),
+        anthropicModel: this.config.get<string>('MEASUREMENT_CLAUDE_MODEL'),
         system:
           'You compare how different AI models describe the same company. Identify factual or descriptor divergence between the answers: who the company serves, what it does, category, claims. Reply with a 2-3 sentence verdict; start with "Aligned:" or "Divergent:".',
-        messages: [
-          {
-            role: 'user',
-            content:
-              answers
-                .map((a) => 'MODEL ' + a.provider.toUpperCase() + ' ANSWER:\n' + a.text.slice(0, 1500))
-                .join('\n\n') + '\n\nCompany: ' + entityName,
-          },
-        ],
+        user:
+          answers
+            .map((a) => 'MODEL ' + a.provider.toUpperCase() + ' ANSWER:\n' + a.text.slice(0, 1500))
+            .join('\n\n') + '\n\nCompany: ' + entityName,
       });
-      return response.content
-        .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-        .map((block) => block.text)
-        .join('');
+      return result.data;
     } catch (err) {
       this.logger.error('Divergence judge failed: ' + (err as Error).message);
       return 'judge-failed: ' + (err as Error).message;

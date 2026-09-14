@@ -12,6 +12,7 @@ import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { HealthModule } from './modules/health/health.module';
 import { DatabaseModule } from './modules/database/database.module';
+import { LlmModule } from './common/llm/llm.module';
 import { FetcherModule } from './modules/fetcher/fetcher.module';
 import { SchedulingModule } from './modules/scheduling/scheduling.module';
 import { JobsModule } from './modules/jobs/jobs.module';
@@ -52,19 +53,21 @@ import { DigitalPresenceModule } from './modules/digital-presence/digital-presen
 import { TechStackModule } from './modules/tech-stack/tech-stack.module';
 import { KeywordResearchModule } from './modules/keyword-research/keyword-research.module';
 import { CompetitorsModule } from './modules/competitors/competitors.module';
+import { GrowthExecutionModule } from './modules/growth-execution/growth-execution.module';
+import { ClientsModule } from './modules/clients/clients.module';
+import { ClientPortalModule } from './modules/client-portal/client-portal.module';
+import { BacklinksModule } from './modules/backlinks/backlinks.module';
 import { AgentsModule } from './modules/agents/agents.module';
 import { UsersModule } from './modules/users/users.module';
 
 @Module({
   imports: [
-    // Global configuration module — loads .env variables
+    // Global configuration module — loads .env variables. Every key the
+    // backend needs lives in backend/.env; nothing is shared with frontend/
+    // or client-portal/ via a monorepo-root .env (each app owns its own).
     ConfigModule.forRoot({
       isGlobal: true,
-      // backend/.env first, then the monorepo root — earlier entries win, so a
-      // backend-local value still overrides the shared one. The root file is
-      // where cross-cutting keys (OPENROUTER_API_KEY) live so the frontend and
-      // backend do not each keep their own copy.
-      envFilePath: ['.env', '../.env'],
+      envFilePath: '.env',
     }),
 
     // In-process cron. Drives recurring technical audits without Redis — see
@@ -81,6 +84,7 @@ import { UsersModule } from './modules/users/users.module';
 
     // Infrastructure modules (global)
     DatabaseModule,
+    LlmModule,
 
     // Foundation — all outbound network requests go through this
     // Internal module — no REST endpoints, injected via DI
@@ -168,6 +172,16 @@ import { UsersModule } from './modules/users/users.module';
     // rows, builds a light per-competitor profile (tech-stack + schema +
     // attached SERP/AEO presence), and produces the client-vs-competitor gap.
     CompetitorsModule,
+
+    // Stage 11, "Marketing & Growth Execution" — the flowchart's last
+    // previously-unbuilt stage before Final Output (stage 12, `reporting`).
+    GrowthExecutionModule,
+
+    // Lean admin/client-management layer (2026-09-13) — NOT the full
+    // docs/analysis/client-portal.md plan. See clients/README.md.
+    ClientsModule,
+    ClientPortalModule,
+    BacklinksModule,
 
     AgentsModule,
 

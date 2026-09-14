@@ -17,9 +17,11 @@ async function bootstrap() {
   // Global prefix for all API routes
   app.setGlobalPrefix('api');
 
-  // Enable CORS for the frontend
+  // Enable CORS for the frontend(s) — the operator console (3000) and the
+  // client-portal app (3001). CORS_ORIGIN can override with a comma-separated list.
+  const defaultOrigins = ['http://localhost:3000', 'http://localhost:3001'];
   app.enableCors({
-    origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()) : defaultOrigins,
     credentials: true,
   });
 

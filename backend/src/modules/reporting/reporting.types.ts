@@ -2,10 +2,13 @@
  * Reporting Types — Branded diagnostic report data shapes.
  *
  * A report aggregates: technical-audit findings, entity-audit schema checks,
- * gap-analysis roadmap, and the PRD §8 weighted score rubric.
+ * gap-analysis roadmap, the PRD §8 weighted score rubric, and (2026-09-13)
+ * the project's latest DataForSEO backlinks snapshot.
  *
  * @module reporting.types
  */
+
+import type { BacklinksSummaryDto } from '../backlinks/backlinks.types';
 
 // ─── PRD §8 Score rubric ───────────────────────────────────────
 
@@ -50,6 +53,10 @@ export interface ReportData {
   subScores: SubScore[];
   findings: ReportFindingDto[];
   roadmap: ReportRoadmapDto[];
+  /** Stage 12 "Prioritized Growth Roadmap": null when neither strategy nor findings has run yet for this project. */
+  growthPlan: GrowthPlanDto | null;
+  /** Latest DataForSEO backlinks snapshot for this project's domain — null when `POST .../backlinks/refresh` has never been run. Never pulled fresh by report generation itself (read-only, same discipline as growthPlan). */
+  backlinks: BacklinksSummaryDto | null;
   createdAt: string;
 }
 
@@ -72,6 +79,54 @@ export interface ReportRoadmapDto {
   severity: string | null;
   priorityScore: number | null;
   status: string;
+}
+
+// ─── Stage 12 "Prioritized Growth Roadmap" ─────────────────────
+// The flowchart's Final-Output branch: Issue+Evidence, Recommended Action,
+// Priority and Implementation Guidance, rolled into one ranked roadmap.
+// "Business/Search Impact" is `Gap.impactScore`/severity (already in
+// `roadmap` above); "Recommended/Generated Asset" is stage 11, not built —
+// `assetsNote` says so honestly rather than inventing an empty array.
+
+/** One stage-9 recommendation category — "Recommended Action" + "Priority" (`priorityRank`, quick-wins-first). */
+export interface GrowthRecommendationDto {
+  category: string;
+  label: string;
+  title: string;
+  summary: string;
+  priorityRank: number;
+  quickWinCount: number;
+  majorProjectCount: number;
+  fillInCount: number;
+  thanklessTaskCount: number;
+  gapIds: string[];
+}
+
+/** One stage-8 LLM-authored finding — "Issue + Evidence" in both client (executive) and technical registers. "Implementation Guidance" = the fix fields. */
+export interface GrowthFindingDto {
+  gapId: string | null;
+  title: string;
+  whatExecutive: string;
+  whatTechnical: string;
+  whyExecutive: string;
+  whyTechnical: string;
+  fixExecutive: string;
+  fixTechnical: string;
+  thinRun: boolean;
+  disclosedGap: string | null;
+}
+
+export interface GrowthPlanDto {
+  /** null when `strategy.buildActionPlan()` has never been run for this project. */
+  actionPlan: {
+    recommendations: GrowthRecommendationDto[];
+    notCovered: string[];
+    updatedAt: string;
+  } | null;
+  /** Empty (not null) when `findings.generate()` has never been run — a report can still show the roadmap without LLM copy. */
+  findingsCopy: GrowthFindingDto[];
+  /** Honest note: stage 11 "Marketing & Growth Execution" (blog topics, ad angles, generated assets) has no module yet. */
+  assetsNote: string;
 }
 
 // ─── Branding (FR-10.4) ────────────────────────────────────────

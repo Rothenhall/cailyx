@@ -25,7 +25,7 @@ export class DeliveryController {
   @Throttle({ default: { ttl: 60000, limit: 10 } })
   @ApiOperation({
     summary: 'Send the delivery email (Plunk)',
-    description: 'Report link + booking CTA (+ optional testimonial ask). 503 email-unconfigured without PLUNK_API_KEY; sender identity comes from PLUNK_SENDER_EMAIL.',
+    description: 'Report link + booking CTA (+ optional testimonial ask). 503 email-unconfigured without PLUNK_SECRET_KEY; sender identity comes from PLUNK_SENDER_EMAIL.',
   })
   @ApiResponse({ status: 200, description: 'Delivered' })
   send(@Param('projectId') projectId: string, @Body() body: SendReportDto) {

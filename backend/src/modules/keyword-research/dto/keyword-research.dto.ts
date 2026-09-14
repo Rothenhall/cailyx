@@ -88,3 +88,20 @@ export class ListKeywordSetsQueryDto {
   @Min(0)
   minVolume?: number;
 }
+
+/**
+ * Query params for GET /projects/:projectId/keyword-research/priority
+ */
+export class PriorityKeywordsQueryDto {
+  @ApiPropertyOptional({ description: 'Rank within this keyword set only. Defaults to the project\'s most recent completed/partial set.' })
+  @IsOptional()
+  @IsString()
+  setId?: string;
+
+  @ApiPropertyOptional({ description: 'Max keywords to return, ranked highest-priority first. Defaults to 20, capped at 100.' })
+  @Type(() => Number)
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  limit?: number;
+}

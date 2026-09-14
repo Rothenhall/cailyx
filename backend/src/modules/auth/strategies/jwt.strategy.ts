@@ -10,18 +10,22 @@ import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../../database/prisma.service';
-import type { Role } from '../auth.types';
+import type { Role, UserType } from '../auth.types';
 
 export interface JwtPayload {
   sub: string;
   email: string;
   role: Role;
+  type: UserType;
+  clientId?: string;
 }
 
 export interface AuthedRequestUser {
   userId: string;
   email: string;
   role: Role;
+  type: UserType;
+  clientId?: string;
 }
 
 @Injectable()
@@ -44,6 +48,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       select: { id: true },
     });
     if (!user) throw new UnauthorizedException('User no longer exists');
-    return { userId: payload.sub, email: payload.email, role: payload.role };
+    return { userId: payload.sub, email: payload.email, role: payload.role, type: payload.type, clientId: payload.clientId };
   }
 }

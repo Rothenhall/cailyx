@@ -5,7 +5,7 @@
  * Pipeline: BFS crawl (bounded pages/depth, same host) → parse each page →
  * topic keywords (deterministic TF) → node/edge graph → orphans + under-linked
  * hubs → recommendations from keyword overlap + inbound deficit. An optional
- * LLM pass only rewrites anchor text / reason copy (gated on ANTHROPIC_API_KEY).
+ * LLM pass only rewrites anchor text / reason copy (gated on a configured LLM provider).
  *
  * Client-site only: the crawl root defaults to the project's own domain and all
  * fetches go through FetcherService (central rate-limit + logging). The
@@ -23,7 +23,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Anthropic from '@anthropic-ai/sdk';
+import { LlmService } from '../../common/llm/llm.service';
 import { PrismaService } from '../database/prisma.service';
 import { FetcherService } from '../fetcher/fetcher.service';
 import { FixturePageSource, HttpPageSource } from './page-source';
@@ -48,11 +48,11 @@ import type {
 @Injectable()
 export class InternalLinkService {
   private readonly logger = new Logger(InternalLinkService.name);
-  private anthropic: Anthropic | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly llm: LlmService,
     private readonly fetcher: FetcherService,
   ) {}
 
@@ -61,7 +61,7 @@ export class InternalLinkService {
    * and rate-limited by FetcherService).
    * @throws NotFoundException          project missing.
    * @throws BadRequestException        fixture root without INTERNAL_LINK_ALLOW_FIXTURE.
-   * @throws ServiceUnavailableException useLlm without ANTHROPIC_API_KEY.
+   * @throws ServiceUnavailableException useLlm without a configured LLM provider.
    */
   async analyze(projectId: string, input: AnalyzeInput) {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
@@ -69,9 +69,9 @@ export class InternalLinkService {
 
     const rootUrl = (input.rootUrl?.trim() || `https://${project.domain}`).replace(/\/+$/, '') || `https://${project.domain}`;
     const useLlm = input.useLlm === true;
-    if (useLlm && !this.config.get<string>('ANTHROPIC_API_KEY')) {
+    if (useLlm && !this.llm.isAvailable()) {
       throw new ServiceUnavailableException(
-        'ANTHROPIC_API_KEY not configured — internal-link LLM refinement unavailable (omit useLlm)',
+        'No LLM provider configured (OPENROUTER_API_KEY or ANTHROPIC_API_KEY) — internal-link LLM refinement unavailable (omit useLlm)',
       );
     }
 
@@ -339,10 +339,8 @@ export class InternalLinkService {
   private async refineRecommendations(
     recs: WorkingRecommendation[],
     nodes: GraphNode[],
-  ): Promise<{ recs: WorkingRecommendation[]; model: string }> {
-    const model = this.config.get<string>('INTERNAL_LINK_LLM_MODEL', 'claude-opus-5');
+  ): Promise<{ recs: WorkingRecommendation[]; model: string | null }> {
     try {
-      const client = this.ensureClient();
       const byPath = new Map(nodes.map((n) => [n.path, n]));
       const payload = recs.slice(0, 40).map((r) => ({
         fromPath: r.fromPath,
@@ -351,27 +349,23 @@ export class InternalLinkService {
         toTitle: byPath.get(r.toPath)?.title ?? r.toPath,
         currentAnchor: r.suggestedAnchor,
       }));
-      const res = await client.messages.create({
-        model,
-        max_tokens: 1500,
-        system:
-          'You improve internal-link suggestions. For each item, return a natural anchor phrase (2-5 words, ' +
-          'lowercase unless a proper noun) that would read well as link text on the "from" page pointing to ' +
-          'the "to" page. Return ONLY minified JSON: {"anchors":[{"fromPath","toPath","anchor"}]} in the same order.',
-        messages: [{ role: 'user', content: JSON.stringify({ items: payload }) }],
-      });
-      const text = res.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('')
-        .trim();
-      const start = text.indexOf('{');
-      const end = text.lastIndexOf('}');
-      if (start === -1 || end <= start) return { recs, model };
-      const parsed = JSON.parse(text.slice(start, end + 1)) as { anchors?: Array<{ fromPath?: string; toPath?: string; anchor?: string }> };
-      const map = new Map((parsed.anchors ?? []).map((a) => [`${a.fromPath} ${a.toPath}`, (a.anchor ?? '').trim()]));
+      const result = await this.llm.json(
+        {
+          purpose: 'internal-link anchor refinement',
+          maxTokens: 1500,
+          openRouterModel: this.config.get<string>('INTERNAL_LINK_LLM_MODEL'),
+          anthropicModel: this.config.get<string>('INTERNAL_LINK_LLM_ANTHROPIC_MODEL'),
+          system:
+            'You improve internal-link suggestions. For each item, return a natural anchor phrase (2-5 words, ' +
+            'lowercase unless a proper noun) that would read well as link text on the "from" page pointing to ' +
+            'the "to" page. Return ONLY minified JSON: {"anchors":[{"fromPath","toPath","anchor"}]} in the same order.',
+          user: JSON.stringify({ items: payload }),
+        },
+        (raw) => (raw as { anchors?: Array<{ fromPath?: string; toPath?: string; anchor?: string }> }).anchors ?? [],
+      );
+      const map = new Map(result.data.map((a) => [`${a.fromPath} ${a.toPath}`, (a.anchor ?? '').trim()]));
       return {
-        model,
+        model: result.model,
         recs: recs.map((r) => {
           const a = map.get(`${r.fromPath} ${r.toPath}`);
           return a && a.length >= 2 && a.length <= 60 ? { ...r, suggestedAnchor: a } : r;
@@ -379,15 +373,8 @@ export class InternalLinkService {
       };
     } catch (err) {
       this.logger.warn(`internal-link LLM refine failed (${(err as Error).message}) — keeping deterministic anchors`);
-      return { recs, model };
+      return { recs, model: null };
     }
-  }
-
-  private ensureClient(): Anthropic {
-    if (!this.anthropic) {
-      this.anthropic = new Anthropic({ apiKey: this.config.get<string>('ANTHROPIC_API_KEY') || undefined });
-    }
-    return this.anthropic;
   }
 
   private async getGraphOr404(graphId: string) {

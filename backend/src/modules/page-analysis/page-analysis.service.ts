@@ -19,7 +19,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import * as cheerio from 'cheerio';
 import { ConfigService } from '@nestjs/config';
-import Anthropic from '@anthropic-ai/sdk';
+import { LlmService } from '../../common/llm/llm.service';
 import { FetcherService } from '../fetcher/fetcher.service';
 import { PrismaService } from '../database/prisma.service';
 import type { ExtractableClaim, FormatFindings, HeadingInfo, StructureScore } from './page-analysis.types';
@@ -47,6 +47,7 @@ export class PageAnalysisService {
     private readonly prisma: PrismaService,
     private readonly fetcher: FetcherService,
     private readonly config: ConfigService,
+    private readonly llm: LlmService,
   ) {}
 
   /**
@@ -226,30 +227,27 @@ export class PageAnalysisService {
     claims: ExtractableClaim[];
     wordCount: number;
   }): Promise<string> {
-    const apiKey = this.config.get<string>('ANTHROPIC_API_KEY') || process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
+    if (!this.llm.isAvailable()) {
       throw new ServiceUnavailableException(
-        'useLlm requested but no ANTHROPIC_API_KEY configured — the deterministic analysis was NOT persisted; re-run without useLlm or set the key.',
+        'useLlm requested but no LLM provider configured (OPENROUTER_API_KEY or ANTHROPIC_API_KEY) — the deterministic analysis was NOT persisted; re-run without useLlm or set a key.',
       );
     }
-    const client = new Anthropic({ apiKey });
-    const prompt =
+    const user =
       'Section headings from a page (title: ' + (analyzed.title ?? 'unknown') + '):\n' +
       analyzed.headings.map((h) => (h.standalone ? 'OK  ' : 'BAD ') + h.text).join('\n') +
       '\n\nFirst paragraph: ' + (analyzed.blufText ?? '(none)') +
       '\n\nWord count: ' + analyzed.wordCount +
       '\n\nIn at most 12 bullet lines: (1) which "BAD" headings read fine standalone anyway and which genuinely do not, (2) one BLUF rewrite suggestion (<=55 words) if the first paragraph buries the answer, (3) which claims lack a timeframe or source (quote them). Plain text bullets only.';
     try {
-      const msg = await client.messages.create({
-        model: process.env.FINDINGS_MODEL || 'claude-opus-5',
-        max_tokens: 1024,
-        messages: [{ role: 'user', content: prompt }],
+      const result = await this.llm.text({
+        purpose: 'page-analysis LLM notes',
+        maxTokens: 1024,
+        openRouterModel: this.config.get<string>('PAGE_ANALYSIS_LLM_MODEL'),
+        anthropicModel: this.config.get<string>('PAGE_ANALYSIS_LLM_ANTHROPIC_MODEL'),
+        system: 'You are a concise editorial reviewer for on-page content structure.',
+        user,
       });
-      const text = msg.content
-        .map((c) => (c.type === 'text' ? c.text : ''))
-        .join('')
-        .trim();
-      return text || 'LLM returned no text';
+      return result.data || 'LLM returned no text';
     } catch (err) {
       this.logger.warn('LLM refinement failed: ' + (err as Error).message);
       return 'LLM refinement failed: ' + (err as Error).message;

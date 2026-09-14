@@ -26,7 +26,7 @@ import { ConfigService } from '@nestjs/config';
 import { randomBytes, createHash } from 'crypto';
 import * as bcryptjs from 'bcryptjs';
 import { PrismaService } from '../database/prisma.service';
-import type { AccessTokenClaims, AuthTokens, LoginResult, Role, SafeUserDto } from './auth.types';
+import type { AccessTokenClaims, AuthTokens, LoginResult, Role, SafeUserDto, UserType } from './auth.types';
 
 /** Bcrypt cost factor — 10 is the 2026 baseline for interactive logins. */
 const BCRYPT_ROUNDS = 10;
@@ -39,6 +39,8 @@ function toSafeUser(user: {
   email: string;
   name: string;
   role: string;
+  type: string;
+  clientId: string | null;
   createdAt: Date;
 }): SafeUserDto {
   return {
@@ -46,6 +48,8 @@ function toSafeUser(user: {
     email: user.email,
     name: user.name,
     role: user.role as Role,
+    type: user.type as UserType,
+    clientId: user.clientId,
     createdAt: user.createdAt.toISOString(),
   };
 }
@@ -117,7 +121,7 @@ export class AuthService {
     });
     this.logger.log(`Operator registered (email=${user.email}, role=${user.role}, bootstrap=${isFirstUser})`);
 
-    const tokens = await this.issueTokens({ sub: user.id, email: user.email, role: user.role as Role });
+    const tokens = await this.issueTokens({ sub: user.id, email: user.email, role: user.role as Role, type: 'operator' });
     return { ...tokens, user: toSafeUser(user) };
   }
 
@@ -134,7 +138,13 @@ export class AuthService {
     if (!ok) {
       throw new UnauthorizedException('Invalid credentials');
     }
-    const tokens = await this.issueTokens({ sub: user.id, email: user.email, role: user.role as Role });
+    const tokens = await this.issueTokens({
+      sub: user.id,
+      email: user.email,
+      role: user.role as Role,
+      type: user.type as UserType,
+      clientId: user.clientId ?? undefined,
+    });
     return { ...tokens, user: toSafeUser(user) };
   }
 
@@ -170,7 +180,13 @@ export class AuthService {
       where: { id: stored.id },
       data: { revokedAt: new Date() },
     });
-    return this.issueTokens({ sub: user.id, email: user.email, role: user.role as Role });
+    return this.issueTokens({
+      sub: user.id,
+      email: user.email,
+      role: user.role as Role,
+      type: user.type as UserType,
+      clientId: user.clientId ?? undefined,
+    });
   }
 
   /**

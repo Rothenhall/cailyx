@@ -10,6 +10,7 @@
  */
 
 import type { SaRow, UrlInspection } from '../google/search-console.service';
+import { hostOf } from '../../common/utils/subject-match';
 
 /* ── positional CTR baseline ────────────────────────────────────────────
    Rough industry curve (desktop+mobile blended). Used only to flag pages
@@ -475,13 +476,6 @@ function round(n: number, dp = 1): number {
 function path(u: string): string {
   try {
     return new URL(u).pathname || u;
-  } catch {
-    return u;
-  }
-}
-function hostOf(u: string): string {
-  try {
-    return new URL(u).host;
   } catch {
     return u;
   }

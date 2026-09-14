@@ -18,9 +18,11 @@ import Anthropic from '@anthropic-ai/sdk';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
-/** Same benchmarked default as `aeo-llm.service.ts` — an extraction/classification
- *  job, not a writing job, so a small cheap model is the right tool. */
-const DEFAULT_OPENROUTER_MODEL = 'qwen/qwen3-30b-a3b-instruct-2507';
+/** 2026-09-13: operator's explicit "use deepseek/deepseek-v4.1-flash for
+ *  everything that needs an LLM, from OpenRouter" — applied here and
+ *  everywhere else a default OpenRouter model is set (see
+ *  `common/llm/llm.service.ts`'s docblock for the full list + caveats). */
+const DEFAULT_OPENROUTER_MODEL = 'deepseek/deepseek-v4.1-flash';
 
 /** Fallback $/MTok when Anthropic is used and no live cost is reported. */
 const ANTHROPIC_INPUT_PER_MTOK = 5;

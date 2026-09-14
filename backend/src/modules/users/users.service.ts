@@ -133,12 +133,14 @@ function isRole(v: string): v is Role {
   return (ROLES as readonly string[]).includes(v);
 }
 
-function toSafe(u: { id: string; email: string; name: string; role: string; createdAt: Date }): SafeUserDto {
+function toSafe(u: { id: string; email: string; name: string; role: string; type: string; clientId: string | null; createdAt: Date }): SafeUserDto {
   return {
     id: u.id,
     email: u.email,
     name: u.name,
     role: u.role as Role,
+    type: u.type as SafeUserDto['type'],
+    clientId: u.clientId,
     createdAt: u.createdAt.toISOString(),
   };
 }

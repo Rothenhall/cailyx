@@ -7,11 +7,14 @@
 ## Purpose
 
 Turns `Project.competitors` (a JSON string on the `Project` row) into
-first-class `Competitor` rows, builds a **light profile** for each one
-(homepage tech-stack scan, schema/JSON-LD read, and whatever SERP/AEO
+first-class `Competitor` rows, builds a profile for each one (homepage
+tech-stack scan, schema/JSON-LD read, homepage SEO/content scoring on the
+**identical rubric** the client is scored by, published review ratings via
+the same schema-scrape reader `digital-presence` uses, and whatever SERP/AEO
 presence already exists for that rival), and produces an honest
 client-vs-competitor gap comparison. Answers: **what do our competitors run,
-and where do they already beat us?**
+where do they already beat us on SEO/content/reviews, and where do they
+already beat us?**
 
 Decision D4 (approved): "light now, structured to deepen later." Storing
 `Competitor`/`CompetitorProfile` as real rows — not another JSON blob — is
@@ -56,6 +59,15 @@ competitors/
      (`competitorsSeen` / `topDomains`, already written by
      `serp-intelligence`) for this competitor's name or domain. Never
      triggers a new SERP fetch.
+   - **SEO/content:** `extractPageSignals()` — the same page-signal extractor
+     `technical-audit` uses, pulled out into a shared function specifically so
+     competitors are scored on an identical rubric rather than a second copy
+     — runs against the homepage fetch, producing `seoScore`.
+   - **Reviews:** `attachReviews()` reads published `AggregateRating` markup
+     via the same schema-scrape reader `digital-presence` uses against the
+     platforms already discovered for that competitor (no new vendor call);
+     an honest `skipped` when no ratable listing exists (e.g. a site sitting
+     behind Cloudflare with no discoverable review markup).
    - A competitor with no domain on record still gets AEO/SERP attachment
      (keyed by name), but `status: "skipped"` for the crawl half.
 2. **`GET /competitors/profiles`** lists every `Competitor` row with its
@@ -80,8 +92,12 @@ competitors/
 | Per-competitor schema/JSON-LD read | ✅ | Reuses `FetcherService.fetchSchema` unchanged |
 | AEO presence attachment | ✅ | Reads existing `AeoAudit.verdict`; reports `unknown` when no completed audit exists yet, `absent` when one exists but doesn't name this competitor |
 | SERP presence attachment | ✅ | Reads existing `SerpResult` rows via the project's `SerpTracker`s |
-| Gap comparison | ✅ | Presence diff on tech/schema + side-by-side AEO/SERP status; no composite score |
+| Per-competitor SEO/content scoring | ✅ | `seoScore` via shared `extractPageSignals()` — identical rubric to `technical-audit`, not a second copy |
+| Per-competitor review ratings | ✅ | `reviewRatings`/`reviewStatus` via `attachReviews()`; honest `skipped`/`failed` when no ratable listing exists |
+| Client-side SEO/review comparison in `/gap` | ✅ | The client's own SEO signals and `PresenceReview` rows are read live so the gap table compares against something, not nothing |
+| Gap comparison | ✅ | Presence diff on tech/schema/SEO/reviews + side-by-side AEO/SERP status; no composite score |
 | No-domain competitors | ✅ | `status: "skipped"` on the crawl half; AEO/SERP attachment still runs by name |
+| Competitor Social (activity/followers/engagement) | ❌ Not built | No code path yet — the flowchart's one competitor leaf this module doesn't cover |
 | Full `technical-audit` per competitor | ❌ Explicitly out of scope (D4) | Project-scoped elsewhere; making it domain-scoped is a future decision |
 | High-signal pages beyond the homepage | ❌ Deferred | See LEFT-OUT.md |
 
@@ -128,8 +144,11 @@ No new npm packages, no env vars, no vendor credentials.
 
 ## Consumers
 
-None yet. A future frontend Competitors workspace (wave-6 step 8) is the
-expected consumer.
+None yet. `gap-analysis.service.ts` reads `Competitor` rows (name-matching
+for standings) but does not yet read `CompetitorProfile.seoScore` or
+`.reviewRatings` — those two fields exist and are API-accessible but are not
+consolidated into stage 8 findings yet. A future frontend Competitors
+workspace (wave-6 step 8) is the other expected consumer.
 
 ## PRD Alignment
 
@@ -152,12 +171,8 @@ shape, and the gap diff.
 
 ### A note on this worktree's `AeoAudit` model
 
-This module was built in a git worktree branched before the `aeo-audit`
-module (also wave-6, built the same day) had landed in this branch's base
-commit. `schema.prisma` here therefore carries a **minimal, non-relational
-mirror** of `AeoAudit` (scalar columns only: `id`, `projectId`, `status`,
-`verdict`, `createdAt`) — just enough to read `verdict` back. This module
-never writes to that table. When the full relational `AeoAudit` model (with
-`SiteContext`/`AeoStance`/`AeoSurfaceRun` relations) lands in `schema.prisma`,
-delete this mirror in favour of it — see the comment directly above the model
-in `schema.prisma`.
+~~This module was built in a git worktree branched before the `aeo-audit`
+module had landed... a minimal, non-relational mirror...~~ **Resolved:** the
+full relational `AeoAudit` model (with `SiteContext`/`AeoStance`/
+`AeoSurfaceRun` relations) is now in `schema.prisma`; this module reads
+`verdict` off that model directly. No mirror remains.

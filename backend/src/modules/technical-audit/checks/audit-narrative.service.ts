@@ -38,11 +38,16 @@ import type { AuditDelta, AuditFinding, PageInventoryAnalysis } from '../technic
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 /**
- * Cheap and long-context by default. The prompt is a few thousand tokens of
- * compact JSON and the answer is capped at ~700, so a run costs a fraction of
- * a cent — deliberately, because this fires on every scheduled audit.
+ * 2026-09-13: operator's explicit "use deepseek/deepseek-v4.1-flash for
+ * everything that needs an LLM, from OpenRouter" — same as
+ * `common/llm/llm.service.ts`'s shared default. Still cheap at this
+ * module's scale (a few thousand tokens of compact JSON in, ~700 out — a
+ * fraction of a cent) even though its $/Mtok is somewhat higher than the
+ * gemini-2.5-flash-lite default this replaces; this fires on every
+ * scheduled audit, so worth re-checking if per-run LLM cost ever matters
+ * enough to tune independently via `OPENROUTER_MODEL`.
  */
-const DEFAULT_MODEL = 'google/gemini-2.5-flash-lite';
+const DEFAULT_MODEL = 'deepseek/deepseek-v4.1-flash';
 
 /** What the narrator is told about a run. Numbers only — no raw HTML. */
 export interface NarrativeInput {

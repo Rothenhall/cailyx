@@ -3,7 +3,7 @@
  * CTA logging, and the Stripe Checkout upgrade ledger.
  *
  * Guards are honest (same posture as findings/page-analysis):
- *  - Email without PLUNK_API_KEY → 503 `email-unconfigured`, nothing sent.
+ *  - Email without PLUNK_SECRET_KEY → 503 `email-unconfigured`, nothing sent.
  *  - Upgrades without the tier's STRIPE_CHECKOUT_URL_* → 503
  *    `payment-unconfigured`, nothing persisted.
  *
@@ -67,10 +67,10 @@ export class DeliveryService {
    */
   async sendReport(projectId: string, dto: SendReportDto): Promise<DeliveryEmailResult> {
     await this.assertProject(projectId);
-    const apiKey = this.config.get<string>('PLUNK_API_KEY');
+    const apiKey = this.config.get<string>('PLUNK_SECRET_KEY');
     if (!apiKey) {
       throw new ServiceUnavailableException(
-        'email-unconfigured: PLUNK_API_KEY is not set — nothing was sent',
+        'email-unconfigured: PLUNK_SECRET_KEY is not set — nothing was sent',
       );
     }
     const body = this.renderEmail(dto);
