@@ -5,7 +5,7 @@
  */
 
 import { ApiPropertyOptional, ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
 export class CreateClientDto {
   @ApiProperty({ example: 'Rothenhall Test Co.' })
@@ -86,6 +86,38 @@ export class CreateClientProjectDto {
   @MinLength(3)
   @MaxLength(253)
   domain: string;
+
+  @ApiPropertyOptional({
+    description: 'Opt-in: also run a full AEO (answer-engine) audit as part of the Day-1 pipeline. Costs real Cloro/LLM credits per run — off by default.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  runAeoAudit?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Opt-in: also pull keyword research (search volume/CPC/related terms) seeded from the enrichment category. Costs DataForSEO credits — off by default.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  runKeywordResearch?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Opt-in: also generate growth-execution asset briefs from the Strategy stage output. Off by default.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  runGrowthExecution?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Opt-in: also pull a fresh backlinks profile from DataForSEO. Costs DataForSEO credits — off by default.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  runBacklinksRefresh?: boolean;
 }
 
 export class CreateClientLoginDto {

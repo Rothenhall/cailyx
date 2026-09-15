@@ -592,7 +592,15 @@ export class AeoAuditService {
             this.logger.warn(`Stance budget exhausted before ${run.surface} — left unjudged`);
             break;
           }
-          const pass = await this.stance.judgeRun(auditId, run.runId, subject, rivals, remaining, run.surface);
+          const pass = await this.stance.judgeRun(
+            auditId,
+            audit.projectId,
+            run.runId,
+            subject,
+            rivals,
+            remaining,
+            run.surface,
+          );
           spent += pass.costUsd;
           await this.prisma.aeoSurfaceRun.update({
             where: { id: run.id },
@@ -751,7 +759,15 @@ export class AeoAuditService {
         this.logger.warn(`Stance budget exhausted before ${run.surface} (audit ${auditId}) — left unjudged`);
         break;
       }
-      const pass = await this.stance.judgeRun(auditId, run.runId!, subject, rivals, remaining, run.surface);
+      const pass = await this.stance.judgeRun(
+        auditId,
+        projectId,
+        run.runId!,
+        subject,
+        rivals,
+        remaining,
+        run.surface,
+      );
       spent += pass.costUsd;
       total.judged += pass.judged;
       total.skipped += pass.skipped;

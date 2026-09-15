@@ -31,11 +31,22 @@ import { ScoringModule } from '../scoring/scoring.module';
 import { StrategyModule } from '../strategy/strategy.module';
 import { FindingsModule } from '../findings/findings.module';
 import { BacklinksModule } from '../backlinks/backlinks.module';
+import { AuthModule } from '../auth/auth.module';
+import { DigitalPresenceModule } from '../digital-presence/digital-presence.module';
+import { CompetitorsModule } from '../competitors/competitors.module';
 import { ReportingService } from './reporting.service';
 import { ReportingController } from './reporting.controller';
 
 @Module({
-  imports: [ScoringModule, StrategyModule, FindingsModule, BacklinksModule],
+  imports: [
+    ScoringModule,
+    StrategyModule,
+    FindingsModule,
+    BacklinksModule,
+    AuthModule,
+    DigitalPresenceModule,
+    CompetitorsModule,
+  ],
   controllers: [ReportingController],
   providers: [ReportingService],
   exports: [ReportingService],

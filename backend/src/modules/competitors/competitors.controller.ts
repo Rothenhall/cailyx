@@ -11,7 +11,7 @@
  * @module competitors.controller
  */
 
-import { Controller, Post, Get, Param, Body } from '@nestjs/common';
+import { Controller, Post, Get, Delete, Param, Body } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { CompetitorsService } from './competitors.service';
@@ -80,5 +80,42 @@ export class CompetitorsController {
   @ApiResponse({ status: 404, description: 'Project not found' })
   async gap(@Param('projectId') projectId: string) {
     return this.competitors.gap(projectId);
+  }
+
+  /**
+   * Brand names an AI surface mentioned that weren't already a recorded
+   * competitor — pending operator review. Currently written only by
+   * `AeoStanceService`'s stance pass. Never included in `list`/`gap`/the AEO
+   * prompt until confirmed.
+   */
+  @Get('candidates')
+  @ApiOperation({
+    summary: 'List unconfirmed competitor candidates (currently: names an AI surface mentioned)',
+    description:
+      'Rows with status=candidate — discovered, not yet trusted. An operator must confirm or reject each one before it counts as a real competitor anywhere else in the app.',
+  })
+  @ApiResponse({ status: 200, description: '{ candidates }' })
+  @ApiResponse({ status: 404, description: 'Project not found' })
+  async listCandidates(@Param('projectId') projectId: string) {
+    return { candidates: await this.competitors.listCandidates(projectId) };
+  }
+
+  /** Promote a candidate to a tracked competitor — appended to Project.competitors too. */
+  @Post('candidates/:competitorId/confirm')
+  @ApiOperation({ summary: 'Confirm a competitor candidate' })
+  @ApiResponse({ status: 201, description: 'The now-tracked Competitor row' })
+  @ApiResponse({ status: 404, description: 'Candidate not found' })
+  async confirmCandidate(@Param('projectId') projectId: string, @Param('competitorId') competitorId: string) {
+    return this.competitors.confirmCandidate(projectId, competitorId);
+  }
+
+  /** Discard a candidate — a hallucination, a directory site, or not actually a rival. */
+  @Delete('candidates/:competitorId')
+  @ApiOperation({ summary: 'Reject and delete a competitor candidate' })
+  @ApiResponse({ status: 200, description: 'Deleted' })
+  @ApiResponse({ status: 404, description: 'Candidate not found' })
+  async rejectCandidate(@Param('projectId') projectId: string, @Param('competitorId') competitorId: string) {
+    await this.competitors.rejectCandidate(projectId, competitorId);
+    return { deleted: true };
   }
 }

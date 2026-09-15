@@ -9,16 +9,21 @@
  * @module reporting.controller
  */
 
-import { Controller, Get, Post, Put, Param, Query, Body, HttpCode, HttpStatus, NotFoundException, Header } from '@nestjs/common';
+import { Controller, Get, Post, Put, Param, Query, Body, Headers, HttpCode, HttpStatus, NotFoundException, Header } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { Public } from '../../common/decorators/auth.decorators';
+import { AuthService } from '../auth/auth.service';
 import { ReportingService } from './reporting.service';
 import { GenerateReportDto, SetVisibilityDto } from './dto/reporting.dto';
 
 @ApiTags('Reporting')
 @Controller('projects/:projectId/reports')
 export class ReportingController {
-  constructor(private readonly reportingService: ReportingService) {}
+  constructor(
+    private readonly reportingService: ReportingService,
+    private readonly auth: AuthService,
+  ) {}
 
   /**
    * Generate a diagnostic report for a project (PRD FR-10.1).
@@ -72,21 +77,31 @@ export class ReportingController {
    * Render the branded HTML report (FR-10.1, FR-10.3).
    * ?view=detailed for the detailed register; default is the executive one-pager.
    * noindex meta is applied by default (FR-10.5).
+   *
+   * @Public() — this is the actual "public/private per visibility" link the
+   * module docstring describes: a report marked `visibility: "public"` opens
+   * for anyone with the URL, no login required. A logged-in operator can
+   * still preview their own private (default) reports by sending a bearer
+   * token — verified here manually (best-effort, never throws) since the
+   * route itself skips the global auth guard.
    */
+  @Public()
   @Get(':slug/render')
   @Header('Content-Type', 'text/html; charset=utf-8')
   @ApiOperation({ summary: 'Render branded HTML report' })
-  @ApiResponse({ status: 200, description: 'HTML report page' })
-  @ApiResponse({ status: 404, description: 'Report not found or private' })
+  @ApiResponse({ status: 200, description: 'HTML report page — public reports need no auth; private reports need an operator bearer token' })
+  @ApiResponse({ status: 404, description: 'Report not found, or private and no valid operator token was sent' })
   async renderHtml(
     @Param('projectId') projectId: string,
     @Param('slug') slug: string,
     @Query('view') view?: string,
+    @Headers('authorization') authorization?: string,
   ) {
+    const isOperator = await this.auth.isValidBearer(authorization);
     // Pre-existing bug found while verifying the stage-12 growth-plan
     // section: this handler ignored ?view entirely and always rendered
     // executive, despite its own docstring above promising detailed.
-    return this.reportingService.renderHtml(slug, view === 'detailed' ? 'detailed' : 'executive');
+    return this.reportingService.renderHtml(slug, view === 'detailed' ? 'detailed' : 'executive', isOperator);
   }
 
   /**

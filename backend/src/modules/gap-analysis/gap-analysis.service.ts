@@ -707,8 +707,17 @@ export class GapAnalysisService {
     validSourceIds: Set<string>,
     bump: (r: { created: boolean }) => void,
   ): Promise<void> {
+    // `TechStackScan` rows for a competitor's homepage are written under the
+    // SAME projectId (CompetitorsService.buildProfile calls
+    // `scanDomain(competitor.projectId, competitor.domain)`), so a bare
+    // `{ projectId }` findFirst can pick up whichever domain was scanned
+    // most recently — the client's, or a rival's if one was profiled after.
+    // Filtering by the project's own domain (same pattern as
+    // `TechStackService.getLatest`) is what keeps this the client's stack.
+    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { domain: true } });
+    if (!project) return;
     const scan = await this.prisma.techStackScan.findFirst({
-      where: { projectId },
+      where: { projectId, domain: project.domain },
       orderBy: { createdAt: 'desc' },
       include: { findings: true },
     });
@@ -778,8 +787,14 @@ export class GapAnalysisService {
     validSourceIds: Set<string>,
     bump: (r: { created: boolean }) => void,
   ): Promise<void> {
+    // Unconfirmed candidates (status: 'candidate' — e.g. names an AEO answer
+    // mentioned, not yet operator-reviewed) must not count as tracked
+    // competitors here: this is what feeds the client-facing roadmap's
+    // "no tracked competitor has X" claims, and the same roadmap separately
+    // lists a missing-candidate's own platform as a gap to fix — counting it
+    // as a competitor too puts both claims about the same entity in one report.
     const competitors = await this.prisma.competitor.findMany({
-      where: { projectId },
+      where: { projectId, status: { not: 'candidate' } },
       include: { profiles: { orderBy: { createdAt: 'desc' }, take: 1 } },
     });
     if (competitors.length === 0) return;
@@ -790,11 +805,18 @@ export class GapAnalysisService {
     });
     const clientPlatforms = new Set(clientAccounts.map((a) => a.platform));
 
-    const clientTech = await this.prisma.techStackScan.findFirst({
-      where: { projectId },
-      orderBy: { createdAt: 'desc' },
-      include: { findings: true },
-    });
+    // Same contamination risk as syncTechStack above — a competitor's
+    // homepage scan shares this projectId, so this must be scoped to the
+    // project's own domain or the "client vs. competitor" comparison below
+    // can end up comparing a competitor against itself.
+    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { domain: true } });
+    const clientTech = project
+      ? await this.prisma.techStackScan.findFirst({
+          where: { projectId, domain: project.domain },
+          orderBy: { createdAt: 'desc' },
+          include: { findings: true },
+        })
+      : null;
     const clientTechKeys = new Set((clientTech?.findings ?? []).map((f) => `${f.category}:${f.name}`));
 
     // platform/tech key -> names of competitors that have it, client doesn't

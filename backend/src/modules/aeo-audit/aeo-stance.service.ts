@@ -60,6 +60,8 @@ export class AeoStanceService {
    * re-run after a partial failure only fills the gaps.
    *
    * @param auditId Audit the stances belong to.
+   * @param projectId Project the stances belong to — used only to route any
+   *   newly-seen brand names into the {@link Competitor} candidate queue.
    * @param runId Measurement run whose observations get judged.
    * @param subject The client — name and domain.
    * @param competitors Named competitors to look for in the answer.
@@ -69,6 +71,7 @@ export class AeoStanceService {
    */
   async judgeRun(
     auditId: string,
+    projectId: string,
     runId: string,
     subject: { name: string; domain: string },
     competitors: string[],
@@ -106,6 +109,7 @@ export class AeoStanceService {
     let skipped = 0;
     let failed = 0;
     let costUsd = 0;
+    const newNames = new Set<string>();
 
     for (const obs of observations) {
       if (alreadyJudged.has(obs.id)) {
@@ -141,6 +145,7 @@ export class AeoStanceService {
             brandsNamed: JSON.stringify(result.verdict.brandsNamed),
             recommendedOver: JSON.stringify(result.verdict.recommendedOver),
             losesTo: JSON.stringify(result.verdict.losesTo),
+            otherNamesSeen: JSON.stringify(result.verdict.otherNamesSeen),
             evidenceQuote: result.verdict.evidenceQuote,
             rationale: result.verdict.rationale,
             judgeModel,
@@ -148,6 +153,7 @@ export class AeoStanceService {
           },
         });
         judged++;
+        for (const name of result.verdict.otherNamesSeen) newNames.add(name);
       } catch (err) {
         failed++;
         this.logger.warn(`Stance judgement failed for observation ${obs.id}: ${(err as Error).message}`);
@@ -159,7 +165,54 @@ export class AeoStanceService {
         `($${costUsd.toFixed(4)})`,
     );
 
+    if (newNames.size > 0) {
+      await this.captureCandidates(projectId, subject.name, competitors, [...newNames]);
+    }
+
     return { judged, skipped, failed, costUsd: Number(costUsd.toFixed(6)), judgeModel };
+  }
+
+  /**
+   * File brand names an AI surface mentioned that weren't already recorded
+   * competitors, as `Competitor(status: 'candidate')` rows — never directly
+   * as tracked competitors (see the provenance rule in the class docstring).
+   * An operator confirms or rejects each one; nothing here is trusted until
+   * they do.
+   *
+   * Best-effort: a write failure here must never fail the stance pass itself.
+   */
+  private async captureCandidates(
+    projectId: string,
+    subjectName: string,
+    knownCompetitors: string[],
+    names: string[],
+  ): Promise<void> {
+    try {
+      const existing = await this.prisma.competitor.findMany({
+        where: { projectId },
+        select: { name: true },
+      });
+      const existingLower = new Set(existing.map((c) => c.name.toLowerCase()));
+      const excluded = new Set(
+        [subjectName, ...knownCompetitors].map((n) => n.toLowerCase()),
+      );
+
+      for (const name of names) {
+        const key = name.toLowerCase();
+        if (existingLower.has(key) || excluded.has(key)) continue;
+        try {
+          await this.prisma.competitor.create({
+            data: { projectId, name, source: 'aeo-answer', status: 'candidate' },
+          });
+          existingLower.add(key);
+        } catch (err) {
+          // Unique [projectId, name] race with a concurrent writer — fine, skip it.
+          this.logger.debug(`Candidate "${name}" not recorded for ${projectId}: ${(err as Error).message}`);
+        }
+      }
+    } catch (err) {
+      this.logger.warn(`Candidate capture failed for project ${projectId}: ${(err as Error).message}`);
+    }
   }
 
   /** Every stored stance for an audit, typed. */
@@ -177,6 +230,7 @@ export class AeoStanceService {
       brandsNamed: this.parseArray(row.brandsNamed),
       recommendedOver: this.parseArray(row.recommendedOver),
       losesTo: this.parseArray(row.losesTo),
+      otherNamesSeen: this.parseArray(row.otherNamesSeen),
       evidenceQuote: row.evidenceQuote,
       rationale: row.rationale,
     }));
@@ -221,12 +275,16 @@ export class AeoStanceService {
           '- recommendedOver: competitors the answer places BELOW the subject. Only when the answer ' +
           'actually makes that comparison — an empty array is the correct answer otherwise.\n' +
           '- losesTo: competitors the answer places ABOVE the subject. Same rule.\n' +
+          '- otherNamesSeen: every company in brandsNamed that is NOT in the "Known competitors" list ' +
+          'and is not the subject itself — i.e. brands new to us. Company names only, never generic ' +
+          'terms, categories, or the subject\'s own name.\n' +
           '- evidenceQuote: up to 280 characters copied VERBATIM from the answer that justifies the ' +
           'stance. null only when the subject is absent.\n' +
           '- rationale: one short sentence.\n' +
           '- Never infer beyond the answer text. If the answer does not compare two companies, do not rank them.\n' +
           'Respond with ONLY JSON: {"stance":string,"brandsNamed":string[],"rankAmongBrands":number|null,' +
-          '"recommendedOver":string[],"losesTo":string[],"evidenceQuote":string|null,"rationale":string}',
+          '"recommendedOver":string[],"losesTo":string[],"otherNamesSeen":string[],"evidenceQuote":string|null,' +
+          '"rationale":string}',
         user:
           'Subject company: "' + subject.name + '" (' + subject.domain + ')\n' +
           'Known competitors: ' + (competitors.length ? competitors.join(', ') : 'none recorded') + '\n\n' +
@@ -276,6 +334,16 @@ export class AeoStanceService {
 
     const quote = typeof obj.evidenceQuote === 'string' ? obj.evidenceQuote.trim().slice(0, 280) : '';
 
+    // Deliberately NOT run through knownOnly() — this is the one field meant
+    // to surface names the judge saw that we did NOT already know about.
+    // Still sanity-filtered (length, not the subject itself, not a dupe of a
+    // known competitor by looser casing) since raw LLM output can otherwise
+    // hand a "candidate" queue garbage.
+    const otherNamesSeen = strArr(obj.otherNamesSeen, 10)
+      .filter((n) => n.length >= 2 && n.length <= 60)
+      .filter((n) => !known.has(n.toLowerCase()))
+      .filter((n, i, arr) => arr.findIndex((x) => x.toLowerCase() === n.toLowerCase()) === i);
+
     return {
       observationId: '', // filled by the caller
       surface: null, // filled by the caller
@@ -285,6 +353,7 @@ export class AeoStanceService {
       brandsNamed: strArr(obj.brandsNamed, 20),
       recommendedOver: absent ? [] : knownOnly(obj.recommendedOver),
       losesTo: knownOnly(obj.losesTo),
+      otherNamesSeen: absent ? [] : otherNamesSeen,
       evidenceQuote: absent || !quote ? null : quote,
       rationale: typeof obj.rationale === 'string' ? obj.rationale.trim().slice(0, 400) : null,
     };

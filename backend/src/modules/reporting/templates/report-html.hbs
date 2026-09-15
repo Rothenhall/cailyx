@@ -45,6 +45,11 @@
     .status-pass{color:var(--good); font-weight:600}
     .status-fail{color:var(--bad); font-weight:600}
     .status-error{color:var(--accent-deep); font-weight:600}
+    .status-confirmed{color:var(--good); font-weight:600}
+    .status-unverified{color:var(--warn); font-weight:600}
+    .status-missing{color:var(--ink-60)}
+    .pill{display:inline-block; background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:1px 9px; font-size:12px; margin:2px 4px 2px 0}
+    .pill-gap{border-color:var(--bad); color:var(--bad)}
     .sev-high{color:var(--bad)}
     .sev-medium{color:var(--accent-deep)}
     .sev-low{color:var(--ink-60)}
@@ -132,6 +137,71 @@
     {{/unless}}
     </tbody>
   </table>
+
+  <h2>Social &amp; Directory Presence</h2>
+  {{#if report.presence}}
+  <div class="sub-scores">
+    <div class="sub"><div class="dim">Confirmed</div><div class="val">{{report.presence.counts.confirmed}}</div></div>
+    <div class="sub"><div class="dim">Unverified</div><div class="val">{{report.presence.counts.unverified}}</div></div>
+    <div class="sub"><div class="dim">Social accounts</div><div class="val">{{report.presence.counts.social}}</div></div>
+    <div class="sub"><div class="dim">Directory / listing</div><div class="val">{{report.presence.counts.listing}}</div></div>
+  </div>
+  {{#if report.presence.accounts}}
+  <table>
+    <thead><tr><th>Platform</th><th>Status</th><th>Handle</th><th>Note</th></tr></thead>
+    <tbody>
+    {{#each report.presence.accounts}}
+      <tr>
+        <td><strong>{{label}}</strong><div class="fix">{{group}}</div></td>
+        <td class="status-{{state}}">{{state}}{{#if_eq nameConsistency "mismatch"}} <span class="sev-medium">· name mismatch</span>{{/if_eq}}</td>
+        <td>{{#if handle}}@{{handle}}{{else}}—{{/if}}</td>
+        <td class="fix">{{#if reason}}{{reason}}{{else}}{{sourceLabel}}{{/if}}</td>
+      </tr>
+    {{/each}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="sev-low">No accounts discovered yet.</p>
+  {{/if}}
+  {{#if report.presence.gaps}}
+  <p>Expected but not found:
+    {{#each report.presence.gaps}}<span class="pill pill-gap">{{label}}</span>{{/each}}
+  </p>
+  {{/if}}
+  {{else}}
+  <p class="sev-low">No digital-presence discovery run yet for this project.</p>
+  {{/if}}
+
+  <h2>Competitor Landscape</h2>
+  {{#if report.competitors}}
+  <p class="fix">Your homepage SEO score: <strong>{{report.competitors.seo.client.score}}</strong>{{#if report.competitors.seo.client.issues}} — issues: {{#each report.competitors.seo.client.issues}}{{this}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}</p>
+  {{#if report.competitors.presence.competitorsOnly}}
+  <p>Platforms where a tracked competitor has a presence and you don't:
+    {{#each report.competitors.presence.competitorsOnly}}
+      {{#unless client}}<span class="pill pill-gap">{{key}}</span>{{/unless}}
+    {{/each}}
+  </p>
+  {{/if}}
+  {{#if report.competitors.competitors}}
+  <table>
+    <thead><tr><th>Competitor</th><th>SEO score</th><th>Top issues</th><th>Found on</th></tr></thead>
+    <tbody>
+    {{#each report.competitors.competitors}}
+      <tr>
+        <td><strong>{{name}}</strong><div class="fix">{{domain}}</div></td>
+        <td>{{#if seoScore}}{{seoScore}}{{else}}<span class="sev-low">n/a</span>{{/if}}</td>
+        <td class="fix">{{#each seoIssues}}{{this}}{{#unless @last}}, {{/unless}}{{/each}}</td>
+        <td>{{#each presencePlatforms}}<span class="pill">{{this}}</span>{{/each}}</td>
+      </tr>
+    {{/each}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="sev-low">No tracked competitors profiled yet.</p>
+  {{/if}}
+  {{else}}
+  <p class="sev-low">No competitor data yet — add competitors to this project and run discovery first.</p>
+  {{/if}}
 
   <h2>Prioritized Growth Roadmap</h2>
   {{#if report.growthPlan.actionPlan}}

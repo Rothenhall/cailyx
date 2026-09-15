@@ -35,6 +35,13 @@ import { CompetitorsService } from '../competitors/competitors.service';
 import { GapAnalysisService } from '../gap-analysis/gap-analysis.service';
 import { StrategyService } from '../strategy/strategy.service';
 import { ReportingService } from '../reporting/reporting.service';
+import { IntakeService } from '../intake/intake.service';
+import { AeoAuditService } from '../aeo-audit/aeo-audit.service';
+import { KeywordResearchService } from '../keyword-research/keyword-research.service';
+import { GrowthExecutionService } from '../growth-execution/growth-execution.service';
+import { EntityAuditService } from '../entity-audit/entity-audit.service';
+import { BacklinksService } from '../backlinks/backlinks.service';
+import { FindingsService } from '../findings/findings.service';
 import type { UserType } from '../auth/auth.types';
 import type {
   ClientDto,
@@ -47,8 +54,12 @@ import type {
 import type { CreateClientDto, UpdateClientDto, CreateClientProjectDto, CreateClientLoginDto } from './dto/clients.dto';
 
 const BCRYPT_ROUNDS = 10;
-/** Bounded wait for a queued stage before the pipeline moves on and marks that stage's data absent, not the whole run failed. */
-const STAGE_POLL_TIMEOUT_MS = 120_000;
+/** Bounded wait for a queued stage before the pipeline moves on and marks that
+ * stage's data absent, not the whole run failed. A full crawl (technical-audit,
+ * page budget up to 100 under the fetcher's per-domain rate limit) can
+ * legitimately take several minutes — this must comfortably exceed that, or
+ * the pipeline moves on to report generation before the audit row exists. */
+const STAGE_POLL_TIMEOUT_MS = 480_000;
 const STAGE_POLL_INTERVAL_MS = 2000;
 
 @Injectable()
@@ -65,6 +76,13 @@ export class ClientsService {
     private readonly gapAnalysis: GapAnalysisService,
     private readonly strategy: StrategyService,
     private readonly reporting: ReportingService,
+    private readonly intake: IntakeService,
+    private readonly aeoAudit: AeoAuditService,
+    private readonly keywordResearch: KeywordResearchService,
+    private readonly growthExecution: GrowthExecutionService,
+    private readonly entityAudit: EntityAuditService,
+    private readonly backlinksService: BacklinksService,
+    private readonly findingsService: FindingsService,
   ) {}
 
   // ─── Client CRUD ───────────────────────────────────────────────────
@@ -129,20 +147,35 @@ export class ClientsService {
     }
 
     const project = await this.prisma.project.create({
-      data: { name: dto.name, domain: dto.domain, clientId, onboardingStatus: 'running', onboardingStep: 'technical-audit' },
+      data: { name: dto.name, domain: dto.domain, clientId, onboardingStatus: 'running', onboardingStep: 'enrichment' },
     });
 
     // Deliberately not awaited — the HTTP response must not hold open for
     // the ~1-3 minutes the full pipeline can take. Errors are caught INSIDE
     // runDayOnePipeline and written to the row, never thrown into the void.
-    void this.runDayOnePipeline(project.id).catch((err) => {
-      this.logger.error(`Day-1 pipeline crashed outside its own guard for ${project.id}: ${(err as Error).message}`);
-    });
+    void this
+      .runDayOnePipeline(project.id, {
+        runAeoAudit: dto.runAeoAudit ?? false,
+        runKeywordResearch: dto.runKeywordResearch ?? false,
+        runGrowthExecution: dto.runGrowthExecution ?? false,
+        runBacklinksRefresh: dto.runBacklinksRefresh ?? false,
+      })
+      .catch((err) => {
+        this.logger.error(`Day-1 pipeline crashed outside its own guard for ${project.id}: ${(err as Error).message}`);
+      });
 
     return this.toProjectSummary(project);
   }
 
-  private async runDayOnePipeline(projectId: string): Promise<void> {
+  private async runDayOnePipeline(
+    projectId: string,
+    opts: {
+      runAeoAudit: boolean;
+      runKeywordResearch: boolean;
+      runGrowthExecution: boolean;
+      runBacklinksRefresh: boolean;
+    },
+  ): Promise<void> {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) return;
     const targetUrl = /^https?:\/\//i.test(project.domain) ? project.domain : `https://${project.domain}`;
@@ -151,11 +184,43 @@ export class ClientsService {
     const warn = (stage: string, err: unknown) =>
       this.logger.warn(`Day-1 pipeline: ${stage} failed for ${projectId} — continuing: ${(err as Error).message}`);
 
+    // 0. Enrichment — crawl the homepage for category + named competitors
+    // (same extraction intake/subject does) so the competitors/gap-analysis
+    // stages below have real seed data on day one instead of running empty.
+    await setStep('enrichment');
+    let brandName = project.name;
+    try {
+      const enrichment = await this.intake.enrichExistingProject(projectId, project.domain, { company: project.name });
+      if (enrichment.company) brandName = enrichment.company;
+    } catch (err) {
+      warn('enrichment', err);
+    }
+
+    // 0b. Entity audit — free (no external spend), always on: create one
+    // "brand" entity for the client itself and run a schema-check against
+    // its homepage. This is what feeds the "Entity clarity" score dimension
+    // (25 of 100 points) — without it, that dimension is structurally stuck
+    // at 0 regardless of how good the site's schema actually is.
+    await setStep('entity-audit');
+    let entityId: string | null = null;
+    try {
+      const entity = await this.entityAudit.createEntity(projectId, brandName, 'brand');
+      entityId = entity.id;
+      await this.entityAudit.runSchemaCheck(projectId, entity.id, targetUrl);
+    } catch (err) {
+      warn('entity-audit', err);
+    }
+
     // 1. Technical audit — queued, polled.
     await setStep('technical-audit');
     try {
       const { jobId } = await this.pipelineQueue.enqueue('technical-audit', { targetUrl, projectId, triggeredBy: 'onboarding' });
-      await this.pollJob(jobId);
+      const finished = await this.pollJob(jobId);
+      if (!finished) {
+        this.logger.warn(
+          `Day-1 pipeline: technical-audit for ${projectId} did not finish within ${STAGE_POLL_TIMEOUT_MS}ms — continuing without it (job ${jobId} may still complete in the background).`,
+        );
+      }
     } catch (err) {
       warn('technical-audit', err);
     }
@@ -164,9 +229,46 @@ export class ClientsService {
     await setStep('digital-presence');
     try {
       const run = await this.presence.discover(projectId, false);
-      await this.pollDiscoveryRun(run.id);
+      const finished = await this.pollDiscoveryRun(run.id);
+      if (!finished) {
+        this.logger.warn(
+          `Day-1 pipeline: digital-presence for ${projectId} did not finish within ${STAGE_POLL_TIMEOUT_MS}ms — continuing without it (run ${run.id} may still complete in the background).`,
+        );
+      }
     } catch (err) {
       warn('digital-presence', err);
+    }
+
+    // 2b. Link discovered accounts as entity platform-records — free, always
+    // on. This is the other half of the "Authority signal" score dimension
+    // (the entity-audit stage above only covers the schema-check half); a
+    // confirmed/unverified company account IS a platform record, it just
+    // has to be told to entity-audit, which digital-presence doesn't do on
+    // its own since the two modules don't share a write path.
+    if (entityId) {
+      const id = entityId;
+      try {
+        const inventory = await this.presence.inventory(projectId);
+        const companyAccounts = inventory.accounts.filter((a) => a.entity === 'company' && a.state !== 'candidate');
+        for (const account of companyAccounts) {
+          try {
+            await this.entityAudit.createPlatformRecord(
+              projectId,
+              id,
+              account.platform,
+              account.handle ?? undefined,
+              undefined,
+              account.url,
+              account.nameConsistency === 'not-checked' ? 'not-checked' : account.nameConsistency,
+              false,
+            );
+          } catch (err) {
+            warn(`platform-record:${account.platform}`, err);
+          }
+        }
+      } catch (err) {
+        warn('platform-records', err);
+      }
     }
 
     // 3. Tech stack scan — synchronous.
@@ -203,6 +305,71 @@ export class ClientsService {
       warn('strategy', err);
     }
 
+    // 6a. Findings copy — free (uses the shared LLM service, same OpenRouter
+    // key as everything else), always on: turns the highest-priority open
+    // gaps into plain-language what/why/fix copy. Without this, the report's
+    // narrative sections fall back to raw technical rows like "js-render:
+    // fail" instead of a sentence a marketer would actually read.
+    await setStep('findings');
+    try {
+      await this.findingsService.generate(projectId, { limit: 5 });
+    } catch (err) {
+      warn('findings', err);
+    }
+
+    // 6b. Keyword research — opt-in (checkbox on Add Client), costs DataForSEO
+    // credits per call. Seeded from the enrichment category since there are
+    // no real seed keywords yet on day one; skipped if enrichment found none.
+    if (opts.runKeywordResearch) {
+      await setStep('keyword-research');
+      try {
+        const fresh = await this.prisma.project.findUnique({ where: { id: projectId } });
+        const seeds = Array.from(new Set([fresh?.category, project.name].filter((s): s is string => !!s)));
+        if (seeds.length > 0) {
+          await this.keywordResearch.research(projectId, { keywords: seeds.slice(0, 5) });
+        } else {
+          warn('keyword-research', new Error('no seed keywords — enrichment found no category'));
+        }
+      } catch (err) {
+        warn('keyword-research', err);
+      }
+    }
+
+    // 6c. Growth execution — opt-in, generates asset briefs (deterministic
+    // templates, no LLM spend unless useLlm) from the gap-analysis/strategy
+    // output above.
+    if (opts.runGrowthExecution) {
+      await setStep('growth-execution');
+      try {
+        await this.growthExecution.createAssets(projectId, {});
+      } catch (err) {
+        warn('growth-execution', err);
+      }
+    }
+
+    // 6d. AEO audit — opt-in, real Cloro/LLM spend per run and can take
+    // several minutes (up to hundreds of surface prompts). Fired and NOT
+    // awaited to completion — it tracks its own status via GET
+    // /aeo/audits/:auditId and must not hold up the Day-1 report.
+    if (opts.runAeoAudit) {
+      await setStep('aeo-audit');
+      try {
+        await this.aeoAudit.runFullAsync(projectId, {});
+      } catch (err) {
+        warn('aeo-audit', err);
+      }
+    }
+
+    // 6e. Backlinks — opt-in, costs DataForSEO credits per call.
+    if (opts.runBacklinksRefresh) {
+      await setStep('backlinks');
+      try {
+        await this.backlinksService.refresh(projectId, {});
+      } catch (err) {
+        warn('backlinks', err);
+      }
+    }
+
     // 7. Report — the actual Day-1 deliverable. If THIS fails, the pipeline
     // genuinely failed: there is nothing to show the client.
     await setStep('report');
@@ -217,22 +384,26 @@ export class ClientsService {
     }
   }
 
-  private async pollJob(jobId: string): Promise<void> {
+  /** @returns true if the job reached a terminal state, false if the poll timed out first. */
+  private async pollJob(jobId: string): Promise<boolean> {
     const deadline = Date.now() + STAGE_POLL_TIMEOUT_MS;
     while (Date.now() < deadline) {
       const status = await this.pipelineQueue.getStatus(jobId);
-      if (status.status === 'completed' || status.status === 'failed' || status.status === 'not_found') return;
+      if (status.status === 'completed' || status.status === 'failed' || status.status === 'not_found') return true;
       await new Promise((r) => setTimeout(r, STAGE_POLL_INTERVAL_MS));
     }
+    return false;
   }
 
-  private async pollDiscoveryRun(runId: string): Promise<void> {
+  /** @returns true if the discovery run reached a terminal state, false if the poll timed out first. */
+  private async pollDiscoveryRun(runId: string): Promise<boolean> {
     const deadline = Date.now() + STAGE_POLL_TIMEOUT_MS;
     while (Date.now() < deadline) {
       const run = await this.prisma.presenceDiscovery.findUnique({ where: { id: runId }, select: { status: true } });
-      if (!run || run.status === 'completed' || run.status === 'failed') return;
+      if (!run || run.status === 'completed' || run.status === 'failed') return true;
       await new Promise((r) => setTimeout(r, STAGE_POLL_INTERVAL_MS));
     }
+    return false;
   }
 
   // ─── Client login (client-portal credentials) ─────────────────────

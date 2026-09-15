@@ -103,9 +103,83 @@ export class IntakeService {
     const domain = this.normalizeDomain(req.domain);
     this.logger.log('Intake for: ' + domain + ' (source: ' + (req.source || 'api') + ')');
 
-    const runId = 'intake_' + Date.now();
     const existing = await this.prisma.project.findUnique({ where: { domain } });
     const created = !existing;
+    const enrichment = await this.extractEnrichment(domain, req);
+
+    let projectId: string;
+    if (created) {
+      const proj = await this.projects.create({
+        name: enrichment.brand,
+        domain,
+        category: enrichment.category || undefined,
+        clientName: enrichment.brand,
+        notes: req.notes || undefined,
+        status: 'diagnostic',
+      });
+      projectId = proj.id;
+    } else {
+      projectId = existing!.id;
+    }
+
+    // Persist extracted competitors on the project — share-of-voice (PRD FR-7)
+    // and measurement compare the subject against these named players.
+    if (enrichment.competitors.length > 0) {
+      await this.projects.updateCompetitors(projectId, enrichment.competitors);
+    }
+
+    return {
+      domain,
+      company: enrichment.company,
+      category: enrichment.category,
+      description: enrichment.description,
+      country: enrichment.country,
+      competitors: enrichment.competitors,
+      ownEntities: enrichment.ownEntities,
+      pagesFetched: enrichment.pagesFetched,
+      enrichmentSource: enrichment.enrichmentSource,
+      projectId,
+      created,
+    };
+  }
+
+  /**
+   * Run the same homepage/schema enrichment as `intakeSubject`, but write the
+   * result onto a Project that already exists (e.g. one just created by
+   * `ClientsService.createProject`'s Day-1 pipeline) instead of creating a
+   * new one. Used so "Add Client" gets the same category/competitors seeding
+   * that a domain-first intake would have produced.
+   */
+  async enrichExistingProject(projectId: string, domain: string, opts: { company?: string } = {}): Promise<EnrichmentResult> {
+    const normalized = this.normalizeDomain(domain);
+    const enrichment = await this.extractEnrichment(normalized, { company: opts.company });
+
+    if (enrichment.category) {
+      await this.prisma.project.update({ where: { id: projectId }, data: { category: enrichment.category } });
+    }
+    if (enrichment.competitors.length > 0) {
+      await this.projects.updateCompetitors(projectId, enrichment.competitors);
+    }
+
+    return {
+      domain: normalized,
+      company: enrichment.company,
+      category: enrichment.category,
+      description: enrichment.description,
+      country: enrichment.country,
+      competitors: enrichment.competitors,
+      ownEntities: enrichment.ownEntities,
+      pagesFetched: enrichment.pagesFetched,
+      enrichmentSource: enrichment.enrichmentSource,
+    };
+  }
+
+  /** Fetch + extract company/category/description/country/competitors/entities for a domain. Pure — never touches the DB. */
+  private async extractEnrichment(
+    domain: string,
+    req: { company?: string; description?: string },
+  ): Promise<EnrichmentResult & { brand: string }> {
+    const runId = 'intake_' + Date.now();
 
     const homepage = await this.fetcher.render(
       { url: 'https://' + domain + '/', jsDisabled: false, timeout: 30000 },
@@ -174,27 +248,6 @@ export class IntakeService {
     // last-resort brand: "day1tech.com" → "Day1tech"
     const brand = company || domain.split('.')[0].replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
-    let projectId: string;
-    if (created) {
-      const proj = await this.projects.create({
-        name: brand,
-        domain,
-        category: category || undefined,
-        clientName: brand,
-        notes: req.notes || undefined,
-        status: 'diagnostic',
-      });
-      projectId = proj.id;
-    } else {
-      projectId = existing!.id;
-    }
-
-    // Persist extracted competitors on the project — share-of-voice (PRD FR-7)
-    // and measurement compare the subject against these named players.
-    if (competitors.length > 0) {
-      await this.projects.updateCompetitors(projectId, competitors);
-    }
-
     return {
       domain,
       company,
@@ -205,8 +258,7 @@ export class IntakeService {
       ownEntities,
       pagesFetched: html ? 1 : 0,
       enrichmentSource: html ? 'homepage' : 'search',
-      projectId,
-      created,
+      brand,
     };
   }
 

@@ -100,6 +100,24 @@ export class AuthService {
   }
 
   /**
+   * Best-effort check: does this Authorization header carry a currently-valid
+   * access token? Never throws — for @Public() routes that render differently
+   * for a logged-in operator vs. an anonymous visitor (e.g. a shareable report
+   * link) without forcing auth on the route itself.
+   */
+  async isValidBearer(authorization?: string): Promise<boolean> {
+    if (!authorization?.startsWith('Bearer ')) return false;
+    try {
+      await this.jwt.verifyAsync<AccessTokenClaims>(authorization.slice('Bearer '.length), {
+        secret: this.config.get<string>('JWT_SECRET'),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Register an operator. The FIRST account in the system always becomes
    * admin (bootstrap); later registrations must be pre-approved by an admin
    * (enforced upstream via {@link requireAdminBearer}).

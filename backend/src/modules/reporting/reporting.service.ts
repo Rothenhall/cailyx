@@ -31,6 +31,8 @@ import { ScoringService } from '../scoring/scoring.service';
 import { StrategyService } from '../strategy/strategy.service';
 import { FindingsService } from '../findings/findings.service';
 import { BacklinksService } from '../backlinks/backlinks.service';
+import { PresenceService } from '../digital-presence/presence.service';
+import { CompetitorsService } from '../competitors/competitors.service';
 import type {
   ReportData,
   ReportFindingDto,
@@ -42,6 +44,8 @@ import type {
   BrandingConfig,
 } from './reporting.types';
 import type { BacklinksSummaryDto } from '../backlinks/backlinks.types';
+import type { PresenceInventory } from '../digital-presence/presence.types';
+import type { GapResult } from '../competitors/competitors.service';
 
 
 // Handlebars helper: {{#if_eq a b}}...{{/if_eq}}
@@ -64,7 +68,29 @@ export class ReportingService {
     private readonly strategy: StrategyService,
     private readonly findings: FindingsService,
     private readonly backlinksService: BacklinksService,
+    private readonly presenceService: PresenceService,
+    private readonly competitorsService: CompetitorsService,
   ) {}
+
+  /** Best-effort presence inventory for a report — never throws, never blocks generation. */
+  private async getPresenceSnapshot(projectId: string): Promise<PresenceInventory | null> {
+    try {
+      return await this.presenceService.inventory(projectId);
+    } catch (err) {
+      this.logger.warn(`Report: presence inventory unavailable for ${projectId} — continuing without it: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /** Best-effort competitor gap for a report — never throws (no tracked competitors is normal on day one, not an error). */
+  private async getCompetitorsSnapshot(projectId: string): Promise<GapResult | null> {
+    try {
+      return await this.competitorsService.gap(projectId);
+    } catch (err) {
+      this.logger.warn(`Report: competitor gap unavailable for ${projectId} — continuing without it: ${(err as Error).message}`);
+      return null;
+    }
+  }
 
   // ─── Generate report ──────────────────────────────────────────
 
@@ -84,6 +110,8 @@ export class ReportingService {
     const roadmap = await this.getRoadmapSnapshot(projectId);
     const growthPlan = await this.getGrowthPlanSnapshot(projectId);
     const backlinks = await this.backlinksService.latest(projectId);
+    const presence = await this.getPresenceSnapshot(projectId);
+    const competitors = await this.getCompetitorsSnapshot(projectId);
     // §8 scoring moved into the versioned-rubric scoring module (FR-8.1–8.4):
     // real measurement inputs, evidence-linked sub-scores, rubric version recorded.
     const scoreResult = await this.scoring.scoreProject(projectId);
@@ -123,6 +151,8 @@ export class ReportingService {
         roadmapSnapshot: JSON.stringify(roadmap),
         growthPlanSnapshot: JSON.stringify(growthPlan),
         backlinksSnapshot: backlinks ? JSON.stringify(backlinks) : null,
+        presenceSnapshot: presence ? JSON.stringify(presence) : null,
+        competitorsSnapshot: competitors ? JSON.stringify(competitors) : null,
         branding: JSON.stringify(this.defaultBranding),
       },
     });
@@ -144,6 +174,8 @@ export class ReportingService {
       roadmap,
       growthPlan,
       backlinks,
+      presence,
+      competitors,
       createdAt: record.createdAt.toISOString(),
     };
   }
@@ -310,8 +342,8 @@ export class ReportingService {
 
   // ─── HTML render (FR-10.1, FR-10.3) ──────────────────────────
 
-  async renderHtml(slug: string, view: 'executive' | 'detailed' = 'executive'): Promise<string> {
-    const report = await this.getBySlug(slug, true);
+  async renderHtml(slug: string, view: 'executive' | 'detailed' = 'executive', includePrivate: boolean = false): Promise<string> {
+    const report = await this.getBySlug(slug, includePrivate);
     let templateSrc: string;
     try {
       templateSrc = readFileSync(join(__dirname, 'templates', 'report-html.hbs'), 'utf8');
@@ -355,6 +387,8 @@ export class ReportingService {
       // Reports generated before this field existed have no column value at all.
       growthPlan: record.growthPlanSnapshot ? (this.safeParse(record.growthPlanSnapshot) as GrowthPlanDto) : null,
       backlinks: record.backlinksSnapshot ? (this.safeParse(record.backlinksSnapshot) as BacklinksSummaryDto) : null,
+      presence: record.presenceSnapshot ? (this.safeParse(record.presenceSnapshot) as PresenceInventory) : null,
+      competitors: record.competitorsSnapshot ? (this.safeParse(record.competitorsSnapshot) as GapResult) : null,
       createdAt: record.createdAt.toISOString(),
     };
   }

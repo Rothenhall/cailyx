@@ -47,8 +47,14 @@ export class UpdateEntityDto {
 }
 
 export class CreatePlatformRecordDto {
-  @ApiProperty({ enum: ['linkedin', 'g2', 'crunchbase', 'other'], description: 'Platform identifier' })
-  @IsIn(['linkedin', 'g2', 'crunchbase', 'other'])
+  // Free-form, not IsIn(['linkedin', 'g2', 'crunchbase', 'other']): that enum
+  // predates digital-presence's platform catalog (clutch, x, twitter,
+  // instagram, trustpilot, glassdoor, ...) and silently rejected every
+  // platform outside those four — real accounts included.
+  @ApiProperty({ description: 'Platform identifier, e.g. linkedin, clutch, x, g2, crunchbase, trustpilot, other', example: 'linkedin' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(40)
   platform: string;
 
   @ApiPropertyOptional({ description: 'Name as shown on the platform', example: 'Rothenhall Partners' })
@@ -79,8 +85,9 @@ export class CreatePlatformRecordDto {
 }
 
 export class UpdatePlatformRecordDto {
-  @ApiPropertyOptional({ enum: ['linkedin', 'g2', 'crunchbase', 'other'] })
-  @IsIn(['linkedin', 'g2', 'crunchbase', 'other'])
+  @ApiPropertyOptional({ description: 'Platform identifier, e.g. linkedin, clutch, x, g2, crunchbase, trustpilot, other' })
+  @IsString()
+  @MaxLength(40)
   @IsOptional()
   platform?: string;
 

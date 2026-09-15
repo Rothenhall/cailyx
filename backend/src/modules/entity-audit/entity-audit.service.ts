@@ -203,7 +203,12 @@ export class EntityAuditService {
       (s) => s.type.includes('Organization') || s.type.includes('LocalBusiness') || s.type.includes('Person'),
     );
 
-    const schemaType = orgSchema?.type || (schemas.length > 0 ? schemas[0].type : null);
+    // A JSON-LD node's @type can legally be an array (e.g. ["Organization",
+    // "ProfessionalService"]) even though the fetcher's declared shape says
+    // `type: string` — normalize here or `prisma.schemaCheck.create` throws
+    // on this column (String?), which was being silently swallowed below.
+    const rawSchemaType = orgSchema?.type || (schemas.length > 0 ? schemas[0].type : null);
+    const schemaType = Array.isArray(rawSchemaType) ? (rawSchemaType as string[]).join(', ') : rawSchemaType;
     const fieldsPresent = orgSchema ? Object.keys(orgSchema.fields).filter((k) => orgSchema.fields[k] != null && orgSchema.fields[k] !== '') : [];
     const fieldsMissing: string[] = [];
 

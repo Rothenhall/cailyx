@@ -98,6 +98,7 @@ export interface CompetitorRecord {
   name: string;
   domain: string | null;
   source: string;
+  status: string;
   createdAt: Date;
 }
 
@@ -283,13 +284,17 @@ export class CompetitorsService {
       const existing = existingByLowerName.get(entry.name.toLowerCase()) ?? null;
       const row = existing
         ? await this.prisma.competitor.update({
+            // An explicit project-json/manual entry outranks a prior AEO-answer
+            // candidate for the same name — promote it to tracked rather than
+            // leaving it stuck awaiting a confirm the operator has, in effect,
+            // just given.
             where: { id: existing.id },
-            data: { domain: entry.domain ?? existing.domain },
+            data: { domain: entry.domain ?? existing.domain, status: 'tracked' },
           })
         : await (async () => {
             promoted++;
             return this.prisma.competitor.create({
-              data: { projectId, name: entry.name, domain: entry.domain, source: entry.source },
+              data: { projectId, name: entry.name, domain: entry.domain, source: entry.source, status: 'tracked' },
             });
           })();
       rows.push(row);
@@ -313,7 +318,7 @@ export class CompetitorsService {
   async list(projectId: string): Promise<CompetitorWithProfile[]> {
     await this.requireProject(projectId);
     const rows = await this.prisma.competitor.findMany({
-      where: { projectId },
+      where: { projectId, status: { not: 'candidate' } },
       include: { profiles: { orderBy: { createdAt: 'desc' }, take: 1 } },
       orderBy: { createdAt: 'asc' },
     });
@@ -323,9 +328,67 @@ export class CompetitorsService {
       name: r.name,
       domain: r.domain,
       source: r.source,
+      status: r.status,
       createdAt: r.createdAt,
       latestProfile: r.profiles[0] ? this.toProfileResult(r.profiles[0]) : null,
     }));
+  }
+
+  /**
+   * Brand names discovered but not yet confirmed — currently only written by
+   * `AeoStanceService` when an AI surface names a company that isn't already
+   * a recorded competitor. Never included in {@link list}, {@link gap}, or
+   * the AEO "known competitors" prompt until an operator confirms one.
+   */
+  async listCandidates(projectId: string): Promise<CompetitorRecord[]> {
+    await this.requireProject(projectId);
+    return this.prisma.competitor.findMany({
+      where: { projectId, status: 'candidate' },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /**
+   * Promote a candidate to a tracked competitor — same effect as an operator
+   * adding it via `/discover`. Also appended to `Project.competitors` so it
+   * feeds every OTHER consumer of the named-competitor list (the AEO stance
+   * prompt's "known competitors" line, share-of-voice, SERP tracking) —
+   * without this, confirming here would only affect `/discover`/`/gap`.
+   */
+  async confirmCandidate(projectId: string, competitorId: string): Promise<CompetitorRecord> {
+    const row = await this.requireCandidate(projectId, competitorId);
+    const updated = await this.prisma.competitor.update({ where: { id: row.id }, data: { status: 'tracked' } });
+
+    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { competitors: true } });
+    const list: Array<{ name: string; domain: string | null; source?: string }> = parseCompetitors(
+      project?.competitors ?? null,
+    );
+    if (!list.some((c) => c.name.toLowerCase() === row.name.toLowerCase())) {
+      list.push({ name: row.name, domain: row.domain, source: 'aeo-answer' });
+      await this.prisma.project.update({
+        where: { id: projectId },
+        data: { competitors: JSON.stringify(list) },
+      });
+    }
+
+    return updated;
+  }
+
+  /** Discard a candidate — it was a hallucination, a directory site, or not actually a rival. */
+  async rejectCandidate(projectId: string, competitorId: string): Promise<void> {
+    const row = await this.requireCandidate(projectId, competitorId);
+    await this.prisma.competitor.delete({ where: { id: row.id } });
+  }
+
+  private async requireCandidate(projectId: string, competitorId: string): Promise<CompetitorRecord> {
+    const row = await this.prisma.competitor.findUnique({ where: { id: competitorId } });
+    if (!row || row.projectId !== projectId) {
+      throw new NotFoundException(`Candidate ${competitorId} not found for project ${projectId}`);
+    }
+    if (row.status !== 'candidate') {
+      throw new NotFoundException(`Competitor ${competitorId} is not a pending candidate`);
+    }
+    return row;
   }
 
   /**
@@ -387,7 +450,7 @@ export class CompetitorsService {
     const clientPlatformSet = new Set(clientAccounts.map((a) => a.platform));
 
     const competitors = await this.prisma.competitor.findMany({
-      where: { projectId },
+      where: { projectId, status: { not: 'candidate' } },
       include: { profiles: { orderBy: { createdAt: 'desc' }, take: 1 } },
     });
 

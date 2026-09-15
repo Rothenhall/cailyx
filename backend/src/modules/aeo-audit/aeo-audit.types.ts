@@ -232,6 +232,10 @@ export interface StanceVerdict {
   recommendedOver: string[];
   /** Competitors the answer placed above the client. */
   losesTo: string[];
+  /** Brands named that were NOT already in the recorded competitor list — raw
+   * LLM output, unfiltered by knownOnly(). Surfaced so a new rival mentioned by
+   * the AI isn't silently discarded; never trusted directly (see Competitor.status). */
+  otherNamesSeen: string[];
   /** Verbatim, <=280 chars — what the judge based the call on. */
   evidenceQuote: string | null;
   rationale: string | null;

@@ -19,11 +19,36 @@ import { CompetitorsModule } from '../competitors/competitors.module';
 import { GapAnalysisModule } from '../gap-analysis/gap-analysis.module';
 import { StrategyModule } from '../strategy/strategy.module';
 import { ReportingModule } from '../reporting/reporting.module';
+import { IntakeModule } from '../intake/intake.module';
+import { AeoAuditModule } from '../aeo-audit/aeo-audit.module';
+import { KeywordResearchModule } from '../keyword-research/keyword-research.module';
+import { GrowthExecutionModule } from '../growth-execution/growth-execution.module';
+import { EntityAuditModule } from '../entity-audit/entity-audit.module';
+import { BacklinksModule } from '../backlinks/backlinks.module';
+import { FindingsModule } from '../findings/findings.module';
 import { ClientsService } from './clients.service';
 import { ClientsController } from './clients.controller';
 
 @Module({
-  imports: [JobsModule, DigitalPresenceModule, TechStackModule, CompetitorsModule, GapAnalysisModule, StrategyModule, ReportingModule],
+  imports: [
+    JobsModule,
+    DigitalPresenceModule,
+    TechStackModule,
+    CompetitorsModule,
+    GapAnalysisModule,
+    StrategyModule,
+    ReportingModule,
+    IntakeModule,
+    // Free, always-on stages — no external spend, so no opt-in checkbox.
+    EntityAuditModule,
+    FindingsModule,
+    // Opt-in Day-1 pipeline stages (checkbox on "Add Client") — real spend
+    // per run, so they never run unless the operator explicitly asks.
+    AeoAuditModule,
+    KeywordResearchModule,
+    GrowthExecutionModule,
+    BacklinksModule,
+  ],
   controllers: [ClientsController],
   providers: [ClientsService],
   exports: [ClientsService],

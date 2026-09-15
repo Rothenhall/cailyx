@@ -516,6 +516,14 @@ model Report {
   /// other *Snapshot fields. Null when `POST .../backlinks/refresh` had
   /// never been run for this project yet.
   backlinksSnapshot String?
+  /// JSON PresenceInventory — social/directory accounts, verification state,
+  /// and expected-platform gaps at generation time. Null when digital-presence
+  /// discovery has never run for this project.
+  presenceSnapshot String?
+  /// JSON GapResult — tech/schema/presence diffs against tracked competitors
+  /// plus each rival's SEO score, at generation time. Null when the project
+  /// has no tracked competitors yet.
+  competitorsSnapshot String?
   branding         String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -1744,6 +1752,11 @@ model AeoStance {
   brandsNamed     String   @default("[]") // JSON string[] — every brand the answer named, in order
   recommendedOver String   @default("[]") // JSON string[] — competitors the answer put the client ABOVE
   losesTo         String   @default("[]") // JSON string[] — competitors the answer put ABOVE the client
+  /// JSON string[] — brands the answer named that were NOT already in
+  /// Project.competitors when this was judged. Raw LLM output, never
+  /// filtered through knownOnly() — routed to Competitor(status=candidate)
+  /// for an operator to confirm, never trusted directly.
+  otherNamesSeen  String   @default("[]")
   evidenceQuote   String? // <=280 chars, verbatim from the answer
   rationale       String?
   judgeModel      String
@@ -2018,8 +2031,14 @@ model Competitor {
   name      String
   domain    String?
   /// project-json (promoted from Project.competitors) | manual (operator-added
-  /// via an explicit body list on /discover)
+  /// via an explicit body list on /discover) | aeo-answer (name an AI surface
+  /// mentioned that wasn't already recorded — see AeoStanceService)
   source    String   @default("project-json")
+  /// tracked | candidate. Candidates are never profiled, never shown in
+  /// /discover or /gap, and never fed back into the AEO stance prompt as a
+  /// "known competitor" — they need an explicit confirm first (D: an
+  /// LLM-mentioned name is not yet a trusted competitive claim).
+  status    String   @default("tracked")
   createdAt DateTime @default(now())
 
   profiles CompetitorProfile[]

@@ -9,6 +9,8 @@
  */
 
 import type { BacklinksSummaryDto } from '../backlinks/backlinks.types';
+import type { PresenceInventory } from '../digital-presence/presence.types';
+import type { GapResult } from '../competitors/competitors.service';
 
 // ─── PRD §8 Score rubric ───────────────────────────────────────
 
@@ -57,6 +59,10 @@ export interface ReportData {
   growthPlan: GrowthPlanDto | null;
   /** Latest DataForSEO backlinks snapshot for this project's domain — null when `POST .../backlinks/refresh` has never been run. Never pulled fresh by report generation itself (read-only, same discipline as growthPlan). */
   backlinks: BacklinksSummaryDto | null;
+  /** Social/directory presence inventory (2026-09-14) — accounts found, verification state, expected-platform gaps. Read-only, computed from whatever digital-presence discovery has already run; never triggers a fresh crawl. */
+  presence: PresenceInventory | null;
+  /** Competitor landscape (2026-09-14): tech/schema/presence diffs plus each tracked rival's SEO score and content signals. Null when the project has no tracked competitors yet. Read-only, same discipline as backlinks/growthPlan. */
+  competitors: GapResult | null;
   createdAt: string;
 }
 
