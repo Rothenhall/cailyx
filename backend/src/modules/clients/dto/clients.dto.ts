@@ -133,7 +133,10 @@ export class CreateClientLoginDto {
 }
 
 export class PostClientMessageDto {
-  @ApiPropertyOptional({ description: 'Scope the message to one of the client\'s projects. Omit for a client-wide message.' })
+  @ApiPropertyOptional({
+    description:
+      "Scope the message to one of the client's projects. Must be a project owned by the :clientId in the path — a foreign project id is rejected with 403. Omit for a client-wide message.",
+  })
   @IsOptional()
   @IsString()
   projectId?: string;

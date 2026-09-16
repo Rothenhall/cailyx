@@ -1,0 +1,154 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * design_plan.md §3.1 visual tokens.
+ *
+ * Values are HSL triplets (no `hsl()` wrapper) so Tailwind can compose them
+ * with an alpha channel. The plan's table gives hex; the conversions are
+ * noted alongside each token so the source value stays auditable.
+ *
+ * §3.1 defers dark mode explicitly: "Dark mode can follow after the core
+ * experience; initial design must work without it." Only the light theme is
+ * defined here. The token indirection is what will make adding it later a
+ * change to this file rather than to every component.
+ */
+
+@layer base {
+  :root {
+    /* Canvas #F5F7FA */
+    --canvas: 214 33% 97%;
+    /* Surface #FFFFFF */
+    --surface: 0 0% 100%;
+    --surface-raised: 0 0% 100%;
+    /* A slightly recessed fill for table headers and inset panels. */
+    --surface-sunken: 214 30% 95%;
+
+    /* Main text #172033 */
+    --foreground: 220 38% 15%;
+    /* Secondary text #526075 */
+    --muted-foreground: 215 18% 39%;
+    --muted: 214 30% 95%;
+
+    /* Borders #DCE3EC */
+    --border: 213 27% 89%;
+    /* §3.1: "use stronger contrast for essential input boundaries" */
+    --border-strong: 214 20% 76%;
+
+    /* Primary action #2449C7 */
+    --primary: 224 69% 46%;
+    --primary-hover: 224 69% 39%;
+    --primary-foreground: 0 0% 100%;
+    --primary-subtle: 224 70% 96%;
+
+    /* Success #176B46 with pale green fill */
+    --success: 158 65% 25%;
+    --success-foreground: 158 65% 20%;
+    --success-subtle: 152 52% 94%;
+
+    /* Warning #855A00 with pale amber fill */
+    --warning: 41 100% 26%;
+    --warning-foreground: 41 100% 22%;
+    --warning-subtle: 45 90% 94%;
+
+    /* Error / risk #AD2838 with pale red fill */
+    --danger: 353 62% 42%;
+    --danger-foreground: 353 62% 36%;
+    --danger-subtle: 353 75% 96%;
+
+    /* Informational */
+    --info: 214 84% 42%;
+    --info-foreground: 214 84% 34%;
+    --info-subtle: 214 85% 96%;
+
+    /* Unmeasured — neutral gray. NOT a pass and NOT a failure. */
+    --unmeasured: 215 14% 50%;
+    --unmeasured-foreground: 215 16% 38%;
+    --unmeasured-subtle: 214 20% 96%;
+
+    --ring: 224 69% 46%;
+    --shadow: 220 38% 15%;
+
+    /* §3.1: 8 inputs, 12 cards, 16 dialogs */
+    --radius-input: 8px;
+    --radius-card: 12px;
+    --radius-dialog: 16px;
+
+    /* §3.1: system sans-serif initially; system monospace for raw evidence */
+    --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+      'Helvetica Neue', Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+      'Liberation Mono', monospace;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-canvas text-foreground font-sans text-body antialiased;
+    /* §3.1: tabular numerals for metrics. Applied globally so a number never
+       shifts width between polling updates. */
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* §3.4: visible focus for every interactive element. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-canvas;
+  }
+
+  /* §3.4: honor reduced-motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* §3.4: skip link, visible only once focused. */
+  .skip-link {
+    @apply sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50
+           focus:rounded-md focus:bg-primary focus:px-4 focus:py-2
+           focus:text-primary-foreground;
+  }
+
+  /* §3.4: a horizontally scrolling table must be a labeled, focusable region. */
+  .table-scroll-region {
+    @apply overflow-x-auto focus-visible:outline-none;
+  }
+}
+
+@layer utilities {
+  /* Raw evidence — model answers, fetched HTML, crawl output. Monospace and
+     never styled to look like trusted application chrome (§10.5). */
+  .evidence {
+    @apply font-mono text-table whitespace-pre-wrap break-words;
+  }
+}
+
+/* §3.4: print reports with repeated headings and page context. */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  tr,
+  img {
+    page-break-inside: avoid;
+  }
+
+  body {
+    background: #fff;
+  }
+}

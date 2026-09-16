@@ -42,3 +42,36 @@ export class RefreshDto {
   @IsNotEmpty()
   refreshToken: string;
 }
+
+/** G01 — `POST /api/auth/password/change`. Authenticated; both user types. */
+export class ChangePasswordDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(72)
+  currentPassword: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(10)
+  @MaxLength(72)
+  newPassword: string;
+}
+
+/** G01 — `POST /api/auth/password/forgot`. Public; always the same generic response. */
+export class ForgotPasswordDto {
+  @IsEmail()
+  email: string;
+}
+
+/** G01 — `POST /api/auth/password/reset`. Public; single-use token from the emailed link. */
+export class ResetPasswordDto {
+  @IsString()
+  @IsNotEmpty()
+  token: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(10)
+  @MaxLength(72)
+  newPassword: string;
+}

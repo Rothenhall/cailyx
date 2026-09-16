@@ -44,3 +44,34 @@ saying exactly which evidence is missing. A batch with fewer than
 - `POST .../generate` without `ANTHROPIC_API_KEY` → 503 (honest unavailability)
 - `GET .../findings` on empty project → `{findings: [], thinRun: true}`
 - Live-LLM path is code-reviewed and compile-verified; run it once a key is set (same constraint as measurement's Claude adapter)
+
+## G19/D12 — annotations corrected, response shapes left alone (2026-09-16)
+
+`GET /api/projects/:projectId/findings` returns `{ findings: [...], thinRun }`.
+The checked-in `openapi.json` describes a **bare array** of findings, with
+`thinRun` as a field on each item — a shape no caller has ever received.
+
+**The wire shape was deliberately NOT changed.** A frontend already normalizes
+this wrapper, and switching the response to a bare array to make an old
+description true would break a working screen for a documentation fix. The
+description was corrected instead, so the contract now matches the response
+rather than the response being bent to match the contract.
+
+| endpoint | documented before | documented after |
+|---|---|---|
+| `GET  …/findings` | no 200 response at all | `{ findings: Finding[], thinRun: boolean }` |
+| `POST …/findings/generate` | "Findings generated (possibly thinRun)" | `{ findings: Finding[], thinRun: boolean }` — the rows stored by *this* call |
+| `GET  …/findings/:findingId` | no 200 response at all | a bare `Finding` row (not wrapped) |
+
+`FINDING_ROW_SCHEMA` also documents the three copy fields as `*Executive` +
+`*Technical` pairs, each **nullable** — a row stored before the technical
+register existed has only the executive text, and a consumer that assumes both
+are present would render blanks.
+
+`GET /findings` still returns the wrapper. Its sibling
+`GET /api/projects` (in `projects/`) had the same documented mismatch in the
+other direction — it returns `{ projects }` while `openapi.json` says array —
+and received the identical treatment: the annotation now says
+`{ projects: Project[] }`, and the response was not changed.
+
+**Verified:** `npx tsc --noEmit` clean for this module.

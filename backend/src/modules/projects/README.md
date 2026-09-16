@@ -46,3 +46,19 @@ Invalid transitions return 409. Stats include: technicalAudits, reports, entitie
 ## Dependencies
 
 - `DatabaseModule` — PrismaService for project records + cross-entity counts
+
+## G19/D12 — list response documented as the wrapper it is (2026-09-16)
+
+`GET /api/projects` returns `{ projects: [...] }`. The checked-in
+`backend/openapi.json` describes a **bare array** of projects (with a four-field
+item schema), which no caller has ever received.
+
+The response shape was **not** changed. A frontend already normalizes the
+wrapper, and switching to a bare array to make a stale description true would
+break a working screen. `projects.controller.ts` now carries an explicit
+`@ApiResponse` for the 200 describing `{ projects: Project[] }` — it previously
+had none at all, so the only description of this route's success shape was the
+wrong one in the static document.
+
+**Verified:** `npx tsc --noEmit` clean; the corrected annotation appears in the
+live spec served at `/api/docs-json` on a booted instance.

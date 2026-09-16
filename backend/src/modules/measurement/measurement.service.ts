@@ -275,21 +275,49 @@ export class MeasurementService {
    * Share of voice (PRD FR-7): the subject's presence share against every
    * named competitor seen in the same observations. Mention/citation rates
    * are the headline; positions never appear in the summary (rates, never positions).
+   *
+   * **Cohort.** With no `runId` the cohort is every observation stored for the
+   * project, across all runs and surfaces — the project's cumulative record,
+   * not a like-for-like period. With a `runId` it is that one run's
+   * observations (one query set, one surface, one geo, one point in time).
+   * The two answer different questions and are not interchangeable; the
+   * returned `observations` count always says which one was computed.
+   *
+   * **Empty is unmeasured, not zero.** A cohort with no observations returns
+   * `null` rates — never `0`, which would read as "measured, and the brand was
+   * never mentioned" (design_plan §3.3).
+   *
+   * @param runId Optional run to scope to. It must belong to `projectId`:
+   *   the run id is a filter, not a capability, so a foreign id is a 404
+   *   rather than a way to read another project's observations.
+   * @throws NotFoundException on a missing project, or a `runId` that is not
+   *   this project's (including one that does not exist).
    */
   async summary(projectId: string, runId?: string): Promise<MeasurementSummary> {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found: ' + projectId);
+
+    if (runId) {
+      const owned = await this.prisma.measurementRun.findFirst({
+        where: { id: runId, projectId },
+        select: { id: true },
+      });
+      if (!owned) throw new NotFoundException('Run not found in this project: ' + runId);
+    }
 
     const obsWhere = runId ? { runId } : { run: { projectId } };
     const observations = await this.prisma.observation.findMany({ where: obsWhere });
     const runs = await this.prisma.measurementRun.count({ where: { projectId } });
 
     if (observations.length === 0) {
+      // Nothing was measured over this cohort. The rates stay `null` so a
+      // renderer shows "Not measured yet" rather than a 0% that reads as a
+      // measured absence.
       return {
         runs,
         observations: 0,
-        mentionRate: 0,
-        citationRate: 0,
+        mentionRate: null,
+        citationRate: null,
         bySurface: [],
         byFunnelStage: [],
         shareOfVoice: [],
@@ -301,8 +329,11 @@ export class MeasurementService {
       select: { id: true, funnelStage: true },
     });
     const stageByItem = new Map(items.map((i) => [i.id, i.funnelStage]));
+    // Scoped to the run when one was asked for: the surface map only has to
+    // describe the observations actually in the cohort, and a run id that is
+    // not this project's cannot reach here (checked above).
     const runRows = await this.prisma.measurementRun.findMany({
-      where: { projectId },
+      where: runId ? { id: runId } : { projectId },
       select: { id: true, surface: true },
     });
     const surfaceByRun = new Map(runRows.map((r) => [r.id, r.surface]));
@@ -353,6 +384,9 @@ export class MeasurementService {
       observations: observations.length,
       mentionRate: Number((mentionCount / observations.length).toFixed(4)),
       citationRate: Number((citeCount / observations.length).toFixed(4)),
+      // These groups only exist because an observation landed in them, so
+      // `r.n` is at least 1 and the rates are always real numbers — the
+      // nullable "unmeasured" case is the empty cohort, handled above.
       bySurface: [...surfRows.entries()].map(([surface, r]) => ({
         surface,
         observations: r.n,

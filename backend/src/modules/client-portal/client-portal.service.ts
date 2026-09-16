@@ -13,26 +13,29 @@
  * @module client-portal.service
  */
 
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
-import { ReportingService } from '../reporting/reporting.service';
+import { ReportLifecycleService } from '../reporting/report-lifecycle.service';
 import type { PortalProjectDto, PortalReportSummaryDto, PortalMessageDto } from './client-portal.types';
 
 @Injectable()
 export class ClientPortalService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly reporting: ReportingService,
+    private readonly reportLifecycle: ReportLifecycleService,
   ) {}
 
   async listProjects(clientId: string): Promise<{ projects: PortalProjectDto[] }> {
     const rows = await this.prisma.project.findMany({ where: { clientId }, orderBy: { createdAt: 'desc' } });
     const projects = await Promise.all(
       rows.map(async (p) => {
+        // G05 — "latest" means the latest **released** report. A draft or an
+        // unreleased revision is not the client's to see, and showing its
+        // score here would leak exactly what the editorial gate holds back.
         const latestReport = await this.prisma.report.findFirst({
-          where: { projectId: p.id },
-          orderBy: { createdAt: 'desc' },
-          select: { scoreTotal: true, scoreBand: true, createdAt: true },
+          where: { projectId: p.id, status: 'released', releasedRevision: { not: null } },
+          orderBy: { releasedAt: 'desc' },
+          select: { scoreTotal: true, scoreBand: true, releasedAt: true },
         });
         return {
           id: p.id,
@@ -42,49 +45,50 @@ export class ClientPortalService {
           onboardingStep: p.onboardingStep,
           latestScore: latestReport?.scoreTotal ?? null,
           latestBand: latestReport?.scoreBand ?? null,
-          lastAuditAt: latestReport?.createdAt.toISOString() ?? null,
+          lastAuditAt: latestReport?.releasedAt?.toISOString() ?? null,
         };
       }),
     );
     return { projects };
   }
 
+  /**
+   * The client's released reports.
+   *
+   * G05 — delegated to `ReportLifecycleService`, which filters on
+   * `status = "released"` **and** a non-null `releasedRevision` and reads each
+   * report's title/score from its frozen revision. Before G05 this listed every
+   * report row for the client's projects, drafts included (§5.10 step 4).
+   */
   async listReports(clientId: string): Promise<{ reports: PortalReportSummaryDto[] }> {
-    const projectIds = await this.ownProjectIds(clientId);
-    if (projectIds.length === 0) return { reports: [] };
-    const rows = await this.prisma.report.findMany({
-      where: { projectId: { in: projectIds } },
-      orderBy: { createdAt: 'desc' },
-      select: { id: true, projectId: true, slug: true, title: true, scoreTotal: true, scoreBand: true, createdAt: true },
-    });
+    const { reports } = await this.reportLifecycle.listReleasedForClient(clientId);
     return {
-      reports: rows.map((r) => ({
-        id: r.id,
+      reports: reports.map((r) => ({
+        id: r.reportId,
         projectId: r.projectId,
         slug: r.slug,
         title: r.title,
         scoreTotal: r.scoreTotal,
         scoreBand: r.scoreBand,
-        createdAt: r.createdAt.toISOString(),
+        createdAt: r.contentUpdatedAt,
+        revision: r.revision,
+        releasedAt: r.releasedAt,
       })),
     };
   }
 
   /**
-   * The full report by slug — reuses `reporting.getBySlug`, but ownership is
-   * checked here FIRST. `includePrivate: true` is passed deliberately: a
-   * report generated for this client defaults to `visibility: "private"`
-   * (that flag means "not publicly link-shareable", not "hidden from the
-   * client it's about") — the client reads their own report either way.
+   * The full report by slug — release-gated, not merely ownership-checked.
+   *
+   * G05 changed what "the client's report" means: this serves the report's
+   * frozen released revision, and a report that is a draft, in review,
+   * approved-but-unreleased or withdrawn is answered with the same 404 as one
+   * that does not exist. `Report.visibility` is deliberately **not** the gate
+   * here — it governs the unauthenticated HTML link, and a released report is
+   * routinely private.
    */
   async getReport(clientId: string, slug: string) {
-    const record = await this.prisma.report.findUnique({ where: { slug }, select: { projectId: true } });
-    if (!record) throw new NotFoundException(`Report ${slug} not found`);
-    const project = await this.prisma.project.findUnique({ where: { id: record.projectId }, select: { clientId: true } });
-    if (!project || project.clientId !== clientId) {
-      throw new NotFoundException(`Report ${slug} not found`); // 404, not 403 — never confirm another client's report exists
-    }
-    return this.reporting.getBySlug(slug, true);
+    return this.reportLifecycle.getReleasedForClient(clientId, slug);
   }
 
   async listMessages(clientId: string): Promise<{ messages: PortalMessageDto[] }> {
@@ -118,10 +122,5 @@ export class ClientPortalService {
       body: row.body,
       createdAt: row.createdAt.toISOString(),
     };
-  }
-
-  private async ownProjectIds(clientId: string): Promise<string[]> {
-    const rows = await this.prisma.project.findMany({ where: { clientId }, select: { id: true } });
-    return rows.map((r) => r.id);
   }
 }

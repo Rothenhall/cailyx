@@ -176,3 +176,42 @@ module had landed... a minimal, non-relational mirror...~~ **Resolved:** the
 full relational `AeoAudit` model (with `SiteContext`/`AeoStance`/
 `AeoSurfaceRun` relations) is now in `schema.prisma`; this module reads
 `verdict` off that model directly. No mirror remains.
+
+## G19/D01 — the three candidate operations are in the contract (2026-09-16)
+
+`Appendix B` D01: "OpenAPI has 261 operations; controller extraction has 264.
+Extra routes in competitors controller: candidate list/confirm/delete." The
+routes existed in source, but only as bare `@ApiOperation({ summary })` — and
+the checked-in `backend/openapi.json` does not contain them at all.
+
+**Nothing about the routes changed**; what changed is that their contract is now
+written down in `competitors.controller.ts`, where the schema generator reads it:
+
+| route | envelope | documented statuses |
+|---|---|---|
+| `GET  …/competitors/candidates` | `{ candidates: Competitor[] }`, always `status="candidate"` (possibly empty) | 200, 404 |
+| `POST …/competitors/candidates/:competitorId/confirm` | the now-tracked `Competitor` row, `status="tracked"` | 201, 404 |
+| `DELETE …/competitors/candidates/:competitorId` | `{ deleted: true }` | 200, 404 |
+
+`COMPETITOR_ROW_SCHEMA` states the two vocabularies a caller has to switch on,
+which no annotation recorded before:
+
+- `status`: `tracked | candidate`. `candidate` rows are never profiled, never
+  returned by `/profiles` or `/gap`, and never fed back into the AEO stance
+  prompt as a "known competitor".
+- `source`: `project-json | manual | aeo-answer` — with `aeo-answer` called out
+  as the only producer of candidates today.
+
+`GET /profiles` now says explicitly that it excludes candidates (it always did,
+via `status: { not: 'candidate' }`); the old description left that to be
+inferred from a one-line summary.
+
+**Not done, and why:** `backend/openapi.json` was not regenerated. It is a
+checked-in artifact with no generator in `package.json` and no script anywhere
+in the repo (`api-docs.html` is hand-authored HTML, not a Swagger bundle), so
+regenerating it would mean hand-editing a 605 KB document — which is exactly how
+it drifted from source in the first place. **It needs regenerating from the
+running app's `/api/docs-json` before any client is generated from it.**
+
+**Verified:** `npx tsc --noEmit` clean for this module; the routes are still
+registered (confirmed on a booted instance).

@@ -1,6 +1,19 @@
 /**
  * Competitors Controller — REST API endpoints.
  *
+ *   POST   /projects/:projectId/competitors/discover
+ *   GET    /projects/:projectId/competitors/profiles
+ *   GET    /projects/:projectId/competitors/gap
+ *   GET    /projects/:projectId/competitors/candidates
+ *   POST   /projects/:projectId/competitors/candidates/:competitorId/confirm
+ *   DELETE /projects/:projectId/competitors/candidates/:competitorId
+ *
+ * The last three exist only in source: they are absent from the checked-in
+ * `openapi.json` (G19/D01), so their response schemas are declared in this
+ * file rather than inherited from it. All six are operator routes under the
+ * global guard; `:projectId` is resolved by each service call, never trusted
+ * from the URL alone.
+ *
  * `discover` does real network I/O (one homepage fetch per competitor via
  * `TechStackService.scanDomain` + one schema read), so it is rate-limited
  * like other live-fetch endpoints. `list` and `gap` are reads over already
@@ -12,10 +25,52 @@
  */
 
 import { Controller, Post, Get, Delete, Param, Body } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBody } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiBody, type SchemaObject } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { CompetitorsService } from './competitors.service';
 import { DiscoverCompetitorsDto } from './dto/competitors.dto';
+
+/**
+ * The `Competitor` row as the candidate routes return it.
+ *
+ * Declared here (G19/D01) because these three routes exist only in source —
+ * they are absent from the checked-in `openapi.json` — so this schema is the
+ * only place their response contract is written down. Every field is what
+ * `CompetitorsService` actually selects; `status` and `source` are the two
+ * vocabularies a caller must switch on:
+ *
+ *   - `status`: `tracked | candidate`. Candidates are never profiled, never
+ *     appear in `list`/`gap`, and are never fed back into the AEO stance
+ *     prompt as a "known competitor" until confirmed.
+ *   - `source`: `project-json | manual | aeo-answer`. `aeo-answer` is the only
+ *     producer of candidates today; `project-json`/`manual` entries arrive
+ *     already `tracked`.
+ */
+const COMPETITOR_ROW_SCHEMA: SchemaObject = {
+  type: 'object',
+  required: ['id', 'projectId', 'name', 'source', 'status', 'createdAt'],
+  properties: {
+    id: { type: 'string' },
+    projectId: { type: 'string' },
+    name: { type: 'string' },
+    domain: {
+      type: 'string',
+      nullable: true,
+      description: 'Bare domain, or null when only the name is known. A candidate with no domain has nothing to profile.',
+    },
+    source: {
+      type: 'string',
+      enum: ['project-json', 'manual', 'aeo-answer'],
+      description: 'project-json = promoted from Project.competitors; manual = an explicit /discover body list; aeo-answer = a company name an AI surface mentioned and nothing had recorded.',
+    },
+    status: {
+      type: 'string',
+      enum: ['tracked', 'candidate'],
+      description: 'candidate = discovered, not yet trusted, awaiting operator confirm/reject.',
+    },
+    createdAt: { type: 'string', format: 'date-time' },
+  },
+};
 
 @ApiTags('Competitors')
 @Controller('projects/:projectId/competitors')
@@ -57,9 +112,9 @@ export class CompetitorsController {
   @ApiOperation({
     summary: 'List competitors with their latest profile',
     description:
-      "Distinct from GET /projects/:id/competitors (ProjectsController's named-competitor list + SERP-discovered candidates) — this returns the first-class Competitor rows this module maintains, each with its latest tech/schema/AEO/SERP profile.",
+      "Distinct from GET /projects/:id/competitors (ProjectsController's named-competitor list + SERP-discovered candidates) — this returns the first-class Competitor rows this module maintains, each with its latest tech/schema/AEO/SERP profile. Excludes status=candidate rows: an unconfirmed candidate is not yet a rival and has no profile to return.",
   })
-  @ApiResponse({ status: 200, description: '{ competitors }' })
+  @ApiResponse({ status: 200, description: '{ competitors: Competitor[] } — tracked rows only, each with `latestProfile` (nullable when no profile has been built)' })
   @ApiResponse({ status: 404, description: 'Project not found' })
   async list(@Param('projectId') projectId: string) {
     return { competitors: await this.competitors.list(projectId) };
@@ -92,28 +147,55 @@ export class CompetitorsController {
   @ApiOperation({
     summary: 'List unconfirmed competitor candidates (currently: names an AI surface mentioned)',
     description:
-      'Rows with status=candidate — discovered, not yet trusted. An operator must confirm or reject each one before it counts as a real competitor anywhere else in the app.',
+      'Rows with status=candidate — discovered, not yet trusted. An operator must confirm or reject each one before it counts as a real competitor anywhere else in the app. Returns every candidate for the project, newest first; a project with none returns an empty array, which is "nothing was proposed", not "nothing to review yet".',
   })
-  @ApiResponse({ status: 200, description: '{ candidates }' })
+  @ApiResponse({
+    status: 200,
+    description: '{ candidates: Competitor[] } — always status="candidate" (possibly empty)',
+    schema: {
+      type: 'object',
+      required: ['candidates'],
+      properties: { candidates: { type: 'array', items: COMPETITOR_ROW_SCHEMA } },
+    },
+  })
   @ApiResponse({ status: 404, description: 'Project not found' })
   async listCandidates(@Param('projectId') projectId: string) {
     return { candidates: await this.competitors.listCandidates(projectId) };
   }
 
-  /** Promote a candidate to a tracked competitor — appended to Project.competitors too. */
+  /**
+   * Promote a candidate to a tracked competitor — appended to Project.competitors too,
+   * so share-of-voice and the AEO stance prompt see it on their next read.
+   */
   @Post('candidates/:competitorId/confirm')
-  @ApiOperation({ summary: 'Confirm a competitor candidate' })
-  @ApiResponse({ status: 201, description: 'The now-tracked Competitor row' })
-  @ApiResponse({ status: 404, description: 'Candidate not found' })
+  @ApiOperation({
+    summary: 'Confirm a competitor candidate',
+    description:
+      'Flips the row to status=tracked and appends its name to Project.competitors. Repeating the call on an already-tracked row is a 404 — the row is no longer a candidate — so the endpoint is idempotent by outcome, not by request.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'The now-tracked Competitor row (status="tracked")',
+    schema: COMPETITOR_ROW_SCHEMA,
+  })
+  @ApiResponse({ status: 404, description: 'No candidate with that id in this project (unknown id, another project\'s id, or a row already tracked)' })
   async confirmCandidate(@Param('projectId') projectId: string, @Param('competitorId') competitorId: string) {
     return this.competitors.confirmCandidate(projectId, competitorId);
   }
 
   /** Discard a candidate — a hallucination, a directory site, or not actually a rival. */
   @Delete('candidates/:competitorId')
-  @ApiOperation({ summary: 'Reject and delete a competitor candidate' })
-  @ApiResponse({ status: 200, description: 'Deleted' })
-  @ApiResponse({ status: 404, description: 'Candidate not found' })
+  @ApiOperation({
+    summary: 'Reject and delete a competitor candidate',
+    description:
+      'Deletes the candidate row outright. Only ever applies to an unconfirmed candidate — an established tracked competitor cannot be removed here, which is why a row already confirmed answers 404 rather than being deleted.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: '{ deleted: true } — the row is gone; there is no tombstone and no undo',
+    schema: { type: 'object', required: ['deleted'], properties: { deleted: { type: 'boolean', enum: [true] } } },
+  })
+  @ApiResponse({ status: 404, description: 'No candidate with that id in this project (unknown id, another project\'s id, or an already-tracked competitor)' })
   async rejectCandidate(@Param('projectId') projectId: string, @Param('competitorId') competitorId: string) {
     await this.competitors.rejectCandidate(projectId, competitorId);
     return { deleted: true };

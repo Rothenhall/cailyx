@@ -255,12 +255,38 @@ export class ScoringService {
     if (rows.length === 0) {
       return { value: null, evidence: [], partial: true, partialReason: 'Audit ran but produced no robots/CDN findings' };
     }
-    const pass = rows.filter((f) => f.status === 'pass').length;
+    // `status: 'error'` means the check itself didn't run (e.g. the fetch it
+    // depends on timed out) — a real "we don't know", not a fail. Scoring it
+    // as a fail (the old `pass/rows.length` did, since 'error' never matched
+    // 'pass') silently penalizes the client for a measurement gap, and
+    // presents an unmeasured check identically to a confirmed defect. See
+    // evalExtractability for the same fix and the cwv case that surfaced it.
+    const { pass, denom } = this.scoreRows(rows);
+    if (denom === 0) {
+      return {
+        value: null,
+        evidence: rows.map((f) => f.type + ': ' + f.status + ' (' + f.severity + ')'),
+        partial: true,
+        partialReason: 'All robots/CDN checks errored — crawler access unmeasured, not confirmed passing or failing',
+      };
+    }
+    // NOT marked `partial: true` when denom > 0 — the roll-up's own rule
+    // (`d.partial || d.value === null` → contributes 0) would zero the WHOLE
+    // dimension over one errored sub-check, which is a harsher penalty than
+    // the bug this replaces. A real score from what did run, with the
+    // exclusion stated in the evidence, is the correct "not measured" state.
     return {
-      value: Math.round((pass / rows.length) * 100),
-      evidence: rows.map((f) => f.type + ': ' + f.status + ' (' + f.severity + ')'),
+      value: Math.round((pass / denom) * 100),
+      evidence: rows.map((f) => f.type + ': ' + f.status + ' (' + f.severity + ')' + (f.status === 'error' ? ' — not measured, excluded from this score' : '')),
       partial: false,
     };
+  }
+
+  /** Split findings into pass/fail vs. `status: 'error'` (didn't run), so a scorer can exclude the latter from its denominator instead of counting it as a fail. */
+  private scoreRows(rows: AuditFindingRow[]): { pass: number; denom: number; unmeasured: number } {
+    const measured = rows.filter((f) => f.status !== 'error');
+    const pass = measured.filter((f) => f.status === 'pass').length;
+    return { pass, denom: measured.length, unmeasured: rows.length - measured.length };
   }
 
   private evalEntityClarity(entities?: EntityAuditShape['entities']): DimensionInput {
@@ -271,7 +297,13 @@ export class ScoringService {
     const pass = checks.filter((c) => c.status === 'pass').length;
     return {
       value: Math.round((pass / checks.length) * 100),
-      evidence: checks.map((c) => 'Schema: ' + (c.schemaType || 'none') + ' — ' + c.status),
+      // Labeled "entity schema check" (not just "Schema:") because the report
+      // also shows technical-audit's separate field-completeness schema check
+      // under Authority signal / the Findings table — same word, different
+      // pass criteria (this one passes on type + working sameAs links; that
+      // one fails once >3 recommended fields are missing). See
+      // ReportingService's FINDING_TYPE_LABELS for the other side of this.
+      evidence: checks.map((c) => 'Entity schema check: ' + (c.schemaType || 'none') + ' — ' + c.status),
       partial: false,
     };
   }
@@ -280,13 +312,18 @@ export class ScoringService {
   private evalShortlist(
     summary: Awaited<ReturnType<MeasurementService['summary']>> | null,
   ): DimensionInput {
-    if (summary && summary.observations > 0) {
+    // `observations > 0` now guarantees a measured rate, but the two are
+    // separate properties — the explicit null checks are what tell TypeScript
+    // so (G19/D20 made the rates nullable so an empty cohort reads as
+    // "unmeasured" rather than as a 0% that looks measured).
+    if (summary && summary.observations > 0 && summary.mentionRate !== null) {
+      const mentionRate = summary.mentionRate;
       const sov = summary.shareOfVoice.find((s) => s.name.endsWith('(you)'))?.share ?? 0;
-      const value = Math.round(summary.mentionRate * 50 + sov * 50);
+      const value = Math.round(mentionRate * 50 + sov * 50);
       return {
         value,
         evidence: [
-          'Mention rate ' + (summary.mentionRate * 100).toFixed(1) + '% over ' + summary.observations + ' observations',
+          'Mention rate ' + (mentionRate * 100).toFixed(1) + '% over ' + summary.observations + ' observations',
           'Share of voice (you): ' + (sov * 100).toFixed(1) + '%',
           'Surfaces: ' + summary.bySurface.map((s) => s.surface).join(', '),
         ],
@@ -309,10 +346,22 @@ export class ScoringService {
     if (rows.length === 0) {
       return { value: null, evidence: [], partial: true, partialReason: 'Audit ran but no js-render/CWV findings recorded' };
     }
-    const pass = rows.filter((f) => f.status === 'pass').length;
+    // cwv commonly comes back `status: 'error'` (a PSI/Lighthouse call that
+    // timed out or failed, not a measured Core Web Vitals result) — see
+    // evalMachineAccess for why that must be excluded from the denominator
+    // rather than scored as a fail.
+    const { pass, denom } = this.scoreRows(rows);
+    if (denom === 0) {
+      return {
+        value: null,
+        evidence: rows.map((f) => f.type + ': ' + f.status),
+        partial: true,
+        partialReason: 'js-render/CWV checks errored — on-page extractability unmeasured, not confirmed passing or failing',
+      };
+    }
     return {
-      value: Math.round((pass / rows.length) * 100),
-      evidence: rows.map((f) => f.type + ': ' + f.status),
+      value: Math.round((pass / denom) * 100),
+      evidence: rows.map((f) => f.type + ': ' + f.status + (f.status === 'error' ? ' — not measured, excluded from this score' : '')),
       partial: false,
     };
   }
@@ -327,11 +376,15 @@ export class ScoringService {
     let score = 0;
 
     if (schemaFinding) {
+      // "Technical-audit" prefix deliberately matches ReportingService's
+      // FINDING_TYPE_LABELS — same check, same disambiguation, so a reader
+      // can tell this isn't the (more lenient) entity-audit schema check
+      // scored under Entity clarity above.
       if (schemaFinding.status === 'pass') {
         score += 50;
-        evidence.push('Structured-data audit passed (+50)');
+        evidence.push('Technical-audit schema field completeness passed (+50)');
       } else {
-        evidence.push('Schema audit: ' + schemaFinding.status + ' (+0)');
+        evidence.push('Technical-audit schema field completeness: ' + schemaFinding.status + ' (+0)');
       }
     }
     if (platformRecords.length > 0) {

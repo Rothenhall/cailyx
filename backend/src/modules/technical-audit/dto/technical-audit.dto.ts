@@ -11,6 +11,13 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsString, IsUrl, IsOptional, IsIn, IsNotEmpty, IsInt, Min, Max } from 'class-validator';
 
 /**
+ * Ceiling for {@link RunAuditDto.pageBudget}. Exported so the service clamps a
+ * scheduled-path budget to the same value the DTO validates — the two entry
+ * points into `runAudit` must agree on the bound.
+ */
+export const MAX_PAGE_BUDGET = 1000;
+
+/**
  * Request body for POST /projects/:projectId/technical-audit/run
  */
 export class RunAuditDto {
@@ -33,12 +40,20 @@ export class RunAuditDto {
   /**
    * Optional per-run override of how many sitemap URLs to crawl. Bounded
    * server-side — an unbounded crawl is a denial-of-wallet on our own fetcher.
+   *
+   * Forwarded into the queued job's data and applied by the worker to this
+   * run's page-inventory crawl (G19/D16). Omit it and the run uses
+   * `technicalAudit.pageCrawlBudget` (env `TA_PAGE_CRAWL_BUDGET`).
    */
-  @ApiPropertyOptional({ description: 'Max sitemap URLs to crawl this run (1-1000)', example: 150 })
+  @ApiPropertyOptional({
+    description:
+      'Max sitemap URLs to crawl for THIS run (1-1000). Omit to use the server default (TA_PAGE_CRAWL_BUDGET).',
+    example: 150,
+  })
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(1000)
+  @Max(MAX_PAGE_BUDGET)
   pageBudget?: number;
 }
 

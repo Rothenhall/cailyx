@@ -1,9 +1,11 @@
 /**
  * Google Analytics 4 — Admin API (property list) + Data API (runReport).
  *
- * Read-only. `listProperties` feeds the resource picker; `summary` pulls
- * sessions / users / views / engagement for a project's mapped GA4 property
- * plus a channel breakdown and the top pages over a rolling window.
+ * Read-only, and consented as read-only: `listProperties` feeds the resource
+ * picker against the `analytics.readonly` grant (`accountSummaries.list`
+ * accepts it), and `summary` pulls sessions / users / views / engagement for a
+ * project's mapped GA4 property plus a channel breakdown and the top pages
+ * over a rolling window. Nothing here writes to Analytics (G19/D17).
  *
  * @module google/analytics.service
  */

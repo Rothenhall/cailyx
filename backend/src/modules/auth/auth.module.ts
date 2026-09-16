@@ -6,6 +6,12 @@
  * - JwtStrategy (passport-jwt bearer verification)
  * - JwtAuthGuard + RolesGuard as GLOBAL guards via APP_GUARD — every other
  *   module's endpoints require a valid token unless marked @Public().
+ * - G03 scope enforcement: importing ScopeValidationModule here is what
+ *   activates it. The module is @Global(), so this single import is enough to
+ *   make ScopeValidationService injectable in every other module, and it lives
+ *   here because AuthModule is the one module AppModule always loads first.
+ *   Merely declaring the @Global() module is NOT enough — a module has to
+ *   import it once, or the provider is never instantiated.
  *
  * Depends on: DatabaseModule (PrismaService)
  *
@@ -21,11 +27,13 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { ScopeValidationModule } from '../../common/guards/scope-validation.module';
 
 @Module({
   imports: [
     PassportModule,
     JwtModule.register({}), // signing config read per-call from ConfigService (secret/TTL)
+    ScopeValidationModule, // G03 — activates the @Global() scope guard
   ],
   controllers: [AuthController],
   providers: [

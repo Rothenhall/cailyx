@@ -148,7 +148,12 @@ export class AeoAuditService {
     const audit = await this.start(projectId, input);
     await this.pipelineQueue.enqueue(
       'aeo-audit-resume',
-      { auditId: audit.id, input },
+      // `projectId` rides in the job data for two reasons, both load-bearing:
+      // the queue uses it to attach a durable `JobRun` to this job (G07), and
+      // the job-status route checks it against the URL's :projectId (G03).
+      // Without it this was the one pipeline kind that stayed out of the run
+      // ledger and could not be scope-checked.
+      { auditId: audit.id, projectId, input },
       { attempts: 3, backoff: { type: 'exponential', delay: 30000 } },
     );
     return audit;

@@ -69,3 +69,24 @@ Run end-to-end against `rothenhall.com`'s live Search Console (2026-09-10):
 18 URLs inspected, ~40s, deltas + comparison chain correct. Three classes of
 false positive found and fixed in the process — all rooted in domain-property
 host/protocol variants (see the `fix(seo-audit): kill false positives` commit).
+
+## G19/D17 — sitemap submission is a write, and now says so (2026-09-16)
+
+`POST /seo-audit/submit-sitemaps` is the one endpoint in this module that
+changes something at Google. It issues `PUT /sites/{site}/sitemaps/{feedpath}`,
+which needs the read/write `webmasters` scope (see `google/README.md`).
+
+| | before | after |
+|---|---|---|
+| scope requested for Search Console | `webmasters.readonly` | `webmasters` |
+| grant lacking the write scope | every submit failed inside the per-sitemap `catch`; the route answered `201 { submitted: [] }` — an empty success | `409` from `SearchConsoleService.submitSitemap`, with the reconnect instruction |
+| every submit failing for any other reason | `201 { submitted: [] }` | `409` naming the first failure and how many others failed |
+| some submits failing | `submitted` lists the successes | unchanged |
+
+An empty `submitted` array is now impossible: the route either lists at least
+one accepted feedpath or returns an error. That matters because the UI copy for
+this control promises Google was told to look again — a 201 with no entries
+made a silent failure look like a no-op.
+
+**Verified:** `npx tsc --noEmit` clean for this module. Not re-run against live
+Search Console in this pass; the submit path needs a connected property.

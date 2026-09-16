@@ -12,7 +12,12 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // `rawBody` preserves the exact bytes of every request, which the Stripe
+  // webhook needs: an HMAC is computed over the transmitted bytes, so verifying
+  // against a re-serialized JSON body would be a chance to disagree with what
+  // the provider actually signed. It costs one buffer per request that opts in,
+  // and nothing else changes.
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   // Global prefix for all API routes
   app.setGlobalPrefix('api');

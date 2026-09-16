@@ -21,6 +21,9 @@ import { AnalyticsService } from './analytics.service';
 @Module({
   controllers: [GoogleController],
   providers: [GoogleOAuthService, GoogleConnectionService, SearchConsoleService, AnalyticsService],
-  exports: [GoogleConnectionService, SearchConsoleService, AnalyticsService],
+  // GoogleOAuthService is exported for G02's GoogleDelegationService, which
+  // reuses the same consent/state helpers to let a project owner delegate a
+  // connection to another user without that user ever holding the tokens.
+  exports: [GoogleOAuthService, GoogleConnectionService, SearchConsoleService, AnalyticsService],
 })
 export class GoogleModule {}

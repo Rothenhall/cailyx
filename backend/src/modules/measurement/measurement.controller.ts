@@ -93,11 +93,19 @@ export class MeasurementController {
   @Get('summary')
   @ApiOperation({
     summary: 'Measurement summary',
-    description: 'Mention/citation rates overall, by surface, and by funnel stage; share of voice vs named competitors. Rates, never positions.',
+    description:
+      'Mention/citation rates overall, by surface, and by funnel stage; share of voice vs named competitors. Rates, never positions. Cohort: without ?runId= the rates cover every observation stored for the project (all runs and surfaces — a cumulative record, not a comparable period); with ?runId= they cover that one run. An empty cohort returns mentionRate/citationRate as null, never 0 — unmeasured is not a measured zero.',
   })
-  @ApiQuery({ name: 'runId', required: false })
-  @ApiResponse({ status: 200, description: 'Summary block' })
-  @ApiResponse({ status: 404, description: 'Project not found' })
+  @ApiQuery({
+    name: 'runId',
+    required: false,
+    description: 'Scope the rates to one run of THIS project. A run id from another project is a 404.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Summary block. `observations: 0` comes with `mentionRate`/`citationRate` of null and empty breakdown arrays.',
+  })
+  @ApiResponse({ status: 404, description: 'Project not found, or the supplied runId does not belong to this project' })
   async summary(@Param('projectId') projectId: string, @Query('runId') runId?: string) {
     return this.measurementService.summary(projectId, runId);
   }

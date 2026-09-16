@@ -133,7 +133,17 @@ function isRole(v: string): v is Role {
   return (ROLES as readonly string[]).includes(v);
 }
 
-function toSafe(u: { id: string; email: string; name: string; role: string; type: string; clientId: string | null; createdAt: Date }): SafeUserDto {
+function toSafe(u: {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  type: string;
+  clientId: string | null;
+  /** G01 — surfaced so the AU04 first-login security flow can be forced. */
+  mustChangePassword: boolean;
+  createdAt: Date;
+}): SafeUserDto {
   return {
     id: u.id,
     email: u.email,
@@ -141,6 +151,7 @@ function toSafe(u: { id: string; email: string; name: string; role: string; type
     role: u.role as Role,
     type: u.type as SafeUserDto['type'],
     clientId: u.clientId,
+    mustChangePassword: u.mustChangePassword,
     createdAt: u.createdAt.toISOString(),
   };
 }

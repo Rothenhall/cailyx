@@ -8,7 +8,7 @@
 import { Body, Controller, Get, Header, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import { Public } from '../../common/decorators/auth.decorators';
+import { Public, Roles } from '../../common/decorators/auth.decorators';
 import { DeliveryService } from './delivery.service';
 import { CreateLeadDto, LogCtaDto, SendReportDto, UpdateLeadDto } from './dto/delivery.dto';
 import { CreateUpgradeDto, UpdateUpgradeDto } from './dto/upgrade.dto';
@@ -91,12 +91,31 @@ export class DeliveryController {
     return this.delivery.markClicked(projectId, upgradeId);
   }
 
-  @Public()
+  /**
+   * Marks an upgrade completed **by hand**.
+   *
+   * This used to be `@Public()`, standing in for the Stripe webhook before the
+   * billing module existed. That is no longer acceptable: G16 now provides the
+   * real signed webhook path (`POST /api/billing/webhooks/stripe`), so an
+   * unauthenticated endpoint that flips a payment ledger row is a straight
+   * forgery hole — anyone who could reach the API could mark an upgrade paid.
+   *
+   * The guard is the fix for that, not a permanent design. This route remains
+   * for assisted sales, where an operator has confirmed the payment out of band
+   * and needs to record it. It is admin-only because it writes a money-adjacent
+   * ledger, and it still records no entitlement — entitlement comes from a
+   * verified provider event and nothing else (G16 rule 4).
+   */
+  @Roles('admin')
   @Post('upgrades/:upgradeId/complete')
   @ApiOperation({
-    summary: 'Webhook stand-in: mark an upgrade completed',
-    description: 'Unauthenticated completion endpoint that stands in for the Stripe webhook until the real SDK integration (docs/analysis/wave-5.md §3.3 option A→B).',
+    summary: 'Record an upgrade as completed (admin, assisted sales only)',
+    description:
+      'Operator-recorded completion for assisted sales. Unauthenticated completion was removed: payments are confirmed by the signed Stripe webhook at /api/billing/webhooks/stripe, which is the only path that grants an entitlement.',
   })
+  @ApiResponse({ status: 200, description: 'The updated ledger row' })
+  @ApiResponse({ status: 401, description: 'Not authenticated — this endpoint is no longer public' })
+  @ApiResponse({ status: 403, description: 'Caller is not an admin' })
   complete(@Param('projectId') projectId: string, @Param('upgradeId') upgradeId: string, @Body() body: UpdateUpgradeDto) {
     return this.delivery.markCompleted(projectId, upgradeId, body.stripeSessionId);
   }

@@ -8,6 +8,11 @@
  * FindingsModule). No new audit logic lives here — this module only sequences
  * calls into modules that already exist.
  *
+ * `ClientsOnboardingExecutors` (G07/A7) registers one executor per Day-1 stage
+ * with `OnboardingService`, so the durable onboarding run can advance without
+ * this module being imported by `jobs/`. It calls the same services the
+ * background pipeline does.
+ *
  * @module clients.module
  */
 
@@ -27,6 +32,7 @@ import { EntityAuditModule } from '../entity-audit/entity-audit.module';
 import { BacklinksModule } from '../backlinks/backlinks.module';
 import { FindingsModule } from '../findings/findings.module';
 import { ClientsService } from './clients.service';
+import { ClientsOnboardingExecutors } from './clients.onboarding-executors';
 import { ClientsController } from './clients.controller';
 
 @Module({
@@ -50,7 +56,7 @@ import { ClientsController } from './clients.controller';
     BacklinksModule,
   ],
   controllers: [ClientsController],
-  providers: [ClientsService],
+  providers: [ClientsService, ClientsOnboardingExecutors],
   exports: [ClientsService],
 })
 export class ClientsModule {}

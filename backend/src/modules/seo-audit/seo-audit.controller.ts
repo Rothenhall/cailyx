@@ -7,6 +7,8 @@
  *   GET  /projects/:projectId/seo-audit/:auditId/comparison
  *   GET  /projects/:projectId/seo-audit/trend/history
  *   POST /projects/:projectId/seo-audit/submit-sitemaps   the one action it can take
+ *                                                          (a Search Console WRITE — needs
+ *                                                          the read/write `webmasters` scope)
  *
  * All behind the global JwtAuthGuard. The Search Console connection is the
  * per-operator one, so `userId` comes from the token.
@@ -27,11 +29,12 @@ import {
   Put,
   Query,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthedRequestUser } from '../auth/strategies/jwt.strategy';
 import { SeoAuditService } from './seo-audit.service';
 import { PipelineQueueService } from '../jobs/pipeline-queue.service';
+import { ScopeValidationService } from '../../common/guards/scope-validation.service';
 
 @ApiTags('SEO Audit')
 @ApiBearerAuth()
@@ -40,6 +43,7 @@ export class SeoAuditController {
   constructor(
     private readonly seo: SeoAuditService,
     private readonly pipelineQueue: PipelineQueueService,
+    private readonly scope: ScopeValidationService,
   ) {}
 
   /**
@@ -66,10 +70,26 @@ export class SeoAuditController {
     return { jobId, projectId, status: 'queued' };
   }
 
+  /**
+   * Poll a queued SEO audit job.
+   *
+   * Guarded the same way as the technical-audit equivalent: resolved by id,
+   * then checked against the URL's `:projectId`. A foreign id returns 404
+   * rather than that project's job status (design_plan G03, line 1613).
+   */
   @Get('run/jobs/:jobId')
   @ApiOperation({ summary: 'Get the status of a queued SEO audit job' })
-  async getRunJob(@Param('jobId') jobId: string) {
-    return this.pipelineQueue.getStatus(jobId);
+  @ApiResponse({ status: 200, description: 'Job status' })
+  @ApiResponse({ status: 404, description: 'Job does not exist, or belongs to a different project' })
+  async getRunJob(
+    @CurrentUser() user: AuthedRequestUser,
+    @Param('projectId') projectId: string,
+    @Param('jobId') jobId: string,
+  ) {
+    await this.scope.assertProjectAccess(user, projectId);
+    const status = await this.pipelineQueue.getStatus(jobId);
+    this.scope.assertJobBelongsToProject(status, projectId, 'SEO audit job');
+    return status;
   }
 
   @Get()
@@ -85,7 +105,14 @@ export class SeoAuditController {
   }
 
   @Post('submit-sitemaps')
-  @ApiOperation({ summary: 'Re-submit the property\'s sitemap(s) to Google' })
+  @ApiOperation({
+    summary: 'Re-submit the property\'s sitemap(s) to Google',
+    description:
+      'Re-submits every sitemap Search Console has registered for the project\'s mapped property, so Google recrawls them. This is a Search Console WRITE: it requires a grant holding the read/write `webmasters` scope. A grant created before that scope was requested holds only `webmasters.readonly` and is answered with 409 plus the reconnect instruction — a read-only grant cannot perform the PUT.',
+  })
+  @ApiResponse({ status: 201, description: '{ submitted: string[] } — the feedpaths Google accepted. At least one always succeeds when this is returned; a run where every submit failed is an error, not an empty list.' })
+  @ApiResponse({ status: 409, description: 'The connected Search Console grant is read-only (reconnect to grant write access), no sitemap is registered for the property, or Google rejected every submission' })
+  @ApiResponse({ status: 404, description: 'The project has no Search Console property mapped' })
   submit(@CurrentUser() user: AuthedRequestUser, @Param('projectId') projectId: string) {
     return this.seo.submitSitemaps(projectId, user.userId);
   }

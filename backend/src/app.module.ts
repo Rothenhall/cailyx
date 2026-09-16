@@ -60,6 +60,24 @@ import { BacklinksModule } from './modules/backlinks/backlinks.module';
 import { AgentsModule } from './modules/agents/agents.module';
 import { UsersModule } from './modules/users/users.module';
 
+// design_plan.md Appendix A — G01..G20 work packages.
+// See docs/analysis/design-plan-implementation.md for the package map.
+import { ClientAccessModule } from './modules/client-access/client-access.module';
+import { BusinessProfileModule } from './modules/business-profile/business-profile.module';
+import { DeliveryPlanModule } from './modules/delivery-plan/delivery-plan.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import { ContentModule } from './modules/content/content.module';
+import { ApprovalsModule } from './modules/approvals/approvals.module';
+import { PublishingModule } from './modules/publishing/publishing.module';
+import { BudgetsModule } from './modules/budgets/budgets.module';
+import { ResultsModule } from './modules/results/results.module';
+import { OperationsModule } from './modules/operations/operations.module';
+import { ActivityModule } from './modules/activity/activity.module';
+import { BillingModule } from './modules/billing/billing.module';
+import { LifecycleModule } from './modules/lifecycle/lifecycle.module';
+import { CapabilitiesModule } from './modules/capabilities/capabilities.module';
+import { OrganizationModule } from './modules/organization/organization.module';
+
 @Module({
   imports: [
     // Global configuration module — loads .env variables. Every key the
@@ -187,6 +205,28 @@ import { UsersModule } from './modules/users/users.module';
 
     // Operator administration (admin only)
     UsersModule,
+
+    // ── design_plan.md Appendix A — G01..G20 ──────────────────────────
+    // Identity (G01) and permission enforcement (G03) extend AuthModule /
+    // UsersModule / common guards in place rather than adding a module.
+    // Report lifecycle (G05) extends ReportingModule; durable jobs and
+    // cadence (G07) extend JobsModule / MonitoringModule; contract repair
+    // (G19) is spread across the existing modules it corrects.
+    ClientAccessModule,      // G02
+    BusinessProfileModule,   // G04
+    DeliveryPlanModule,      // G06
+    NotificationsModule,     // G08
+    ContentModule,           // G09
+    ApprovalsModule,         // G10
+    PublishingModule,        // G11
+    BudgetsModule,           // G12
+    ResultsModule,           // G13
+    OperationsModule,        // G14
+    ActivityModule,          // G15
+    BillingModule,           // G16
+    LifecycleModule,         // G17
+    CapabilitiesModule,      // G18
+    OrganizationModule,      // G20
   ],
   providers: [
     {

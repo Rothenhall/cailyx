@@ -26,6 +26,15 @@ export interface PortalReportSummaryDto {
   scoreTotal: number;
   scoreBand: string;
   createdAt: string;
+  /**
+   * G05 — which revision this client-visible report is, and when it was
+   * released to them. Both are release facts read from the frozen revision;
+   * `createdAt` above stays what it always meant (when the content was
+   * assembled), which for a released report is the snapshot's own content
+   * time — not the release time.
+   */
+  revision: number;
+  releasedAt: string | null;
 }
 
 export interface PortalMessageDto {

@@ -41,6 +41,7 @@ import { AgentReadinessCheckService } from './checks/agent-readiness.check';
 import { PageInventoryCheckService } from './checks/page-inventory.check';
 import { AuditNarrativeService } from './checks/audit-narrative.service';
 import { buildComparison, computeDeltas, type ComparableRun } from './technical-audit.deltas';
+import { MAX_PAGE_BUDGET } from './dto/technical-audit.dto';
 import { ISSUE_LABELS } from './checks/seo-rubric';
 import type {
   AuditCheckType,
@@ -84,10 +85,13 @@ export class TechnicalAuditService {
       await this.runAudit(targetUrl, projectId, 'scheduled');
     });
 
-    // Register handler for manually-triggered audits queued via PipelineQueueService
+    // Register handler for manually-triggered audits queued via PipelineQueueService.
+    // `pageBudget` is the operator's per-run override of the page-inventory
+    // crawl depth (G19/D16) — absent for a scheduled run, which falls back to
+    // the configured default.
     this.pipelineQueue.registerHandler('technical-audit', (data: {
-      targetUrl: string; projectId: string; triggeredBy: 'manual' | 'scheduled';
-    }) => this.runAudit(data.targetUrl, data.projectId, data.triggeredBy));
+      targetUrl: string; projectId: string; triggeredBy: 'manual' | 'scheduled'; pageBudget?: number;
+    }) => this.runAudit(data.targetUrl, data.projectId, data.triggeredBy, data.pageBudget));
   }
 
   // Configurable thresholds (P2 #13)
@@ -104,16 +108,40 @@ export class TechnicalAuditService {
   private get maxCostPerRun(): number { return this.configService.get<number>('technicalAudit.maxCostPerRunUsd', 5.0) ?? 5.0; }
 
   /**
+   * The page-inventory crawl depth to actually use for one run.
+   *
+   * A per-run override wins over the configured default, and is clamped to the
+   * same ceiling `RunAuditDto` validates against — the scheduled path calls
+   * `runAudit` directly with no DTO, so the bound has to be re-applied here or
+   * "validated" would only be true on one of the two entry points.
+   */
+  private resolvePageBudget(override?: number): number {
+    if (override === undefined || override === null) return this.pageCrawlBudget;
+    if (!Number.isFinite(override)) return this.pageCrawlBudget;
+    return Math.min(Math.max(Math.trunc(override), 1), MAX_PAGE_BUDGET);
+  }
+
+  /**
    * Run a complete technical audit for a target URL.
    * Executes all 5 checks, captures page metadata, and returns a combined TechnicalAudit.
+   *
+   * @param pageBudget Per-run override of the page-inventory crawl depth
+   *   (G19/D16). Already validated 1–1000 by `RunAuditDto`; clamped again here
+   *   because the scheduled path reaches this method with no DTO in front of
+   *   it. Omitted → the configured `technicalAudit.pageCrawlBudget`.
    */
   async runAudit(
     targetUrl: string,
     projectId: string,
     triggeredBy: 'manual' | 'scheduled' = 'manual',
+    pageBudget?: number,
   ): Promise<TechnicalAudit> {
     const runId = `audit_${Date.now()}`;
-    this.logger.log(`Starting technical audit for ${targetUrl} (run: ${runId})`);
+    const crawlBudget = this.resolvePageBudget(pageBudget);
+    this.logger.log(
+      `Starting technical audit for ${targetUrl} (run: ${runId}, pageBudget: ${crawlBudget}` +
+        `${pageBudget === undefined ? ' — configured default' : ' — per-run override'})`,
+    );
 
     const findings: AuditFinding[] = [];
 
@@ -157,7 +185,7 @@ export class TechnicalAuditService {
     const entries = (sitemap as SitemapAnalysis | null)?.entries ?? [];
     if (entries.length) {
       await run('page-inventory', async () => {
-        const res = await this.pageInventoryCheck.analyze(entries, runId, this.pageCrawlBudget, targetUrl);
+        const res = await this.pageInventoryCheck.analyze(entries, runId, crawlBudget, targetUrl);
         inventory = res.analysis;
         pages = res.pages;
         return this.pageInventoryFinding(res.analysis);

@@ -23,7 +23,7 @@
  * @module clients.service
  */
 
-import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcryptjs from 'bcryptjs';
 import { randomBytes } from 'crypto';
@@ -470,9 +470,25 @@ export class ClientsService {
     return { messages: rows.map((r) => this.toMessageDto(r)) };
   }
 
-  /** Posted by an authenticated OPERATOR — authorType is always "operator" here, never trusted from the caller. */
+  /**
+   * Posted by an authenticated OPERATOR — authorType is always "operator" here,
+   * never trusted from the caller.
+   *
+   * A supplied `projectId` is checked against THIS client before the row is
+   * written (G19/D26). Without that check an operator request — or anything
+   * holding an operator token — could file a message under another client's
+   * project simply by passing its id, and the message would then surface in
+   * that client's portal thread. This mirrors `ClientPortalService.postMessage`
+   * exactly, 403 included, so both write paths answer the same way.
+   */
   async postMessage(clientId: string, operatorUserId: string, dto: { projectId?: string; body: string }): Promise<ClientMessageDto> {
     await this.requireClient(clientId);
+    if (dto.projectId) {
+      const owns = await this.prisma.project.findUnique({ where: { id: dto.projectId }, select: { clientId: true } });
+      if (!owns || owns.clientId !== clientId) {
+        throw new ForbiddenException('That project does not belong to this client');
+      }
+    }
     const row = await this.prisma.clientMessage.create({
       data: { clientId, projectId: dto.projectId ?? null, authorUserId: operatorUserId, authorType: 'operator', body: dto.body },
     });

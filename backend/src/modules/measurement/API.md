@@ -54,3 +54,28 @@ Run with observations ordered by prompt + runNumber. Observation fields:
 
 `shareOfVoice` = presence share of the subject ("(you)") vs every named
 competitor seen in the same observations, subject first. Rates, never positions.
+
+**Cohort (G19/D20).** Without `?runId=` the rates cover every observation stored
+for the project, across all runs and surfaces — a cumulative record, not a
+comparable period. With `?runId=` they cover that one run only, and the run must
+belong to the project in the URL (`404` otherwise — the run id is a filter, not
+a capability).
+
+**Empty cohort.** No observations returns `null` rates, never `0`:
+
+```json
+{
+  "runs": 0,
+  "observations": 0,
+  "mentionRate": null,
+  "citationRate": null,
+  "bySurface": [],
+  "byFunnelStage": [],
+  "shareOfVoice": []
+}
+```
+
+Render that as "Not measured yet" (design_plan §3.3 — empty is not zero). A
+genuine measured zero is different and still reports `0`: a funnel stage with
+`"observations": 5, "mentionRate": 0` means five observations were collected and
+none mentioned the brand.

@@ -4,8 +4,15 @@
  * Reads whatever the pipeline has already produced (score runs, measurement
  * observations, crawler hits), computes deltas between the two latest score
  * runs, raises `Alert` rows on regressions (score-drop / mention-drop beyond
- * thresholds), and registers a `monitoring` scheduled task with the
+ * thresholds), and registers a `monitoring` task handler with the
  * SchedulingService for cadence-driven re-checks (FR-12.1).
+ *
+ * G07 changed exactly one thing here: {@link raise} now goes through
+ * `AlertsService.record`, so a condition that re-fires updates **one**
+ * `AlertLifecycle` row (`occurrences`, `lastSeenAt`) instead of appending
+ * another alert to the feed every night. What this service *detects* is
+ * unchanged — the thresholds, the two-run comparison and the returned array
+ * are the same; only the recording underneath is de-duplicated.
  *
  * @module monitoring.service
  */
@@ -14,6 +21,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { SchedulingService } from '../scheduling/scheduling.service';
 import { CrawlerMonitorService } from '../crawler-monitor/crawler-monitor.service';
+import { AlertsService } from './alerts.service';
 import type { MonitorDelta, MonitorSnapshot } from './monitoring.types';
 
 /** Score-drop alert threshold in points. */
@@ -30,6 +38,7 @@ export class MonitoringService {
     private readonly prisma: PrismaService,
     private readonly crawlerMonitor: CrawlerMonitorService,
     private readonly scheduling: SchedulingService,
+    private readonly alerts: AlertsService,
   ) {
     // Scheduled re-runs (FR-12.1): the monitoring cadence re-checks deltas
     // and raises alerts — reuses the shared BullMQ scheduling infrastructure.
@@ -123,11 +132,15 @@ export class MonitoringService {
   /**
    * Compare the two latest score runs + measurement observation counts and
    * raise alerts on regressions (FR-12.3). Manual or scheduled.
+   *
+   * The returned array is what the check *found* this time, which is not the
+   * same as what was inserted: a regression that is still firing is folded
+   * into the alert already open for it (`AlertsService.record`).
    */
   async checkDeltas(projectId: string): Promise<Array<{ kind: string; severity: string; message: string }>> {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found: ' + projectId);
-    const alerts: Array<{ kind: string; severity: string; message: string }> = [];
+    const alerts: Array<{ kind: string; severity: string; message: string; payload: Record<string, unknown> }> = [];
 
     const scores = await this.prisma.scoreRun.findMany({ where: { projectId }, orderBy: [createdAtOrder], take: 2 });
     if (scores.length === 2) {
@@ -137,6 +150,9 @@ export class MonitoringService {
           kind: 'score-drop',
           severity: drop >= 20 ? 'critical' : 'warning',
           message: 'Visibility score dropped ' + drop + ' points: ' + scores[1].total + ' → ' + scores[0].total,
+          // Provenance: the two runs the comparison used, so the alert can be
+          // traced back to the exact measurements rather than to a sentence.
+          payload: { before: scores[1].total, after: scores[0].total, changePoints: -drop, beforeRunId: scores[1].id, afterRunId: scores[0].id },
         });
       }
     }
@@ -150,14 +166,15 @@ export class MonitoringService {
           kind: 'mention-drop',
           severity: before - after >= 0.3 ? 'critical' : 'warning',
           message: 'Mention rate dropped ' + ((before - after) * 100).toFixed(1) + ' points: ' + (before * 100).toFixed(1) + '% → ' + (after * 100).toFixed(1) + '%',
+          payload: { beforeRate: before, afterRate: after, changePoints: Number(((before - after) * 100).toFixed(1)), beforeRunId: runs[1].id, afterRunId: runs[0].id },
         });
       }
     }
 
     for (const a of alerts) {
-      await this.raise(projectId, a.kind as 'score-drop' | 'mention-drop' | 'scheduled-run-failed', a.severity as 'info' | 'warning' | 'critical', a.message, {});
+      await this.raise(projectId, a.kind as 'score-drop' | 'mention-drop' | 'scheduled-run-failed', a.severity as 'info' | 'warning' | 'critical', a.message, a.payload);
     }
-    return alerts;
+    return alerts.map(({ kind, severity, message }) => ({ kind, severity, message }));
   }
 
   /** List alerts, newest first. */
@@ -178,12 +195,23 @@ export class MonitoringService {
       });
   }
 
-  private async raise(projectId: string, kind: 'score-drop' | 'mention-drop' | 'scheduled-run-failed', severity: 'info' | 'warning' | 'critical', message: string, payload: Record<string, unknown>) {
-    const created = await this.prisma.alert.create({
-      data: { projectId, kind, severity, message, payload: JSON.stringify(payload) },
-    });
-    this.logger.warn('Alert [' + severity + '] ' + kind + ': ' + message);
-    return created;
+  /**
+   * Record a firing of a condition through the de-duplicating ledger.
+   *
+   * `payload` doubles as provenance and as the stable half of the dedupe key:
+   * a payload carrying `subject` identifies which condition fired, so two
+   * different subjects of the same kind stay two alerts while the same subject
+   * re-firing nightly stays one row.
+   */
+  private async raise(
+    projectId: string,
+    kind: 'score-drop' | 'mention-drop' | 'scheduled-run-failed',
+    severity: 'info' | 'warning' | 'critical',
+    message: string,
+    payload: Record<string, unknown>,
+  ) {
+    const { alert } = await this.alerts.record({ projectId, kind, severity, message, payload });
+    return alert;
   }
 }
 

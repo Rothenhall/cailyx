@@ -35,7 +35,11 @@ import { AuthModule } from '../auth/auth.module';
 import { DigitalPresenceModule } from '../digital-presence/digital-presence.module';
 import { CompetitorsModule } from '../competitors/competitors.module';
 import { ReportingService } from './reporting.service';
-import { ReportingController } from './reporting.controller';
+import { ReportLifecycleService } from './report-lifecycle.service';
+import { ReportMigrationController, ReportingController, SharedReportController } from './reporting.controller';
+import { ResultsModule } from '../results/results.module';
+import { ApprovalsModule } from '../approvals/approvals.module';
+import { DeliveryModule } from '../delivery/delivery.module';
 
 @Module({
   imports: [
@@ -46,9 +50,21 @@ import { ReportingController } from './reporting.controller';
     AuthModule,
     DigitalPresenceModule,
     CompetitorsModule,
+    // G13 — provides PeriodService (exact/derived window) and EvidenceService
+    // (the frozen source manifest a report pins).
+    ResultsModule,
+    // G10 — the release gate. `assertReadyToPublish` is called by
+    // ReportLifecycleService before every publication, which is what makes
+    // G10's README claim about report release true.
+    ApprovalsModule,
+    // The existing Plunk adapter, reused rather than re-implemented: a report
+    // delivery attempt sends through the same provider path as
+    // `POST /projects/:id/delivery/send`, and records the outcome in its own
+    // ledger (ReportDeliveryAttempt) instead of inferring anything from it.
+    DeliveryModule,
   ],
-  controllers: [ReportingController],
-  providers: [ReportingService],
-  exports: [ReportingService],
+  controllers: [ReportingController, ReportMigrationController, SharedReportController],
+  providers: [ReportingService, ReportLifecycleService],
+  exports: [ReportingService, ReportLifecycleService],
 })
 export class ReportingModule {}

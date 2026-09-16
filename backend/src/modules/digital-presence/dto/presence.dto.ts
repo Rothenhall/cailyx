@@ -5,6 +5,7 @@
  */
 
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
@@ -53,6 +54,9 @@ export class DiscoverDto {
 /** Paging for the discovery-run history. */
 export class RunHistoryQueryDto {
   @ApiPropertyOptional({ description: 'How many runs to return', default: 10, minimum: 1, maximum: 50 })
+  // Query strings arrive as strings; without this every request
+  // carrying the field fails @IsInt validation.
+  @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(50)
@@ -118,6 +122,9 @@ export class SocialActivityDto {
     minimum: 1,
     maximum: 100,
   })
+  // Query strings arrive as strings; without this every request
+  // carrying the field fails @IsInt validation.
+  @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(100)

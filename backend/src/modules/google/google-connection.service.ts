@@ -140,6 +140,28 @@ export class GoogleConnectionService {
 
   /* ── project → resource mapping ──────────────────────────────────────── */
 
+  /**
+   * Whether the STORED grant for this user + service carries a given scope.
+   *
+   * This answers "what did the operator actually consent to", not "what did we
+   * ask for": `GoogleConnection.scope` is the space-separated list Google
+   * returned on the token response. The two can differ — a grant created
+   * before a scope was added to {@link GOOGLE_SCOPES} carries only the old
+   * set — and a write that needs the missing scope has to say so rather than
+   * let Google answer 403 (G19/D17).
+   *
+   * Returns false for a service that is not connected at all; callers that
+   * need to distinguish that case should call `accessTokenFor` first.
+   */
+  async hasGrantedScope(userId: string, service: GoogleService, scope: string): Promise<boolean> {
+    const row = await this.prisma.googleConnection.findUnique({
+      where: { userId_service: { userId, service } },
+      select: { scope: true },
+    });
+    if (!row) return false;
+    return row.scope.split(/\s+/).filter(Boolean).includes(scope);
+  }
+
   async getProjectResource(
     projectId: string,
     service: GoogleService,

@@ -72,3 +72,60 @@ MEASUREMENT_MAX_COST_PER_RUN=5.00
 - summary → `citationRate 1.0`, shareOfVoice entries, per-surface + per-funnel-stage breakdowns
 - re-execute a `completed` run → **409**
 - unknown surface → 400 (DTO whitelist)
+
+## G19/D20 — empty is unmeasured, and the cohort is named (2026-09-16)
+
+`GET /api/projects/:projectId/measurement/summary` had two defects, one of them
+a real access-control gap.
+
+**1. An empty cohort reported `0`, not "unmeasured".** With no observations the
+service returned `mentionRate: 0, citationRate: 0`. Rendered, that reads as
+"measured — the brand is never mentioned", which is a claim the data does not
+support (design_plan §3.3: empty is not zero).
+
+| | before | after |
+|---|---|---|
+| `observations: 0` | `mentionRate: 0`, `citationRate: 0` | `mentionRate: null`, `citationRate: null` |
+| breakdown arrays | `[]` | `[]` (unchanged — no cohort, no groups) |
+| `MeasurementSummary` type | `mentionRate: number` | `number \| null` |
+
+The per-surface / per-funnel-stage entries keep non-null rates: a group only
+exists because an observation landed in it, so its denominator is never zero.
+
+One backend consumer read those fields — `ScoringService.evalShortlist` now
+also checks `summary.mentionRate !== null` before multiplying it. Its behaviour
+is unchanged (it was already gated on `observations > 0`); the extra check is
+what tells the compiler the value is measured.
+
+**2. `?runId=` was not validated against the project.** `summary(projectId,
+runId)` used `where: { runId }` with no ownership check, so a run id belonging
+to another project returned *that* project's observations under this project's
+URL. `runId` is a filter, not a capability: it is now resolved with
+`findFirst({ where: { id: runId, projectId } })` and a miss is a 404, matching
+every other nested id in this module. The surface breakdown is scoped to the
+requested run for the same reason.
+
+**Cohort, stated rather than implied.** The default (no `runId`) pools every
+observation the project has ever stored, across runs and surfaces — a
+cumulative record, not a like-for-like period. With `runId` it is one run's
+observations (one query set, one surface, one geo, one point in time). Both
+shapes are documented on `MeasurementSummary` and on the route, because two
+callers reading "mention rate" with different cohorts must not compare them.
+
+Note `runs` counts every measurement run for the project regardless of status;
+it is not the number of runs the summary aggregated (that is what the
+`observations` count is for). Documented on the field.
+
+**Verified live** (booted backend, dev DB):
+
+| call | result |
+|---|---|
+| `GET /measurement/summary` on a project with 24 observations | `mentionRate 0.4583`, `citationRate 0.0833` — unchanged behaviour for a real cohort |
+| `GET /measurement/summary` on a project with no runs | `{"runs":0,"observations":0,"mentionRate":null,"citationRate":null,"bySurface":[],"byFunnelStage":[],"shareOfVoice":[]}` |
+| `GET /measurement/summary?runId=<a run of ANOTHER project>` | `404 Run not found in this project` (previously returned that project's observations) |
+| `GET /measurement/summary?runId=does-not-exist` | `404 Run not found in this project` |
+| `GET /measurement/summary?runId=<own run>` | `200`, `observations 24`, same rates as the pooled call for this single-run project |
+
+A measured zero is still a zero: the same project's `product-aware` funnel stage
+reports `observations: 5, mentionRate: 0` — five observations, none mentioning
+the brand. That is the case the nullable rate is *not* for.

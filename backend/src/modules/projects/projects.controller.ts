@@ -39,11 +39,20 @@ export class ProjectsController {
 
   /**
    * List projects with optional status filter and text search.
+   *
+   * The 200 response is a **wrapper object**, not a bare array — G19/D12.
+   * The checked-in `openapi.json` describes the array form; the response
+   * shape is deliberately left alone (a frontend normalizes the wrapper) and
+   * the annotation is corrected to match what is actually sent instead.
    */
   @Get()
   @ApiOperation({ summary: 'List projects', description: 'Filter by status, search across name/domain/clientName.' })
   @ApiQuery({ name: 'status', required: false, enum: ['scorecard', 'diagnostic', 'sprint', 'retainer', 'archived'] })
   @ApiQuery({ name: 'search', required: false })
+  @ApiResponse({
+    status: 200,
+    description: '{ projects: Project[] } — a wrapper object, not a bare array. An empty result is `{ projects: [] }`, which is "no project matched", not "nothing exists".',
+  })
   async list(@Query('status') status?: string, @Query('search') search?: string) {
     return this.projectsService.list({ status, search });
   }

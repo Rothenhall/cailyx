@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  {{#if_eq report.visibility "private"}}<meta name="robots" content="noindex, nofollow">{{/if_eq}}
-  <title>{{report.title}} — AI Visibility Diagnostic</title>
+  {{#if document.noindex}}<meta name="robots" content="noindex, nofollow">{{/if}}
+  <title>{{document.cover.title}} — AI Visibility Diagnostic</title>
   <style>
     :root{
       --canvas:#f7f3ea; --paper:#fbf9f3; --ink:#1a1712;
@@ -20,7 +20,6 @@
     .eyebrow{font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent-deep); margin:0 0 6px}
     h1{font-size:28px; margin:0 0 4px; font-weight:500}
     .url{color:var(--ink-60); font-size:14px}
-    .brand{float:right; text-align:right; font-size:13px; color:var(--ink-60)}
     .band{display:inline-block; padding:2px 12px; border-radius:12px; font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; margin-left:8px}
     .band-recommended{background:#e5ecdb; color:var(--good)}
     .band-present{background:#f4ecd8; color:#8a6d1f}
@@ -42,17 +41,21 @@
     table{width:100%; border-collapse:collapse; font-size:14px; margin-bottom:12px}
     th,td{text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top}
     th{font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-60)}
-    .status-pass{color:var(--good); font-weight:600}
-    .status-fail{color:var(--bad); font-weight:600}
-    .status-error{color:var(--accent-deep); font-weight:600}
-    .status-confirmed{color:var(--good); font-weight:600}
-    .status-unverified{color:var(--warn); font-weight:600}
-    .status-missing{color:var(--ink-60)}
+    /* Value tones come from the shared document model, so a status is coloured
+       by the same decision in the HTML page and in the PDF. */
+    .tone-good{color:var(--good); font-weight:600}
+    .tone-bad{color:var(--bad); font-weight:600}
+    .tone-warn{color:var(--accent-deep); font-weight:600}
+    .tone-muted{color:var(--ink-60)}
+    .tone-accent{color:var(--accent-deep); font-weight:600}
+    .tone-default{color:var(--ink)}
+    .note{font-size:13px; color:var(--ink-60)}
+    .partial{color:var(--accent-deep)}
+    .index{margin:0 0 12px; padding-left:20px}
+    .index li{font-size:14px}
+    .index .missing{color:var(--ink-60)}
     .pill{display:inline-block; background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:1px 9px; font-size:12px; margin:2px 4px 2px 0}
     .pill-gap{border-color:var(--bad); color:var(--bad)}
-    .sev-high{color:var(--bad)}
-    .sev-medium{color:var(--accent-deep)}
-    .sev-low{color:var(--ink-60)}
     .fix{font-size:13px; color:var(--ink-60)}
     pre.repro{background:#201c15; color:#e8dfc8; padding:12px; border-radius:6px; font-size:12px; overflow-x:auto}
     details{margin-bottom:8px}
@@ -67,148 +70,205 @@
 <body>
 <div class="wrap">
   <header>
-    <p class="eyebrow">{{branding.orgName}} — AI Visibility Diagnostic</p>
-    <h1>{{report.title}}
-      <span class="band band-{{report.scoreBand}}">{{report.scoreBand}}</span>
+    <p class="eyebrow">{{document.cover.orgName}} — AI Visibility Diagnostic</p>
+    <h1>{{document.cover.title}}
+      <span class="band band-{{document.cover.band}}">{{document.cover.band}}</span>
     </h1>
-    <div class="url">{{report.targetUrl}}</div>
+    <div class="url">{{document.cover.targetUrl}}</div>
   </header>
 
   <div class="score-hero">
     <div class="dial">
-      <div class="dial-num">{{report.scoreTotal}}</div>
+      <div class="dial-num">{{document.score.total}}</div>
       <div class="dial-cap">of 100</div>
     </div>
-    <div class="summary">{{report.executiveSummary}}</div>
+    <div class="summary">{{document.executiveSummary}}</div>
   </div>
 
-  <h2>Score breakdown</h2>
+  {{#if document.cover.releaseLine}}
+  <p class="note">{{document.cover.releaseLine}}</p>
+  {{/if}}
+
+  {{#if document.sectionIndex}}
+  <h2>Contents</h2>
+  <ol class="index">
+    {{#each document.sectionIndex}}
+    <li><a href="#{{anchor}}">{{title}}</a>{{#unless present}} <span class="missing">— not included in this report</span>{{/unless}}</li>
+    {{/each}}
+  </ol>
+  {{/if}}
+
+  {{! ── Score breakdown (every view) ───────────────────────────── }}
+  {{#if_eq document.decisions.scoreBreakdown.mode "body"}}
+  <h2 id="section-scoreBreakdown">Score breakdown</h2>
+  <p class="note">{{document.score.provenanceNote}}</p>
   <div class="sub-scores">
-    {{#each report.subScores}}
+    {{#each document.score.subScores}}
     <div class="sub">
-      <div class="dim">{{dimension}} · {{weight}} pts</div>
-      <div class="val">{{value}}</div>
-      <div class="bar"><span style="width:{{value}}%"></span></div>
+      <div class="dim">{{dimension}} · {{weightLabel}}</div>
+      <div class="val">{{valueLabel}}</div>
+      <div class="bar"><span style="width:{{barPercent}}%"></span></div>
+      <div class="ev">Contribution: {{contributionLabel}}</div>
       <div class="ev">{{#each evidence}}- {{this}}
 {{/each}}</div>
+      {{#if partialNote}}<div class="ev partial">{{partialNote}}</div>{{/if}}
     </div>
     {{/each}}
   </div>
+  <p class="note">{{document.score.bandNote}}</p>
+  {{/if_eq}}
 
-  {{#if_eq view "detailed"}}
-  <h2>Findings</h2>
+  {{! ── Findings ──────────────────────────────────────────────── }}
+  {{#if_eq document.decisions.findings.mode "omit"}}{{else}}
+  <h2 id="section-findings">Findings</h2>
+  {{#if_eq document.decisions.findingsTable.mode "note"}}
+  <p class="note">{{document.decisions.findingsTable.note}}</p>
+  {{/if_eq}}
+  {{#if_eq document.decisions.findingsTable.mode "body"}}
   <table>
     <thead><tr><th>Check</th><th>Status</th><th>Severity</th><th>Confidence</th></tr></thead>
     <tbody>
-    {{#each report.findings}}
+    {{#each document.findings}}
       <tr>
-        <td><strong>{{type}}</strong><div class="fix">{{recommendedFix}}</div>
-          {{#if reproductionCommands}}
+        <td><strong>{{label}}</strong><div class="fix">{{recommendedFix}}</div>
+          {{#if reproduction}}
           <details><summary>Reproduce</summary>
-            {{#each reproductionCommands}}
-            <pre class="repro">{{this.command}}  # {{this.expectedResult}}</pre>
+            {{#each reproduction}}
+            <pre class="repro">{{command}}  # {{expectedResult}}  (bot: {{bot}})</pre>
             {{/each}}
           </details>
           {{/if}}
         </td>
-        <td class="status-{{status}}">{{status}}</td>
-        <td class="sev-{{severity}}">{{severity}}</td>
+        <td class="tone-{{statusTone}}">{{status}}</td>
+        <td class="tone-{{severityTone}}">{{severity}}</td>
         <td>{{confidence}}</td>
       </tr>
     {{/each}}
     </tbody>
   </table>
+  {{/if_eq}}
+  {{/if_eq}}
 
-  <h2>Roadmap</h2>
+  {{! ── Roadmap ───────────────────────────────────────────────── }}
+  {{#if_eq document.decisions.roadmap.mode "omit"}}{{else}}
+  <h2 id="section-roadmap">Roadmap</h2>
+  {{#if_eq document.decisions.roadmapTable.mode "note"}}
+  <p class="note">{{document.decisions.roadmapTable.note}}</p>
+  {{/if_eq}}
+  {{#if_eq document.decisions.roadmapTable.mode "body"}}
   <table>
     <thead><tr><th>Action</th><th>Dimension</th><th>Item</th><th>Priority</th><th>Status</th></tr></thead>
     <tbody>
-    {{#each report.roadmap}}
+    {{#each document.roadmap}}
       <tr>
         <td>{{action}}</td>
         <td>{{dimension}}</td>
         <td><strong>{{title}}</strong><div class="fix">{{description}}</div></td>
-        <td>{{#if priorityScore}}{{priorityScore}}{{else}}<span class="sev-low">set inputs</span>{{/if}}</td>
-        <td>{{status}}</td>
+        <td class="{{#unless prioritySet}}tone-muted{{/unless}}">{{priorityLabel}}</td>
+        <td class="tone-{{statusTone}}">{{status}}</td>
       </tr>
     {{/each}}
-    {{#unless report.roadmap}}
-      <tr><td colspan="5" class="sev-low">No roadmap items — run gap-analysis sync and technical audit first.</td></tr>
-    {{/unless}}
     </tbody>
   </table>
+  {{/if_eq}}
+  {{/if_eq}}
 
-  <h2>Social &amp; Directory Presence</h2>
-  {{#if report.presence}}
+  {{! ── Social & directory presence ───────────────────────────── }}
+  {{#if_eq document.decisions.presence.mode "omit"}}{{else}}
+  <h2 id="section-presence">Social &amp; Directory Presence</h2>
+  {{#if_eq document.decisions.presence.mode "note"}}
+  <p class="note">{{document.decisions.presence.note}}</p>
+  {{/if_eq}}
+  {{#if_eq document.decisions.presence.mode "body"}}
   <div class="sub-scores">
-    <div class="sub"><div class="dim">Confirmed</div><div class="val">{{report.presence.counts.confirmed}}</div></div>
-    <div class="sub"><div class="dim">Unverified</div><div class="val">{{report.presence.counts.unverified}}</div></div>
-    <div class="sub"><div class="dim">Social accounts</div><div class="val">{{report.presence.counts.social}}</div></div>
-    <div class="sub"><div class="dim">Directory / listing</div><div class="val">{{report.presence.counts.listing}}</div></div>
+    {{#each document.presence.metrics}}
+    <div class="sub">
+      <div class="dim">{{label}}</div>
+      <div class="val{{#unless measured}} tone-muted{{/unless}}">{{value}}</div>
+      {{#if unit}}<div class="ev">{{unit}}</div>{{/if}}
+    </div>
+    {{/each}}
   </div>
-  {{#if report.presence.accounts}}
+  {{#if document.presence.lastRunNote}}<p class="note">{{document.presence.lastRunNote}}</p>{{/if}}
+  {{#if_eq document.decisions.presenceAccounts.mode "note"}}
+  <p class="note">{{document.decisions.presenceAccounts.note}}</p>
+  {{/if_eq}}
+  {{#if_eq document.decisions.presenceAccounts.mode "body"}}
   <table>
     <thead><tr><th>Platform</th><th>Status</th><th>Handle</th><th>Note</th></tr></thead>
     <tbody>
-    {{#each report.presence.accounts}}
+    {{#each document.presence.accounts}}
       <tr>
         <td><strong>{{label}}</strong><div class="fix">{{group}}</div></td>
-        <td class="status-{{state}}">{{state}}{{#if_eq nameConsistency "mismatch"}} <span class="sev-medium">· name mismatch</span>{{/if_eq}}</td>
-        <td>{{#if handle}}@{{handle}}{{else}}—{{/if}}</td>
-        <td class="fix">{{#if reason}}{{reason}}{{else}}{{sourceLabel}}{{/if}}</td>
+        <td class="tone-{{stateTone}}">{{state}}{{#if nameMismatch}} <span class="tone-accent">· name mismatch</span>{{/if}}</td>
+        <td>{{handleLabel}}</td>
+        <td class="fix">{{note}}</td>
       </tr>
     {{/each}}
     </tbody>
   </table>
-  {{else}}
-  <p class="sev-low">No accounts discovered yet.</p>
-  {{/if}}
-  {{#if report.presence.gaps}}
+  {{/if_eq}}
+  {{#if_eq document.decisions.presenceGaps.mode "note"}}
+  <p class="note">{{document.decisions.presenceGaps.note}}</p>
+  {{/if_eq}}
+  {{#if_eq document.decisions.presenceGaps.mode "body"}}
   <p>Expected but not found:
-    {{#each report.presence.gaps}}<span class="pill pill-gap">{{label}}</span>{{/each}}
+    {{#each document.presence.gaps}}<span class="pill pill-gap">{{this}}</span>{{/each}}
   </p>
-  {{/if}}
-  {{else}}
-  <p class="sev-low">No digital-presence discovery run yet for this project.</p>
-  {{/if}}
+  {{/if_eq}}
+  {{/if_eq}}
+  {{/if_eq}}
 
-  <h2>Competitor Landscape</h2>
-  {{#if report.competitors}}
-  <p class="fix">Your homepage SEO score: <strong>{{report.competitors.seo.client.score}}</strong>{{#if report.competitors.seo.client.issues}} — issues: {{#each report.competitors.seo.client.issues}}{{this}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}</p>
-  {{#if report.competitors.presence.competitorsOnly}}
+  {{! ── Competitor landscape ──────────────────────────────────── }}
+  {{#if_eq document.decisions.competitors.mode "omit"}}{{else}}
+  <h2 id="section-competitors">Competitor Landscape</h2>
+  {{#if_eq document.decisions.competitors.mode "note"}}
+  <p class="note">{{document.decisions.competitors.note}}</p>
+  {{/if_eq}}
+  {{#if_eq document.decisions.competitors.mode "body"}}
+  <p class="fix">Your homepage SEO score: <strong>{{document.competitors.clientSeoLabel}}</strong>{{#if document.competitors.clientIssues}} — issues: {{#each document.competitors.clientIssues}}{{this}}{{#unless @last}}, {{/unless}}{{/each}}{{/if}}</p>
+  {{#if_eq document.decisions.competitorsOnly.mode "body"}}
   <p>Platforms where a tracked competitor has a presence and you don't:
-    {{#each report.competitors.presence.competitorsOnly}}
-      {{#unless client}}<span class="pill pill-gap">{{key}}</span>{{/unless}}
-    {{/each}}
+    {{#each document.competitors.competitorsOnly}}<span class="pill pill-gap">{{this}}</span>{{/each}}
   </p>
-  {{/if}}
-  {{#if report.competitors.competitors}}
+  {{/if_eq}}
+  {{#if_eq document.decisions.competitorsTable.mode "note"}}
+  <p class="note">{{document.decisions.competitorsTable.note}}</p>
+  {{/if_eq}}
+  {{#if_eq document.decisions.competitorsTable.mode "body"}}
   <table>
     <thead><tr><th>Competitor</th><th>SEO score</th><th>Top issues</th><th>Found on</th></tr></thead>
     <tbody>
-    {{#each report.competitors.competitors}}
+    {{#each document.competitors.rows}}
       <tr>
         <td><strong>{{name}}</strong><div class="fix">{{domain}}</div></td>
-        <td>{{#if seoScore}}{{seoScore}}{{else}}<span class="sev-low">n/a</span>{{/if}}</td>
-        <td class="fix">{{#each seoIssues}}{{this}}{{#unless @last}}, {{/unless}}{{/each}}</td>
+        <td>{{seoScoreLabel}}</td>
+        <td class="fix">{{seoIssues}}</td>
         <td>{{#each presencePlatforms}}<span class="pill">{{this}}</span>{{/each}}</td>
       </tr>
     {{/each}}
     </tbody>
   </table>
-  {{else}}
-  <p class="sev-low">No tracked competitors profiled yet.</p>
-  {{/if}}
-  {{else}}
-  <p class="sev-low">No competitor data yet — add competitors to this project and run discovery first.</p>
-  {{/if}}
+  {{/if_eq}}
+  <p class="note">{{document.competitors.provenanceNote}}</p>
+  {{/if_eq}}
+  {{/if_eq}}
 
-  <h2>Prioritized Growth Roadmap</h2>
-  {{#if report.growthPlan.actionPlan}}
+  {{! ── Prioritized growth roadmap ────────────────────────────── }}
+  {{#if_eq document.decisions.growthPlan.mode "omit"}}{{else}}
+  <h2 id="section-growthPlan">Prioritized Growth Roadmap</h2>
+  {{#if_eq document.decisions.growthPlan.mode "note"}}
+  <p class="note">{{document.decisions.growthPlan.note}}</p>
+  {{/if_eq}}
+  {{#if_eq document.decisions.growthPlan.mode "body"}}
+  {{#if_eq document.decisions.growthPlanActionPlan.mode "note"}}
+  <p class="note">{{document.decisions.growthPlanActionPlan.note}}</p>
+  {{/if_eq}}
+  {{#if_eq document.decisions.growthPlanActionPlan.mode "body"}}
   <table>
     <thead><tr><th>Priority</th><th>Recommended Action</th><th>Quick wins</th><th>Major projects</th></tr></thead>
     <tbody>
-    {{#each report.growthPlan.actionPlan.recommendations}}
+    {{#each document.growthPlan.actionPlan}}
       <tr>
         <td>{{priorityRank}}</td>
         <td><strong>{{title}}</strong><div class="fix">{{summary}}</div></td>
@@ -218,74 +278,74 @@
     {{/each}}
     </tbody>
   </table>
-  {{#if report.growthPlan.actionPlan.notCovered}}
-  <p class="sev-low">No open gap in: {{#each report.growthPlan.actionPlan.notCovered}}{{this}}{{#unless @last}}, {{/unless}}{{/each}}.</p>
+  {{/if_eq}}
+  {{#if document.growthPlan.notCovered}}
+  <p class="note">No open gap in: {{#each document.growthPlan.notCovered}}{{this}}{{#unless @last}}, {{/unless}}{{/each}}.</p>
   {{/if}}
-  {{else}}
-  <p class="sev-low">No action plan built yet — POST /projects/:id/strategy/build first.</p>
+  {{#if document.growthPlan.actionPlanUpdatedAt}}
+  <p class="note">Action plan built {{document.growthPlan.actionPlanUpdatedAt}}.</p>
   {{/if}}
 
-  {{#if report.growthPlan.findingsCopy}}
-  <h2>Issue + Evidence (detailed)</h2>
-  {{#each report.growthPlan.findingsCopy}}
+  {{#if_eq document.decisions.growthPlanFindingsCopy.mode "body"}}
+  <h3>Issue + Evidence (detailed)</h3>
+  {{#each document.growthPlan.findingsCopy}}
   <div class="ev">
-    <strong>{{title}}</strong>{{#if thinRun}} <span class="sev-medium">(thin evidence)</span>{{/if}}
+    <strong>{{title}}</strong>{{#if thinRun}} <span class="tone-accent">(thin evidence)</span>{{/if}}
     <p>{{whatExecutive}}</p>
     <p><em>Why:</em> {{whyExecutive}}</p>
     <p><em>Fix (implementation guidance):</em> {{fixExecutive}}</p>
+    {{#if disclosedGap}}<p class="note">Disclosed gap: {{disclosedGap}}</p>{{/if}}
   </div>
   {{/each}}
+  {{/if_eq}}
+
+  {{#if document.growthPlan.assetsNote}}<p class="note">{{document.growthPlan.assetsNote}}</p>{{/if}}
+  {{/if_eq}}
+  {{/if_eq}}
+
+  {{! ── Backlinks ─────────────────────────────────────────────── }}
+  {{#if_eq document.decisions.backlinks.mode "omit"}}{{else}}
+  <h2 id="section-backlinks">Backlinks</h2>
+  {{#if_eq document.decisions.backlinks.mode "note"}}
+  <p class="note">{{document.decisions.backlinks.note}}</p>
+  {{/if_eq}}
+  {{#if_eq document.decisions.backlinks.mode "body"}}
+  {{#if document.backlinks.statusNote}}
+  <p class="note tone-{{document.backlinks.statusTone}}">{{document.backlinks.statusNote}}</p>
   {{/if}}
-
-  <p class="sev-low">{{report.growthPlan.assetsNote}}</p>
-
-  <h2>Backlinks</h2>
-  {{#if report.backlinks}}
-  {{#if_eq report.backlinks.status "failed"}}
-  <p class="sev-low">Backlinks pull failed: {{report.backlinks.error}}</p>
-  {{else}}
+  {{#if_eq document.decisions.backlinksMetrics.mode "body"}}
   <div class="sub-scores">
-    <div class="sub"><div class="dim">Referring Domains</div><div class="val">{{report.backlinks.referringDomains}}</div></div>
-    <div class="sub"><div class="dim">Total Backlinks</div><div class="val">{{report.backlinks.backlinks}}</div></div>
-    <div class="sub"><div class="dim">Rank</div><div class="val">{{report.backlinks.rank}}</div></div>
-    <div class="sub"><div class="dim">Spam Score</div><div class="val">{{report.backlinks.backlinksSpamScore}}</div></div>
-    <div class="sub"><div class="dim">Broken Backlinks</div><div class="val">{{report.backlinks.brokenBacklinks}}</div></div>
-    <div class="sub"><div class="dim">Referring IPs / Subnets</div><div class="val">{{report.backlinks.referringIps}} / {{report.backlinks.referringSubnets}}</div></div>
+    {{#each document.backlinks.metrics}}
+    <div class="sub">
+      <div class="dim">{{label}}</div>
+      <div class="val{{#unless measured}} tone-muted{{/unless}}">{{value}}</div>
+      {{#if unit}}<div class="ev">{{unit}}</div>{{/if}}
+    </div>
+    {{/each}}
   </div>
-  {{#if report.backlinks.topBacklinks}}
+  {{/if_eq}}
+  {{#if_eq document.decisions.backlinksTop.mode "body"}}
   <table>
     <thead><tr><th>Source</th><th>Anchor</th><th>Follow</th><th>Domain Rank</th><th>First Seen</th></tr></thead>
     <tbody>
-    {{#each report.backlinks.topBacklinks}}
+    {{#each document.backlinks.top}}
       <tr>
         <td>{{urlFrom}}</td>
-        <td>{{anchor}}</td>
-        <td>{{#if dofollow}}dofollow{{else}}<span class="sev-medium">nofollow</span>{{/if}}</td>
-        <td>{{domainFromRank}}</td>
-        <td>{{firstSeen}}</td>
+        <td>{{anchorLabel}}</td>
+        <td class="tone-{{followTone}}">{{followLabel}}</td>
+        <td>{{domainRankLabel}}</td>
+        <td>{{firstSeenLabel}}</td>
       </tr>
     {{/each}}
     </tbody>
   </table>
-  {{/if}}
-  {{#if_eq report.backlinks.status "partial"}}
-  <p class="sev-low">{{report.backlinks.error}}</p>
   {{/if_eq}}
+  <p class="note">{{document.backlinks.provenanceNote}}</p>
   {{/if_eq}}
-  {{else}}
-  <p class="sev-low">No backlinks data yet — POST /projects/:id/backlinks/refresh first.</p>
-  {{/if}}
-  {{/if_eq}}
-
-  {{#if_eq view "executive"}}
-    <p><a href="?view=detailed">View detailed report</a></p>
-  {{else}}
-    <p><a href="?view=executive">Back to executive view</a></p>
   {{/if_eq}}
 
   <footer>
-    Generated {{createdAt}} · Report slug: {{report.slug}} · {{branding.tagline}}
-    <br>Reproduction commands included per PRD FR-2.6. noindex applied for private reports (FR-10.5).
+    {{#each document.footer.lines}}{{this}}<br>{{/each}}
   </footer>
 </div>
 </body>

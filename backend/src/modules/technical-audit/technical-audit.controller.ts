@@ -24,6 +24,8 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { AuthedRequestUser } from '../auth/strategies/jwt.strategy';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { TechnicalAuditService } from './technical-audit.service';
@@ -31,6 +33,7 @@ import { RunAuditDto, SetScheduleDto } from './dto/technical-audit.dto';
 import { PrismaService } from '../database/prisma.service';
 import { SchedulingService } from '../scheduling/scheduling.service';
 import { PipelineQueueService } from '../jobs/pipeline-queue.service';
+import { ScopeValidationService } from '../../common/guards/scope-validation.service';
 
 @ApiTags('Technical Audit')
 @Controller('projects/:projectId/technical-audit')
@@ -40,6 +43,7 @@ export class TechnicalAuditController {
     private readonly prisma: PrismaService,
     private readonly scheduling: SchedulingService,
     private readonly pipelineQueue: PipelineQueueService,
+    private readonly scope: ScopeValidationService,
   ) {}
 
   /**
@@ -55,33 +59,64 @@ export class TechnicalAuditController {
   @Throttle({ default: { ttl: 60000, limit: 3 } })
   @ApiOperation({
     summary: 'Queue a technical audit',
-    description: 'Queues all 5 checks (robots.txt, CDN probe, JS render, CWV, schema) on the background pipeline. Returns a jobId immediately — poll GET run/jobs/:jobId for status and, once completed, the result. Rate-limited to 3/minute.',
+    description: 'Queues all 5 checks (robots.txt, CDN probe, JS render, CWV, schema) on the background pipeline. Returns a jobId immediately — poll GET run/jobs/:jobId for status and, once completed, the result. Rate-limited to 3/minute. `pageBudget` (optional, 1-1000) sets the page-inventory crawl depth for THIS run; omit it to use the server default.',
   })
   @ApiBody({ type: RunAuditDto })
-  @ApiResponse({ status: 202, description: 'Audit queued' })
-  @ApiResponse({ status: 400, description: 'Invalid URL — must be a valid http(s) URL' })
+  @ApiResponse({ status: 202, description: '{ jobId, projectId, targetUrl, pageBudget, status: "queued" }. pageBudget is the per-run crawl depth the job was queued with, or null when this run uses the server default.' })
+  @ApiResponse({ status: 400, description: 'Invalid URL — must be a valid http(s) URL. Also when the project has no domain and no targetUrl was supplied.' })
   @ApiResponse({ status: 429, description: 'Too many audit runs — rate limited to 3/minute' })
   async runAudit(
     @Param('projectId') projectId: string,
     @Body() body: RunAuditDto,
   ) {
     const targetUrl = await this.resolveTarget(projectId, body.targetUrl);
+    // `pageBudget` is forwarded into the job data — the worker reads it back out
+    // and applies it to this run's page-inventory crawl. Before G19/D16 it was
+    // validated here and then dropped, so the control did nothing at all.
     const { jobId } = await this.pipelineQueue.enqueue(
       'technical-audit',
-      { targetUrl, projectId, triggeredBy: 'manual' },
+      {
+        targetUrl,
+        projectId,
+        triggeredBy: 'manual',
+        ...(body.pageBudget !== undefined ? { pageBudget: body.pageBudget } : {}),
+      },
       { attempts: 2, backoff: { type: 'exponential', delay: 30000 } },
     );
-    return { jobId, projectId, targetUrl, status: 'queued' };
+    return {
+      jobId,
+      projectId,
+      targetUrl,
+      // Echoed so the caller can confirm the override was taken rather than
+      // assume it. `null` means this run uses the configured default.
+      pageBudget: body.pageBudget ?? null,
+      status: 'queued',
+    };
   }
 
   /**
    * Poll the status of a queued technical audit job.
+   *
+   * The job is looked up by id and then checked against the URL's
+   * `:projectId` — a job id is not a capability, so a foreign id in an
+   * otherwise valid project URL must be denied rather than served
+   * (design_plan G03, line 1613). A mismatch returns 404, the same as an
+   * unknown id, so the response cannot be used to probe for which job ids
+   * exist elsewhere.
    */
   @Get('run/jobs/:jobId')
   @ApiOperation({ summary: 'Get the status of a queued technical audit job' })
   @ApiResponse({ status: 200, description: 'Job status — waiting/active/completed/failed, with result or error' })
-  async getRunJob(@Param('jobId') jobId: string) {
-    return this.pipelineQueue.getStatus(jobId);
+  @ApiResponse({ status: 404, description: 'Job does not exist, or belongs to a different project' })
+  async getRunJob(
+    @CurrentUser() user: AuthedRequestUser,
+    @Param('projectId') projectId: string,
+    @Param('jobId') jobId: string,
+  ) {
+    await this.scope.assertProjectAccess(user, projectId);
+    const status = await this.pipelineQueue.getStatus(jobId);
+    this.scope.assertJobBelongsToProject(status, projectId, 'Audit job');
+    return status;
   }
 
   /**

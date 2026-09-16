@@ -1,15 +1,18 @@
 /**
  * Google Search Console — Search Analytics API (v3).
  *
- * Read-only. `listSites` feeds the resource picker; `summary` pulls the
- * headline clicks / impressions / CTR / position for a project's mapped site
- * plus its top queries and pages over a rolling window.
+ * Reads: `listSites` feeds the resource picker; `summary` pulls the headline
+ * clicks / impressions / CTR / position for a project's mapped site plus its
+ * top queries and pages over a rolling window. One write: `submitSitemap`
+ * re-submits the property's sitemaps, which needs the read/write `webmasters`
+ * scope (G19/D17).
  *
  * @module google/search-console.service
  */
 
-import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
+import { BadGatewayException, ConflictException, Injectable, Logger } from '@nestjs/common';
 import { GoogleConnectionService } from './google-connection.service';
+import { GSC_SCOPE_READWRITE } from './google.types';
 import type { DateWindow, GoogleResourceOption, SearchConsoleSummary } from './google.types';
 
 const API = 'https://searchconsole.googleapis.com/webmasters/v3';
@@ -214,10 +217,27 @@ export class SearchConsoleService {
     }));
   }
 
-  /** Re-submit a sitemap so Google recrawls it. This is one thing Cailyx can
-      actually *do* about discovery, rather than only advise. */
+  /**
+   * Re-submit a sitemap so Google recrawls it. This is one thing Cailyx can
+   * actually *do* about discovery, rather than only advise.
+   *
+   * `sitemaps.submit` is a `PUT`, so it needs the read/write `webmasters`
+   * scope — a grant holding only `webmasters.readonly` (every connection made
+   * before G19/D17) cannot call it. That is checked here rather than left for
+   * Google to answer with a 403, because the operator's fix (reconnect Search
+   * Console and accept the write scope) is not derivable from a 403.
+   */
   async submitSitemap(userId: string, siteUrl: string, feedpath: string): Promise<void> {
+    // Token first: it throws the accurate "not connected / authorisation
+    // expired" error, so the scope message below is only ever reached when a
+    // usable grant exists and the question really is what it grants.
     const token = await this.connections.accessTokenFor(userId, 'search-console');
+    if (!(await this.connections.hasGrantedScope(userId, 'search-console', GSC_SCOPE_READWRITE))) {
+      throw new ConflictException(
+        'The connected Search Console grant is read-only, so Cailyx cannot submit sitemaps. ' +
+          'Reconnect Search Console from this project\'s connections screen to grant write access.',
+      );
+    }
     const res = await fetch(
       `${API}/sites/${encodeURIComponent(siteUrl)}/sitemaps/${encodeURIComponent(feedpath)}`,
       { method: 'PUT', headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) },

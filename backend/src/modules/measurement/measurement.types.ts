@@ -88,13 +88,41 @@ export interface CreateRunInput {
   runCount?: number;
 }
 
-/** Aggregated metric block (share-of-voice + rates, PRD FR-6.x / FR-7). */
+/**
+ * Aggregated metric block (share-of-voice + rates, PRD FR-6.x / FR-7).
+ *
+ * **Cohort.** These figures are computed over a selection of observations, and
+ * the selection changes what they mean:
+ *
+ * - no `?runId=` → every observation stored for the project, across every run,
+ *   surface and geo. This is the project's cumulative record; it is NOT a
+ *   comparable cohort and must not be compared period-over-period, because
+ *   between two calls the mix of surfaces and prompts can change underneath it.
+ * - `?runId=` → the observations of that one run, which is a comparable cohort
+ *   (one query set, one surface, one geo, one point in time).
+ *
+ * `bySurface` / `byFunnelStage` break the same selection down, so a caller that
+ * needs a like-for-like comparison groups by surface rather than reading the
+ * pooled headline.
+ */
 export interface MeasurementSummary {
+  /** Every measurement run ever created for the project, any status — not the number of runs this summary aggregated. */
   runs: number;
+  /** The size of the cohort the rates below were computed over. */
   observations: number;
-  mentionRate: number; // 0..1
-  citationRate: number; // 0..1
+  /**
+   * Mention rate over the cohort, 0..1 — **null when `observations` is 0**.
+   * A project with no observations has not been measured; reporting `0` there
+   * would read as "the brand is never mentioned", which is a different and
+   * unsupported claim (design_plan §3.3, rule 3: empty is not zero).
+   */
+  mentionRate: number | null;
+  /** Citation rate over the cohort, 0..1 — null when `observations` is 0. */
+  citationRate: number | null;
+  /** Per-surface breakdown of the same cohort. Empty when there is no cohort. */
   bySurface: Array<{ surface: string; observations: number; mentionRate: number; citationRate: number }>;
+  /** Per-funnel-stage breakdown of the same cohort. Empty when there is no cohort. */
   byFunnelStage: Array<{ funnelStage: string; observations: number; mentionRate: number; citationRate: number }>;
-  shareOfVoice: Array<{ name: string; share: number }>; // subject first, competitors after
+  /** Share of voice: subject first, competitors after. Empty when there is no cohort. */
+  shareOfVoice: Array<{ name: string; share: number }>;
 }

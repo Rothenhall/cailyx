@@ -190,3 +190,49 @@ Verified: 10/10 rule cases (band edges, all-missing, errored pages, null hashes,
 whitespace normalisation) plus the extractor over real markup — 4 content images
 / 2 missing from a sample containing an empty alt, an `aria-hidden`, a
 `role="presentation"` and a tracking pixel.
+
+## G19/D16 — `pageBudget` is now a real control (2026-09-16)
+
+**Before:** `RunAuditDto.pageBudget` was validated (`@IsInt @Min(1) @Max(1000)`)
+and then dropped. `POST /run` enqueued `{ targetUrl, projectId, triggeredBy }`
+and the worker called `runAudit(targetUrl, projectId, triggeredBy)`, which used
+`technicalAudit.pageCrawlBudget` (env `TA_PAGE_CRAWL_BUDGET`, default 150) for
+every run. TA01's page-depth control therefore changed nothing.
+
+**After:** the validated value is forwarded into the job data; the registered
+`technical-audit` pipeline handler reads it back and passes it to `runAudit` as
+a fourth argument; `runAudit` applies it to this run's
+`PageInventoryCheckService.analyze(entries, runId, budget, targetUrl)` call.
+
+| | before | after |
+|---|---|---|
+| `POST /run` body `pageBudget` | accepted, ignored | sets this run's crawl depth |
+| job data | `{targetUrl, projectId, triggeredBy}` | `+ pageBudget` when supplied (G07's `JobRunTracker.onEnqueue` may additionally merge its own `jobRunId` into the same object — the two are independent) |
+| job response | `{jobId, projectId, targetUrl, status}` | `+ pageBudget` (echoed, `null` = server default) |
+| scheduled runs | config default | unchanged — still `TA_PAGE_CRAWL_BUDGET` |
+| out-of-range value on the scheduled path | n/a | clamped to 1–1000 by `resolvePageBudget` |
+
+`MAX_PAGE_BUDGET` is exported from `dto/technical-audit.dto.ts` and imported by
+the service, so the DTO's `@Max` and the service's clamp cannot drift apart.
+
+**Verified end-to-end** against the same target (`rothenhall.com`, sitemap of 12 URLs):
+
+| run | request | job data (Redis) | run log | result |
+|---|---|---|---|---|
+| before | `{"pageBudget":3}` handled by a worker still on the old build | `{…,"pageBudget":3}` present, and **ignored** | `pageBudget: 150 — configured default` | `budget: 150`, `discovered: 12`, `crawled: 12`, `pagesCrawled: 12` |
+| after | `{"pageBudget":3}` handled by the fixed build | `{…,"pageBudget":3}` | `pageBudget: 3 — per-run override` | `budget: 3`, `discovered: 12`, `crawled: 3`, `pagesCrawled: 3` |
+
+The "before" row is the old code running the exact request the new code now
+honours, which is the defect stated plainly. The project's pre-existing audit
+run (2026-09-14) also recorded `pagesCrawled: 12`, i.e. the default.
+
+Also observed live: `pageBudget` of `0`, `1001` and `1.5` are each rejected with `400`
+by the DTO, and `POST /run` echoes the accepted value (`pageBudget: 3`) alongside the
+`jobId`.
+
+One caveat worth recording: the queue is shared, and a dev machine with several
+backends running has several workers competing for the same `cailyx-pipeline`
+jobs — so the "before" row above was produced by accident, when a stale worker
+claimed the job. The "after" row was taken with the test instance on its own
+Redis (`REDIS_URL=redis://localhost:6381`), which is the only way this
+measurement is attributable to the code under test.

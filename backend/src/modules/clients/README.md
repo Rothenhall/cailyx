@@ -28,11 +28,12 @@ approved, `Client`/`ClientMessage` here are additive and would extend into
 
 ```
 clients/
-├── clients.module.ts       # imports every module the Day-1 pipeline calls into
-├── clients.service.ts      # CRUD, onboarding orchestration, messages
-├── clients.controller.ts   # REST API (operator-only, @Roles('delivery-lead') on mutations)
-├── clients.types.ts        # response DTOs
-├── dto/clients.dto.ts      # request DTOs
+├── clients.module.ts              # imports every module the Day-1 pipeline calls into
+├── clients.service.ts             # CRUD, onboarding orchestration, messages
+├── clients.onboarding-executors.ts # the Day-1 stages as G07 resume executors
+├── clients.controller.ts          # REST API (operator-only, @Roles('delivery-lead') on mutations)
+├── clients.types.ts               # response DTOs
+├── dto/clients.dto.ts             # request DTOs
 └── README.md
 ```
 
@@ -61,6 +62,34 @@ degrade gracefully already (gap-analysis is per-source resilient by design).
 Only a failure at stage 7 (report generation itself) marks
 `onboardingStatus: "failed"`, because that is the one stage with nothing to
 show for it.
+
+## G07/A7 — the Day-1 stages as durable, resumable executors (2026-09-16)
+
+`clients.onboarding-executors.ts` registers one executor per Day-1 stage with
+`OnboardingService.registerStageExecutor`, so a durable onboarding run
+(`POST /api/projects/:projectId/onboarding` + `/resume`) can advance through the
+same stage bodies this pipeline sequences. Each executor calls the same service
+method with the same arguments as the corresponding stage above; nothing new is
+integrated and nothing here imports `modules/jobs`' internals. Rules the
+executors keep:
+
+- **A stage the run did not ask for runs nothing** (the four opt-in stages read
+  the run's own `runKeywordResearch` / `runGrowthExecution` / `runAeoAudit` /
+  `runBacklinksRefresh` input, the same flags the add-client form sends) and
+  reports `attempted: 0, succeeded: 0`.
+- **An enqueued stage is re-checked, not re-bought.** The technical-audit and
+  digital-presence executors write the job/run id they started into the run's
+  `artifacts`; a later resume polls *that* id instead of queueing a second paid
+  run.
+- **A stage that produced nothing is a failed step**, so the run reads `partial`
+  instead of `completed`; the queued stages also carry real cost
+  (`keyword-research`, `backlinks`) onto the run.
+- The legacy `Project.onboardingStatus`/`onboardingStep` columns are kept in
+  step as stages advance, so the dashboard that polls them keeps working.
+
+`ClientsService.createProject` is **unchanged**: it still drives the background
+`runDayOnePipeline`, and no durable run is created for it — doing both would run
+every stage twice. Moving Day-1 onto the ledger is a deliberate follow-up.
 
 ## Client-portal login
 
@@ -103,6 +132,9 @@ data, enforced at the guard, not just the UI.
 `JobsModule`, `DigitalPresenceModule`, `TechStackModule`, `CompetitorsModule`,
 `GapAnalysisModule`, `StrategyModule`, `ReportingModule` — every module the
 Day-1 pipeline calls into. No new audit logic lives here.
+`ClientsOnboardingExecutors` uses the same set plus `OnboardingService` (from
+`JobsModule`); the only new dependency it adds is `PrismaService` (global) for
+the run's artifacts and the legacy onboarding columns.
 
 ## Testing notes
 
@@ -114,3 +146,34 @@ from `/portal/*`) → confirmed cross-client `projectId` spoofing on a message
 is rejected. `users.smoke.sh`, `dashboard.smoke.sh`, `competitors.smoke.sh`
 re-run clean after the `RolesGuard` change (no regression). `npx tsc --noEmit`
 clean.
+
+## G19/D26 — operator message write validates project ownership (2026-09-16)
+
+**Before:** `POST /clients/:clientId/messages` accepted an optional `projectId`
+and wrote it straight onto the row after only checking that the *client* exists.
+The client-portal write (`ClientPortalService.postMessage`) had always checked
+that the project belongs to the client; the operator path had not.
+
+**After:** `ClientsService.postMessage` performs the same check, with the same
+status code and message, so both write paths answer identically:
+
+```
+const owns = await prisma.project.findUnique({ where: { id: dto.projectId }, select: { clientId: true } });
+if (!owns || owns.clientId !== clientId) throw new ForbiddenException('That project does not belong to this client');
+```
+
+| | before | after |
+|---|---|---|
+| foreign `projectId` | 201 — message filed under another client's project | 403 `That project does not belong to this client` |
+| unknown `projectId` | 201 | 403 (not 404 — matching the portal, and refusing to confirm whether the id exists) |
+| omitted `projectId` | client-wide message | unchanged |
+| `authorType` | always server-set `operator` | unchanged |
+
+**Verified live** (booted backend, dev DB, two real clients each owning a project):
+
+| call | result |
+|---|---|
+| `POST /clients/{A}/messages` `{ projectId: <A's project> }` | `201`, row written with `authorType: "operator"` |
+| `POST /clients/{A}/messages` `{ projectId: <B's project> }` | `403 {"message":"That project does not belong to this client","error":"Forbidden","statusCode":403}` |
+| `POST /clients/{A}/messages` `{ projectId: "nonexistent-project-id" }` | `403` — same message; the response does not confirm whether the id exists |
+| `POST /clients/{A}/messages` `{ body }` (no projectId) | `201`, `projectId: null` — client-wide message unchanged |

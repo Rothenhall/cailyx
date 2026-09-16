@@ -9,7 +9,11 @@ generator client {
 
 datasource db {
   provider = "sqlite"
-  url      = "file:./dev.db"
+  // Read from the environment rather than hardcoded, so a scratch database can
+  // be pointed at without editing this file — which is what makes it possible
+  // to verify against a copy of real data without writing to the real file.
+  // `.env` sets the development default.
+  url      = env("DATABASE_URL")
 }
 
 // ─── Technical Audit ───────────────────────────────────────────
@@ -403,6 +407,11 @@ model Project {
   /// e.g. "technical-audit", "gap-analysis". Null once completed.
   onboardingStep   String?
   onboardingError  String?
+  /// G06 — the engagement funding work on this project.
+  engagementId String?
+  /// G06 — IANA timezone for this project's due dates, inherited from the
+  /// engagement at creation. Due dates never resolve against a browser clock.
+  timezone     String  @default("UTC")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -461,6 +470,9 @@ model ClientMessage {
   /// later deleted and recreated.
   authorType   String
   body         String
+  /// G08 — an internal note is a separate server-side channel, never a UI
+  /// toggle on a client-visible message. Client-scoped reads exclude these.
+  internal    Boolean  @default(false)
   createdAt    DateTime @default(now())
 
   client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
@@ -525,12 +537,30 @@ model Report {
   /// has no tracked competitors yet.
   competitorsSnapshot String?
   branding         String?
+  /// G05 — editorial state of the report as a whole. `visibility` above stays
+  /// what it always was (public link on/off) and is deliberately NOT reused as
+  /// a QA state: a private report can still be released to its client.
+  /// draft | in-review | approved | released | withdrawn
+  status           String   @default("draft")
+  /// G05 — ReportRevision.revision currently shown to the client. Null until
+  /// a revision is released.
+  releasedRevision Int?
+  releasedAt       DateTime?
+  releasedBy       String?
+  /// G13 — the window and cohort this report covers.
+  periodId         String?
+  cohortId         String?
+  /// G13 — pinned source manifest, making the snapshot reproducible.
+  manifestId       String?
+  /// G20 — branding/template version in force at release.
+  templateId       String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
   @@index([projectId])
   @@index([slug])
   @@index([visibility])
+  @@index([projectId, status])
 }
 
 // ─── Query Set (SOP-1, PRD FR-5) ──────────────────────────────
@@ -590,6 +620,11 @@ model User {
   /// marked @ClientPortal(), so a null clientId on an operator row is never
   /// load-bearing for access control.
   clientId     String?
+  /// G01 — forces the first-login password replacement flow (AU04). Set when
+  /// an operator issues assisted credentials; cleared once the user sets their own.
+  mustChangePassword Boolean @default(false)
+  /// G01 — a disabled user keeps their rows (audit trail) but cannot sign in.
+  disabledAt   DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -2275,4 +2310,1397 @@ model PresenceBrandVoice {
 
   @@index([projectId])
   @@index([projectId, createdAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// design_plan.md Appendix A — G01..G20
+//
+// Convention note: cross-module references are plain String ids with an
+// @@index, not Prisma relations. That matches the existing house style
+// (see Client.ownerUserId) and keeps module boundaries from turning into
+// a cascade-delete graph across the whole schema.
+//
+// SQLite has no enums and no arrays: status-ish columns are String with
+// the permitted values in a comment, and list/object columns are JSON
+// strings defaulting to "[]" / "{}".
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── G01 — Identity lifecycle ──────────────────────────────────────
+
+/// Single-use, expiring token for password reset AND invitation acceptance.
+/// Only the hash is stored, so a database read cannot be replayed as a login.
+model AuthToken {
+  id        String    @id @default(cuid())
+  /// sha256 of the token handed to the user. Never the raw token.
+  tokenHash String    @unique
+  /// password-reset | invite | email-verify
+  purpose   String
+  /// Target user. Null for an invite that has not been accepted into a user yet.
+  userId    String?
+  /// Invitation target address, so an unaccepted invite still knows its recipient.
+  email     String?
+  /// JSON — invite scope: { clientId, role, projectIds }. Server-resolved on accept.
+  scope     String    @default("{}")
+  expiresAt DateTime
+  /// Set the moment it is redeemed. A non-null value makes replay fail.
+  usedAt    DateTime?
+  /// Set when an operator revokes an outstanding invite/reset.
+  revokedAt DateTime?
+  createdBy String?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([email])
+  @@index([purpose, expiresAt])
+}
+
+/// One issued session, so "sign out everywhere" and immediate revocation are
+/// real server state rather than a client-side token delete.
+model UserSession {
+  id           String    @id @default(cuid())
+  userId       String
+  /// Correlates to the RefreshToken family issued for this session.
+  refreshaudit String?
+  userAgent    String?
+  ipAddress    String?
+  /// Coarse label for the session list UI ("Chrome on macOS").
+  deviceLabel  String?
+  lastSeenAt   DateTime  @default(now())
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  /// user-logout | logout-all | admin-revoke | password-change | expired
+  revokedvia   String?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId])
+  @@index([userId, revokedAt])
+}
+
+// ─── G02 — Client seats, invitations, delegated connections ────────
+
+/// A client-side seat. Distinct from User: a User is a login, a ClientMember
+/// is that login's role and project scope within one Client.
+model ClientMember {
+  id         String    @id @default(cuid())
+  clientId   String
+  userId     String
+  /// client-admin | client-collaborator | client-viewer
+  role       String    @default("client-collaborator")
+  /// JSON string[] of Project ids. Empty array means "all projects of this
+  /// client" — an explicit convention, checked server-side, never inferred.
+  projectIds String    @default("[]")
+  /// active | suspended
+  status     String    @default("active")
+  invitedBy  String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  removedAt  DateTime?
+
+  @@unique([clientId, userId])
+  @@index([userId])
+  @@index([clientId, status])
+}
+
+/// Lets a second operator (or a client seat) consume a Google grant somebody
+/// else authorized, without ever handing over the refresh token itself.
+model ConnectionDelegation {
+  id           String    @id @default(cuid())
+  /// GoogleConnection.id being delegated.
+  connectionId String
+  projectId    String
+  /// Who may now use it.
+  granteeUserId String
+  grantedBy    String
+  /// read | read-write
+  accessLevel  String    @default("read")
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@unique([connectionId, granteeUserId, projectId])
+  @@index([projectId])
+  @@index([granteeUserId])
+}
+
+// ─── G03 — Operator assignment / scoping ───────────────────────────
+
+/// Which operator is assigned to which client or project. G03 enforcement
+/// reads this; it is not a display-only field.
+model OperatorAssignment {
+  id        String    @id @default(cuid())
+  userId    String
+  /// Exactly one of clientId / projectId is set.
+  clientId  String?
+  projectId String?
+  /// delivery-lead | contributor | reviewer
+  role      String    @default("contributor")
+  createdBy String?
+  createdAt DateTime  @default(now())
+  removedAt DateTime?
+
+  @@index([userId, removedAt])
+  @@index([clientId])
+  @@index([projectId])
+}
+
+// ─── G04 — Confirmed intake and business profile ───────────────────
+
+/// Operator/client-confirmed facts about the business. Deliberately versioned
+/// and deliberately separate from anything an extractor guessed (SiteContext):
+/// content generation must be able to cite a confirmed fact, not a scrape.
+model BusinessProfile {
+  id          String    @id @default(cuid())
+  projectId   String
+  /// Monotonic per project. A new confirmation writes a new row.
+  version     Int       @default(1)
+  brandName   String?
+  legalName   String?
+  description String?
+  /// JSON string[] of services offered.
+  services    String    @default("[]")
+  /// JSON — ideal customer profile { segments, roles, painPoints }.
+  icp         String    @default("{}")
+  /// JSON string[] — geographic markets.
+  markets     String    @default("[]")
+  /// JSON string[] — BCP-47 language tags.
+  languages   String    @default("[]")
+  /// JSON — { fact, evidenceUrl }[] the client stands behind. Feeds claims.
+  facts       String    @default("[]")
+  /// JSON — { name, domain }[] the client names as rivals.
+  competitors String    @default("[]")
+  /// JSON string[] — commercial goals in the client's own words.
+  goals       String    @default("[]")
+  /// JSON — { name, email, role }[] who may approve content/reports.
+  approvers   String    @default("[]")
+  /// JSON — { cms, constraints, styleNotes } publishing limits.
+  publishing  String    @default("{}")
+  /// Null until a human confirms. Unconfirmed rows are candidates, not facts.
+  confirmedBy String?
+  confirmedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([projectId, version])
+  @@index([projectId])
+}
+
+/// An outstanding ask directed at the client ("confirm your GSC property").
+model OnboardingRequest {
+  id           String    @id @default(cuid())
+  projectId    String
+  /// gsc-access | ga4-access | confirm-profile | cms-access | brand-assets | other
+  kind         String
+  title        String
+  detail       String?
+  /// Free-text or a ClientMember userId.
+  requestedOf  String?
+  requestedBy  String?
+  dueAt        DateTime?
+  /// open | in-progress | done | waived
+  status       String    @default("open")
+  /// JSON string[] of WorkItem ids this request is blocking.
+  blockedWork  String    @default("[]")
+  resolvedAt   DateTime?
+  resolvedBy   String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([projectId, status])
+}
+
+// ─── G05 — Report editorial lifecycle ──────────────────────────────
+
+/// One editable/releasable version of a Report. The existing Report row stays
+/// the stable identity + latest pointer; every released snapshot is a row here
+/// and is frozen, so "an old report never changes" is enforced by storage.
+model ReportRevision {
+  id          String    @id @default(cuid())
+  reportId    String
+  revision    Int
+  /// draft | in-review | approved | released | withdrawn | superseded
+  status      String    @default("draft")
+  title       String?
+  /// Full frozen report payload for this revision (JSON). Written once at
+  /// release and never mutated.
+  snapshot    String    @default("{}")
+  /// EvidenceManifest.id pinned at release.
+  manifestId  String?
+  reviewedBy  String?
+  reviewedAt  DateTime?
+  decision    String?
+  decisionNote String?
+  publishedBy String?
+  publishedAt DateTime?
+  withdrawnAt DateTime?
+  /// Set when a newer revision replaces this one.
+  supersededBy String?
+  createdBy   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([reportId, revision])
+  @@index([reportId, status])
+}
+
+/// Public "anyone with the link" access, deliberately independent of client
+/// release: revoking a public link must not un-release the report, and
+/// releasing to the client must not create a public link.
+model ReportShareLink {
+  id         String    @id @default(cuid())
+  reportId   String
+  revisionId String?
+  /// sha256 of the share token.
+  tokenHash  String    @unique
+  createdBy  String?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  lastViewedAt DateTime?
+  viewCount  Int       @default(0)
+  createdAt  DateTime  @default(now())
+
+  @@index([reportId])
+}
+
+/// A send attempt. Separate from release so a bounced email never rolls back
+/// the fact that the report was released.
+model ReportDeliveryAttempt {
+  id         String   @id @default(cuid())
+  reportId   String
+  revisionId String?
+  /// email | link-share | manual
+  channel    String   @default("email")
+  recipient  String
+  subject    String?
+  /// queued | sent | failed — "sent" means the provider accepted it, which is
+  /// not proof of inbox delivery and is never displayed as such.
+  status     String   @default("queued")
+  error      String?
+  attemptedBy String?
+  attemptedAt DateTime @default(now())
+
+  @@index([reportId])
+}
+
+// ─── G06 — Engagements, cycles, work ───────────────────────────────
+
+/// The commercial container: what this client bought, for how long.
+model Engagement {
+  id           String    @id @default(cuid())
+  clientId     String
+  name         String
+  /// scorecard | diagnostic | sprint | retainer
+  serviceTier  String    @default("retainer")
+  /// active | paused | completed | cancelled
+  status       String    @default("active")
+  startsOn     DateTime?
+  endsOn       DateTime?
+  /// IANA timezone. Every due date on this engagement resolves against it,
+  /// never against the viewing browser's clock.
+  timezone     String    @default("UTC")
+  deliveryLead String?
+  /// Contracted hours per cycle, for the capacity view.
+  hoursPerCycle Float?
+  notes        String?
+  pausedAt     DateTime?
+  pauseReason  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([clientId, status])
+}
+
+/// A time-boxed delivery period. Committing one freezes its scope so that
+/// "we delivered 8 of 10 committed items" has a stable denominator.
+model Cycle {
+  id           String    @id @default(cuid())
+  projectId    String
+  engagementId String?
+  name         String
+  startsOn     DateTime
+  endsOn       DateTime
+  /// planning | committed | active | review | closed
+  status       String    @default("planning")
+  goal         String?
+  committedAt  DateTime?
+  committedBy  String?
+  /// Count of work items at commit time — the frozen denominator.
+  committedCount Int     @default(0)
+  /// JSON — { at, by, reason, added[], removed[] }[] after commit.
+  scopeChanges String    @default("[]")
+  closedAt     DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([projectId, status])
+  @@index([engagementId])
+}
+
+/// A single deliverable. §7.1's minimum fields.
+model WorkItem {
+  id            String    @id @default(cuid())
+  projectId     String
+  cycleId       String?
+  title         String
+  description   String?
+  /// fix | build | influence — design_plan §7's three work categories.
+  category      String    @default("fix")
+  /// technical | content | authority | research | reporting | access
+  discipline    String    @default("technical")
+  /// backlog | committed | active | review | blocked | verified | cancelled
+  status        String    @default("backlog")
+  /// low | medium | high | critical
+  priority      String    @default("medium")
+  assigneeId    String?
+  reviewerId    String?
+  dueAt         DateTime?
+  estimateHours Float?
+  actualHours   Float?
+  /// Where the work came from: Gap.id, Finding.id, Alert.id, etc.
+  sourceType    String?
+  sourceId      String?
+  /// JSON string[] — WorkItem ids that must finish first. Cycle checks reject
+  /// a cycle in this graph.
+  dependsOn     String    @default("[]")
+  /// Who the client must hear from for this to move, when blocked on them.
+  blockedReason String?
+  blockedOn     String?
+  /// Visible in the client portal. Internal notes live on a separate field,
+  /// never a UI-only toggle.
+  clientVisible Boolean   @default(false)
+  internalNotes String?
+  createdBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([projectId, status])
+  @@index([cycleId])
+  @@index([assigneeId, status])
+}
+
+/// A condition that must hold before the work counts as done.
+model AcceptanceCheck {
+  id          String    @id @default(cuid())
+  workItemId  String
+  description String
+  /// pending | passed | failed
+  status      String    @default("pending")
+  checkedBy   String?
+  checkedAt   DateTime?
+  note        String?
+  position    Int       @default(0)
+
+  @@index([workItemId])
+}
+
+/// Proof the work landed. A URL alone is not proof: the run/artifact and the
+/// reviewer who looked at it are recorded too.
+model Verification {
+  id          String    @id @default(cuid())
+  workItemId  String
+  /// Live URL where the change is visible.
+  sourceUrl   String?
+  /// The audit/measurement run that observed it.
+  runId       String?
+  runType     String?
+  /// Exactly what was checked.
+  artifact    String?
+  observedAt  DateTime?
+  reviewerId  String?
+  /// accepted | rejected
+  decision    String    @default("accepted")
+  /// On reject this explains what reopened the work.
+  note        String?
+  createdAt   DateTime  @default(now())
+
+  @@index([workItemId])
+}
+
+/// A dated commitment bigger than one work item.
+model Milestone {
+  id          String    @id @default(cuid())
+  projectId   String
+  engagementId String?
+  title       String
+  description String?
+  dueAt       DateTime?
+  /// planned | at-risk | met | missed
+  status      String    @default("planned")
+  clientVisible Boolean @default(true)
+  metAt       DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([projectId, status])
+}
+
+/// Planned hours per person per cycle, plus leave, for the team view.
+model CapacityAllocation {
+  id           String   @id @default(cuid())
+  userId       String
+  cycleId      String?
+  projectId    String?
+  /// Period this allocation covers when not tied to a cycle.
+  startsOn     DateTime
+  endsOn       DateTime
+  /// Hours the person is expected to be available.
+  availableHours Float  @default(0)
+  /// Hours already committed to work items.
+  allocatedHours Float  @default(0)
+  /// leave | holiday | reduced — null for a normal allocation.
+  absenceKind  String?
+  note         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([userId, startsOn])
+  @@index([cycleId])
+}
+
+// ─── G07 — Durable jobs, cadence, alerts ───────────────────────────
+
+/// The durable ledger for a background run. Survives a worker restart, which
+/// is the whole point: in-memory job state is not a job ledger.
+model JobRun {
+  id            String    @id @default(cuid())
+  projectId     String
+  /// technical-audit | seo-audit | aeo-audit | presence | serp | mentions |
+  /// backlinks | gap | score | report | content-generation | onboarding
+  taskKind      String
+  /// Caller-supplied de-duplication key. A duplicate scheduler tick with the
+  /// same key must not start a second paid run.
+  idempotencyKey String?  @unique
+  /// queued | running | partial | completed | failed | cancelled
+  status        String    @default("queued")
+  /// Human-readable current stage. No invented percentage or ETA.
+  stage         String?
+  attempt       Int       @default(1)
+  maxAttempts   Int       @default(3)
+  /// Last worker heartbeat; a stale heartbeat is how a dead run is detected.
+  heartbeatAt   DateTime?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  /// JSON — run parameters as actually submitted.
+  input         String    @default("{}")
+  /// JSON — { created: [...ids], counts: {...} }.
+  artifacts     String    @default("{}")
+  error         String?
+  /// Money already spent even if the run is later cancelled. Cancellation must
+  /// be able to say what is unrecoverable.
+  costUsd       Float     @default(0)
+  costCredits   Float     @default(0)
+  /// Whether cancelling can still undo the side effects.
+  reversible    Boolean   @default(true)
+  triggeredBy   String?
+  /// manual | cadence | pipeline | retry
+  trigger       String    @default("manual")
+  cadenceRuleId String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([projectId, taskKind, status])
+  @@index([status, heartbeatAt])
+}
+
+/// One stage inside a JobRun, so a partial failure names the stage that failed
+/// instead of collapsing to "failed".
+model JobStep {
+  id         String    @id @default(cuid())
+  jobRunId   String
+  name       String
+  position   Int       @default(0)
+  /// pending | running | succeeded | failed | skipped
+  status     String    @default("pending")
+  startedAt  DateTime?
+  finishedAt DateTime?
+  /// Items attempted vs. items that actually succeeded — the source of the
+  /// "partial coverage" disclosure in the UI.
+  attempted  Int       @default(0)
+  succeeded  Int       @default(0)
+  error      String?
+  costUsd    Float     @default(0)
+
+  @@index([jobRunId])
+}
+
+/// A recurring schedule for one task kind on one project.
+model CadenceRule {
+  id            String    @id @default(cuid())
+  projectId     String
+  taskKind      String
+  /// daily | weekly | biweekly | monthly | quarterly | off
+  frequency     String    @default("off")
+  /// 0-6, Sunday=0. Null for daily/monthly.
+  dayOfWeek     Int?
+  /// 1-31. Null unless monthly/quarterly.
+  dayOfMonth    Int?
+  /// Local hour in `timezone`.
+  hour          Int       @default(3)
+  timezone      String    @default("UTC")
+  enabled       Boolean   @default(false)
+  /// JSON — run parameters applied on each tick.
+  params        String    @default("{}")
+  /// JSON string[] — capability keys that must be ready or the tick is skipped
+  /// with a recorded reason rather than failing loudly every night.
+  prerequisites String    @default("[]")
+  /// Hard ceiling per tick.
+  maxCostUsd    Float?
+  lastRunAt     DateTime?
+  lastJobRunId  String?
+  lastStatus    String?
+  lastError     String?
+  nextRunAt     DateTime?
+  /// Set while the parent client/engagement is paused.
+  pausedAt      DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([projectId, taskKind])
+  @@index([enabled, nextRunAt])
+}
+
+/// Triage state for an Alert. Kept separate from Alert so the existing
+/// append-only alert feed keeps working untouched.
+model AlertLifecycle {
+  id            String    @id @default(cuid())
+  alertId       String    @unique
+  /// new | acknowledged | assigned | resolved | dismissed
+  status        String    @default("new")
+  acknowledgedBy String?
+  acknowledgedAt DateTime?
+  assigneeId    String?
+  /// WorkItem opened in response.
+  workItemId    String?
+  resolvedBy    String?
+  resolvedAt    DateTime?
+  resolution    String?
+  /// Stable hash of kind+project+subject, so the same condition re-firing
+  /// nightly updates one row instead of spamming the feed.
+  dedupeKey     String?
+  occurrences   Int       @default(1)
+  lastSeenAt    DateTime  @default(now())
+
+  @@index([status])
+  @@index([dedupeKey])
+}
+
+// ─── G08 — Notifications, attachments, message state ───────────────
+
+model Notification {
+  id          String    @id @default(cuid())
+  /// Recipient User.id.
+  userId      String
+  /// work-assigned | approval-requested | report-released | run-failed |
+  /// message-received | alert-raised | request-due
+  kind        String
+  title       String
+  body        String?
+  /// Deep link into the app.
+  href        String?
+  clientId    String?
+  projectId   String?
+  resourceType String?
+  resourceId  String?
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+}
+
+model NotificationPreference {
+  id        String   @id @default(cuid())
+  userId    String
+  kind      String
+  inApp     Boolean  @default(true)
+  email     Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, kind])
+}
+
+/// Per-user read position in a client message thread. Real state, so unread
+/// counts are not guessed from timestamps.
+model MessageReadCursor {
+  id            String   @id @default(cuid())
+  userId        String
+  clientId      String
+  lastReadAt    DateTime
+  lastReadMessageId String?
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, clientId])
+}
+
+/// An uploaded file. `ownerScope` is what the download guard checks; the
+/// storage key is never a capability by itself.
+model Attachment {
+  id          String    @id @default(cuid())
+  clientId    String?
+  projectId   String?
+  /// message | work-item | report | content | onboarding-request
+  contextType String
+  contextId   String?
+  filename    String
+  mimeType    String
+  sizeBytes   Int
+  /// Path/key in the configured storage backend.
+  storageKey  String
+  /// operator-only | client-visible
+  visibility  String    @default("operator-only")
+  uploadedBy  String
+  createdAt   DateTime  @default(now())
+  deletedAt   DateTime?
+
+  @@index([contextType, contextId])
+  @@index([projectId])
+}
+
+// ─── G09 — Briefs, content revisions, generation jobs ──────────────
+
+/// The approved input to generation. Generation records which brief version it
+/// actually used, so "regenerate" cannot silently use different instructions.
+model ContentBrief {
+  id           String    @id @default(cuid())
+  projectId    String
+  version      Int       @default(1)
+  title        String
+  /// article | ad-copy | landing-page | faq | comparison | guide | case-study
+  assetType    String    @default("article")
+  targetQuery  String?
+  /// JSON string[] — secondary queries.
+  supportingQueries String @default("[]")
+  audience     String?
+  /// informational | commercial | transactional | navigational
+  intent       String?
+  angle        String?
+  /// JSON string[] — required talking points.
+  mustInclude  String    @default("[]")
+  /// JSON string[] — Claim ids the copy may assert.
+  claimIds     String    @default("[]")
+  /// JSON — { url, note }[] reference sources.
+  references   String    @default("[]")
+  /// Gap/opportunity this brief answers.
+  sourceType   String?
+  sourceId     String?
+  wordTarget   Int?
+  language     String    @default("en")
+  /// draft | approved | archived
+  status       String    @default("draft")
+  approvedBy   String?
+  approvedAt   DateTime?
+  createdBy    String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([projectId, version, title])
+  @@index([projectId, status])
+}
+
+/// An immutable saved version of a piece of content. Editing writes a new row;
+/// an approval points at one revision and is invalidated when a newer one
+/// appears.
+model ContentRevision {
+  id         String   @id @default(cuid())
+  /// GrowthAsset.id — the stable content identity.
+  assetId    String
+  revision   Int
+  title      String?
+  /// The body as authored/generated.
+  body       String?
+  /// JSON — type-specific fields (meta, slug, faq, jsonLd, ad variants).
+  fields     String   @default("{}")
+  briefId    String?
+  briefVersion Int?
+  /// generation | operator-edit | client-edit | import
+  origin     String   @default("generation")
+  generationItemId String?
+  wordCount  Int      @default(0)
+  authorId   String?
+  /// Hash of body+fields, used for the edit-invalidates-approval check.
+  contentHash String?
+  createdAt  DateTime @default(now())
+
+  @@unique([assetId, revision])
+  @@index([assetId])
+}
+
+/// A batch generation request. Holds requested vs. succeeded vs. failed so a
+/// short batch is visible instead of silently looking complete.
+model GenerationJob {
+  id          String    @id @default(cuid())
+  projectId   String
+  jobRunId    String?
+  briefId     String?
+  briefVersion Int?
+  assetType   String
+  requested   Int       @default(0)
+  succeeded   Int       @default(0)
+  failed      Int       @default(0)
+  /// queued | running | partial | completed | failed
+  status      String    @default("queued")
+  provider    String?
+  model       String?
+  costUsd     Float     @default(0)
+  /// JSON — the exact request configuration.
+  input       String    @default("{}")
+  error       String?
+  requestedBy String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([projectId, status])
+}
+
+/// One requested artifact inside a GenerationJob. A failed item is retryable
+/// on its own, so a retry never re-pays for the items that succeeded.
+model GenerationItem {
+  id              String    @id @default(cuid())
+  generationJobId String
+  /// The topic/keyword/angle this item was for.
+  subject         String?
+  topicId         String?
+  /// pending | succeeded | failed | skipped
+  status          String    @default("pending")
+  /// GrowthAsset.id produced on success.
+  assetId         String?
+  revisionId      String?
+  error           String?
+  retryable       Boolean   @default(true)
+  costUsd         Float     @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([generationJobId, status])
+}
+
+// ─── G10 — Approvals and claim gates ───────────────────────────────
+
+/// A decision request bound to an exact artifact version.
+model ApprovalRequest {
+  id             String    @id @default(cuid())
+  projectId      String
+  clientId       String?
+  /// report | content | plan | cycle | claim
+  artifactType   String
+  artifactId     String
+  /// The exact revision under review. An edit that produces a newer revision
+  /// invalidates this request rather than silently transferring consent.
+  artifactRevision Int?
+  revisionId     String?
+  title          String
+  detail         String?
+  /// operator | client
+  reviewerType   String    @default("client")
+  /// Specific reviewer when required.
+  requiredReviewerId String?
+  requestedBy    String
+  dueAt          DateTime?
+  /// pending | approved | changes-requested | cancelled | invalidated
+  status         String    @default("pending")
+  /// Set when a newer revision superseded the artifact under review.
+  invalidatedAt  DateTime?
+  invalidatedReason String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([projectId, status])
+  @@index([clientId, status])
+  @@index([artifactType, artifactId])
+}
+
+/// An immutable decision. Changing your mind creates a superseding decision;
+/// it never rewrites this row.
+model ApprovalDecision {
+  id                String   @id @default(cuid())
+  approvalRequestId String
+  /// approved | changes-requested
+  decision          String
+  comment           String?
+  decidedBy         String
+  /// operator | client
+  decidedByType     String
+  /// The revision actually seen at decision time.
+  decidedRevision   Int?
+  supersededBy      String?
+  createdAt         DateTime @default(now())
+
+  @@index([approvalRequestId])
+}
+
+/// Links a content/report revision to the claims it asserts, so a blocked
+/// claim can gate that specific revision's publication.
+model RevisionClaimLink {
+  id         String   @id @default(cuid())
+  revisionId String
+  /// report-revision | content-revision
+  revisionType String @default("content-revision")
+  claimId    String
+  /// Where in the body the claim appears.
+  excerpt    String?
+  createdAt  DateTime @default(now())
+
+  @@unique([revisionId, claimId])
+  @@index([claimId])
+}
+
+/// The outcome of one automated or human check on a revision.
+model CheckResult {
+  id           String   @id @default(cuid())
+  /// content-revision | report-revision | work-item
+  subjectType  String
+  subjectId    String
+  /// claim-support | source-independence | brand-accuracy | word-count |
+  /// link-validity | schema-validity | extractability
+  checkKind    String
+  /// passed | failed | warning | skipped
+  status       String
+  /// Why it failed, in the reviewer's words or the checker's output.
+  detail       String?
+  /// JSON — structured findings.
+  payload      String   @default("{}")
+  checkedBy    String?
+  /// automated | human
+  checkedVia   String   @default("automated")
+  /// The project this check ran against.
+  ///
+  /// Denormalized on purpose. A check's subject is a polymorphic
+  /// (subjectType, subjectId) pair pointing at one of several tables, so the
+  /// owning project cannot be resolved by a join — only by a subjectType →
+  /// table mapping, which is exactly the kind of guess that breaks silently
+  /// when a new subject type is added. Storing the scope on the row makes the
+  /// read a plain indexed filter instead.
+  ///
+  /// Nullable because rows written before this column existed have no scope;
+  /// they are only reachable through the operator-only list, which is
+  /// unscoped by design.
+  projectId    String?
+  /// Denormalized alongside projectId, for client-scoped reads.
+  clientId     String?
+  createdAt    DateTime @default(now())
+
+  @@index([subjectType, subjectId])
+  @@index([projectId])
+  @@index([clientId])
+}
+
+// ─── G11 — Publishing ──────────────────────────────────────────────
+
+/// An authorized remote destination (a CMS, a social account, an ad account).
+/// Each integration is separate: one "connect" button never bundles unrelated
+/// permissions.
+model PublishDestination {
+  id           String    @id @default(cuid())
+  projectId    String
+  /// wordpress | webflow | ghost | contentful | linkedin | x | custom-webhook
+  provider     String
+  label        String
+  /// The selected remote resource (site id, blog id, page id).
+  resourceId   String?
+  resourceLabel String?
+  /// JSON — non-secret config. Credentials live in the secret store, keyed by
+  /// credentialRef; they are never persisted here.
+  config       String    @default("{}")
+  credentialRef String?
+  /// unconfigured | connected | error
+  status       String    @default("unconfigured")
+  lastTestedAt DateTime?
+  lastError    String?
+  createdBy    String?
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([projectId, provider])
+}
+
+/// One attempt to push an approved revision to a destination.
+model Publication {
+  id            String    @id @default(cuid())
+  projectId     String
+  destinationId String
+  assetId       String
+  revisionId    String
+  /// The approval that authorized this specific push.
+  approvalId    String?
+  /// draft | publish
+  mode          String    @default("draft")
+  scheduledFor  DateTime?
+  /// pending | publishing | published | failed | cancelled
+  status        String    @default("pending")
+  /// Id assigned by the remote system.
+  remoteId      String?
+  remoteUrl     String?
+  /// Separate from `status`: the push can succeed while the follow-up fetch
+  /// fails to confirm the content is actually live.
+  verifiedAt    DateTime?
+  verifiedUrl   String?
+  verifyError   String?
+  error         String?
+  attempt       Int       @default(1)
+  publishedBy   String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([projectId, status])
+  @@index([assetId])
+}
+
+// ─── G12 — Budgets and spend ───────────────────────────────────────
+
+/// A ceiling at client, project or operation level.
+model BudgetPolicy {
+  id           String   @id @default(cuid())
+  /// client | project | operation
+  scopeType    String
+  scopeId      String
+  /// Null on a client/project-wide policy; set to a taskKind for an
+  /// operation-level cap.
+  taskKind     String?
+  /// Ceiling per calendar period.
+  limitUsd     Float?
+  limitCredits Float?
+  /// day | week | month | cycle | total
+  period       String   @default("month")
+  /// Hard caps reject; soft caps warn and require an explicit approval.
+  enforcement  String   @default("hard")
+  /// Per-single-run ceiling.
+  perRunCapUsd Float?
+  createdBy    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([scopeType, scopeId, taskKind, period])
+}
+
+/// Money set aside before a run starts. Reserving first is what stops two
+/// concurrent requests from both passing the cap check and overspending.
+model SpendReservation {
+  id           String    @id @default(cuid())
+  projectId    String
+  taskKind     String
+  jobRunId     String?
+  /// Why this reservation was made, released or approved, in the requester's
+  /// or approver's words. A reservation is money held aside; the reason it was
+  /// released is the thing an audit asks for and there was nowhere to put it.
+  note         String?
+  /// Low/high estimate at reservation time.
+  estimateLowUsd  Float  @default(0)
+  estimateHighUsd Float  @default(0)
+  reservedUsd  Float     @default(0)
+  reservedCredits Float  @default(0)
+  /// held | settled | released | expired
+  status       String    @default("held")
+  /// What actually got charged, once known.
+  settledUsd   Float?
+  settledCredits Float?
+  settledAt    DateTime?
+  expiresAt    DateTime?
+  requestedBy  String?
+  approvedBy   String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([projectId, status])
+}
+
+/// An actual charge. Units are explicit: credits and currency never mix.
+model SpendEvent {
+  id          String   @id @default(cuid())
+  projectId   String
+  clientId    String?
+  taskKind    String?
+  jobRunId    String?
+  reservationId String?
+  provider    String
+  /// usd | credits
+  unit        String   @default("usd")
+  amount      Float
+  quantity    Float?
+  /// What the quantity counts ("requests", "tokens", "pages").
+  quantityUnit String?
+  note        String?
+  occurredAt  DateTime @default(now())
+
+  @@index([projectId, occurredAt])
+  @@index([provider])
+}
+
+// ─── G13 — Comparable outcomes and snapshots ───────────────────────
+
+/// A named, methodology-stable basis for comparison. If the query set, engine
+/// or transport changes, comparability is broken and recorded as such.
+model MeasurementCohort {
+  id            String   @id @default(cuid())
+  projectId     String
+  name          String
+  querySetId    String?
+  querySetVersion Int?
+  /// JSON string[] — engine ids included.
+  engines       String   @default("[]")
+  /// JSON string[] — markets included.
+  markets       String   @default("[]")
+  transport     String?
+  /// Fingerprint of the methodology. A change here marks a break.
+  methodologyHash String?
+  /// The first run in this cohort, used as the baseline.
+  baselineRunId String?
+  baselineAt    DateTime?
+  /// JSON — { at, reason, previousHash }[] methodology breaks.
+  breaks        String   @default("[]")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+/// A reporting window. Explicit start/end so a historical report reproduces
+/// exactly, rather than re-deriving "last 30 days" from today's date.
+model ReportPeriod {
+  id         String   @id @default(cuid())
+  projectId  String
+  label      String
+  startsOn   DateTime
+  endsOn     DateTime
+  timezone   String   @default("UTC")
+  cohortId   String?
+  /// The period this one is compared against.
+  baselinePeriodId String?
+  createdAt  DateTime @default(now())
+
+  @@index([projectId, startsOn])
+}
+
+/// Exactly which source rows a report or result set was built from, pinned by
+/// id. This is what makes an old report immutable in practice.
+model EvidenceManifest {
+  id          String   @id @default(cuid())
+  projectId   String
+  /// report | result-set
+  subjectType String   @default("report")
+  subjectId   String?
+  periodId    String?
+  cohortId    String?
+  /// JSON — { sourceType: [ids] } for every pinned run/audit/snapshot.
+  sources     String   @default("{}")
+  /// JSON — { sourceType: { expected, succeeded, failedReason } } coverage.
+  coverage    String   @default("{}")
+  /// JSON — { sourceType: isoDate } the real freshness of each source.
+  sourceDates String   @default("{}")
+  scoreRunId  String?
+  rubricVersion String?
+  /// Sources that were expected but missing, named rather than silently absent.
+  omissions   String   @default("[]")
+  createdAt   DateTime @default(now())
+
+  @@index([projectId])
+  @@index([subjectType, subjectId])
+}
+
+// ─── G14 — Saved views ─────────────────────────────────────────────
+
+/// A stored filter set. Stores the query, never a cached copy of the rows it
+/// returned — a saved view must not become a stale shadow of client data.
+model SavedView {
+  id        String   @id @default(cuid())
+  userId    String
+  /// clients | projects | work | reports | leads | alerts
+  surface   String
+  name      String
+  /// JSON — the filter/sort/column state.
+  filters   String   @default("{}")
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, surface])
+}
+
+// ─── G15 — Activity and audit trail ────────────────────────────────
+
+/// Append-only. Rows are never updated or deleted by application code; a
+/// resource deletion still leaves its audit record behind.
+model ActivityEvent {
+  id           String   @id @default(cuid())
+  /// user | system | scheduler | webhook
+  actorType    String   @default("user")
+  actorId      String?
+  actorLabel   String?
+  /// created | updated | deleted | released | approved | rejected | published |
+  /// sent | started | cancelled | granted | revoked | logged-in
+  action       String
+  resourceType String
+  resourceId   String?
+  resourceVersion String?
+  clientId     String?
+  projectId    String?
+  /// Short human summary of the change. Never raw secrets, tokens or
+  /// credentials, and never full message bodies.
+  summary      String?
+  /// JSON — redacted before/after for the fields that changed.
+  changes      String   @default("{}")
+  /// success | failure
+  result       String   @default("success")
+  /// Correlates to the HTTP request or job that caused it.
+  requestId    String?
+  jobRunId     String?
+  /// api | ui | scheduler | webhook
+  origin       String   @default("api")
+  ipAddress    String?
+  /// Whether a client user may see this event.
+  clientVisible Boolean @default(false)
+  createdAt    DateTime @default(now())
+
+  @@index([clientId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([resourceType, resourceId])
+  @@index([actorId, createdAt])
+}
+
+// ─── G16 — Commerce ────────────────────────────────────────────────
+
+/// A sellable package. Price mapping lives server-side; a client-supplied
+/// amount is never authoritative.
+model Offer {
+  id           String   @id @default(cuid())
+  code         String   @unique
+  name         String
+  description  String?
+  /// Provider price id (e.g. Stripe price_...).
+  providerPriceId String?
+  amountCents  Int      @default(0)
+  currency     String   @default("usd")
+  /// one-time | monthly | yearly
+  interval     String   @default("monthly")
+  /// JSON string[] — entitlement keys this offer grants.
+  entitlements String   @default("[]")
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Subscription {
+  id          String    @id @default(cuid())
+  clientId    String
+  offerId     String?
+  /// Provider subscription id.
+  providerId  String?   @unique
+  providerCustomerId String?
+  /// incomplete | trialing | active | past-due | canceled
+  status      String    @default("incomplete")
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  cancelAt    DateTime?
+  canceledAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([clientId, status])
+}
+
+/// Raw provider events, stored for idempotency. A replayed webhook matches an
+/// existing providerEventId and is ignored.
+model PaymentEvent {
+  id              String   @id @default(cuid())
+  /// Provider's own event id — the replay guard.
+  providerEventId String   @unique
+  provider        String   @default("stripe")
+  eventType       String
+  /// Whether the signature verified. Unsigned events are stored as rejected,
+  /// never acted on.
+  signatureValid  Boolean  @default(false)
+  /// pending | processed | ignored | rejected
+  status          String   @default("pending")
+  clientId        String?
+  subscriptionId  String?
+  amountCents     Int?
+  currency        String?
+  /// JSON — the raw payload.
+  payload         String   @default("{}")
+  error           String?
+  receivedAt      DateTime @default(now())
+  processedAt     DateTime?
+
+  @@index([clientId])
+  @@index([status])
+}
+
+/// What a client is actually allowed to use. Granted only from a verified
+/// provider event, never from a checkout-return page visit.
+model Entitlement {
+  id         String    @id @default(cuid())
+  clientId   String
+  /// Feature key, e.g. "monitoring", "full-audit".
+  key        String
+  /// active | expired | revoked
+  status     String    @default("active")
+  /// The PaymentEvent that authorized it.
+  grantedByEventId String?
+  subscriptionId String?
+  startsAt   DateTime  @default(now())
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@unique([clientId, key])
+  @@index([clientId, status])
+}
+
+// ─── G17 — Export, retention, offboarding ──────────────────────────
+
+model ExportRequest {
+  id           String    @id @default(cuid())
+  /// client | project
+  scopeType    String
+  scopeId      String
+  requestedBy  String
+  /// json | csv-bundle
+  format       String    @default("json")
+  /// JSON string[] — which sections were requested.
+  sections     String    @default("[]")
+  /// queued | running | ready | failed | expired
+  status       String    @default("queued")
+  storageKey   String?
+  sizeBytes    Int?
+  /// Download link lifetime. An export is scoped and expiring, not a permalink.
+  expiresAt    DateTime?
+  downloadedAt DateTime?
+  /// Fields deliberately left out (credentials, tokens, other clients' data).
+  omittedNote  String?
+  error        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([scopeType, scopeId])
+}
+
+model RetentionPolicy {
+  id            String   @id @default(cuid())
+  /// observations | reports | messages | job-runs | activity | attachments
+  resourceType  String   @unique
+  retainDays    Int?
+  /// delete | anonymize | archive
+  action        String   @default("archive")
+  enabled       Boolean  @default(false)
+  lastRunAt     DateTime?
+  updatedBy     String?
+  updatedAt     DateTime @updatedAt
+}
+
+/// Offboarding is previewed before it executes: the preview lists the exact
+/// resources affected so nothing cascades by surprise.
+model OffboardingRun {
+  id          String    @id @default(cuid())
+  clientId    String
+  /// preview | executing | completed | failed | cancelled
+  status      String    @default("preview")
+  /// JSON — { resourceType: count } the preview found.
+  planned     String    @default("{}")
+  /// JSON — { resourceType: count } actually acted on.
+  executed    String    @default("{}")
+  /// Whether public share links were revoked, kept, or explicitly retained.
+  shareLinkPolicy String @default("revoke")
+  /// Export produced before destruction, if any.
+  exportRequestId String?
+  requestedBy String
+  confirmedBy String?
+  confirmedAt DateTime?
+  completedAt DateTime?
+  error       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([clientId])
+}
+
+// ─── G18 — Capability readiness ────────────────────────────────────
+
+/// Observed readiness of one provider/capability. Deliberately separates "an
+/// env key exists" from "a real call succeeded recently" — an enabled button
+/// must mean the latter.
+model CapabilityStatus {
+  id            String    @id @default(cuid())
+  /// Stable key, e.g. "aeo.chatgpt", "serp.dataforseo", "google.gsc".
+  key           String    @unique
+  label         String
+  category      String?
+  /// Server config is present.
+  configured    Boolean   @default(false)
+  /// A real call has succeeded at least once.
+  verified      Boolean   @default(false)
+  lastSuccessAt DateTime?
+  lastErrorAt   DateTime?
+  lastError     String?
+  /// Whether this is running against fixtures rather than the real provider.
+  mockMode      Boolean   @default(false)
+  /// JSON string[] — supported engine/provider ids.
+  supports      String    @default("[]")
+  /// JSON string[] — capability keys that must be ready first.
+  prerequisites String    @default("[]")
+  /// JSON — rate limits, max batch size, etc.
+  limits        String    @default("{}")
+  checkedAt     DateTime  @default(now())
+
+  @@index([category])
+}
+
+// ─── G20 — Organization, branding, templates ───────────────────────
+
+/// Versioned so a released report can pin the branding it was published under.
+model OrganizationSettings {
+  id             String   @id @default(cuid())
+  version        Int      @default(1)
+  displayName    String   @default("Cailyx")
+  logoUrl        String?
+  /// Hex, applied as a CSS custom property override.
+  primaryColor   String?
+  supportEmail   String?
+  supportName    String?
+  timezone       String   @default("UTC")
+  /// Default service tier for a new engagement.
+  defaultTier    String   @default("retainer")
+  /// Hours a review is expected to take.
+  reviewSlaHours Int      @default(48)
+  /// Whether operators may create anyone-with-the-link report shares.
+  allowPublicShare Boolean @default(true)
+  updatedBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([version])
+}
+
+/// A reusable report layout. Snapshotted into a released report so a later
+/// template edit cannot retroactively change a delivered document.
+model ReportTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  /// monthly | quarterly | diagnostic | scorecard
+  reportType  String   @default("monthly")
+  /// JSON — { key, title, include, order }[] section configuration.
+  sections    String   @default("[]")
+  version     Int      @default(1)
+  isDefault   Boolean  @default(false)
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([reportType])
+}
+
+/// A reusable checklist for onboarding or a cycle. Applying it copies rows;
+/// editing the template never mutates an already-committed cycle.
+model ProgramTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  /// onboarding | cycle | offboarding
+  kind        String   @default("cycle")
+  description String?
+  /// JSON — { title, category, discipline, role, estimateHours, offsetDays }[]
+  items       String   @default("[]")
+  version     Int      @default(1)
+  active      Boolean  @default(true)
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([kind, active])
 }

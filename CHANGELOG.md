@@ -9,6 +9,421 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-16 — G05 report editorial lifecycle, client release and share policy (+ D11)
+
+The largest remaining backend gap: until now a generated report was immediately
+readable in the client's portal, and `visibility` (public link on/off) was the
+only report-state control in the API. "Clients only ever see approved reports"
+was unenforced. Package: `backend/src/modules/reporting/` (README + API.md
+rewritten).
+
+**Two axes, now separate columns.** `Report.visibility` stays "may anyone with
+the URL read the HTML"; `Report.status` + `releasedRevision` is the editorial
+state. Revoking a public link never un-releases a report; releasing never mints
+a public link; `visibility` is never used as a QA state.
+
+**Lifecycle.** `POST :slug/review` locks a revision and freezes its snapshot,
+`/approve` records the QA decision, `/publish` releases to the client, and
+`/withdraw` pulls it back with a reason. A published revision is immutable — new
+data opens a new revision and the old one is superseded with its snapshot
+byte-identical (verified by sha256 on the stored column). `Report.status` is
+sticky once released, so preparing v2 does not take v1 away from the client.
+
+**Release gate.** `publish()` calls G10's `assertReadyToPublish` before writing
+anything (`artifactType "report"` / `revisionType "report-revision"`), and
+`review()` invalidates stale approval requests. G10's README and the publishing
+README both claimed report release was ungated; both are corrected.
+
+**Portal reads are release-gated.** `GET /api/portal/reports[/:slug]` now serve
+only `status="released"` content at `releasedRevision`, from the frozen snapshot
+rather than the live row; drafts, in-review, approved-but-unreleased and
+withdrawn reports 404. `client-portal.service` delegates to the new
+`ReportLifecycleService` (three small edits outside the reporting directory,
+disclosed in that module's README).
+
+**Share links + delivery ledger.** Expiring/revocable public links stored as
+sha256 with a token-only render route (always noindex, never serves a superseded
+or unapproved revision), and `ReportDeliveryAttempt` records send attempts as a
+separate fact — a failed email cannot roll back a release, and `sent` is never
+presented as inbox delivery.
+
+**Migration.** `POST /api/reports/classify-legacy` (admin, idempotent,
+dry-runnable) classified the 24 pre-G05 reports as *released at their existing
+content*: they were already visible to their clients, so hiding them would
+retract delivered work, while `decision="grandfathered"` and a note record that
+no review took place (`reviewedBy` stays null). Policy is written down in the
+module README.
+
+**D11.** `rubricVersion`/`scoreRunId` are persisted through the G13 evidence
+manifest (existing `EvidenceManifest` columns — no schema change) and exposed on
+operator and client reads and frozen into revisions. `assetsNote`'s claim that
+stage 11 "has no module yet" was still in every report and is no longer true —
+the generated text now reports real growth-asset counts, and legacy snapshots
+are repaired **on read** with an `assetsNoteCorrected` flag rather than rewritten.
+
+**Verified:** 175/175 checks against a live server on :3098 with an operator and
+a client-portal token, covering §11.2 cases 11 and 12 end to end (draft hidden;
+released report frozen across out-of-band row mutation and supersession; foreign
+project/slug pairs denied; revocation independent of release). `tsc --noEmit` 0
+errors, `nest build` clean, boot with no DI errors and all routes mapped.
+Remaining: share links render HTML only (no unauthenticated JSON read); a
+`changes-requested` decision re-locks the same revision number rather than
+opening a new one.
+
+## 2026-09-16 — Design-plan closure: G05 lifecycle, Appendix B repairs, schema and migration gaps
+
+Closes the gaps listed in `docs/analysis/REMAINING-WORK.md`. Every item below was
+verified against a running backend, not inferred from a green typecheck.
+
+### G05 — report editorial lifecycle (the last P0)
+
+21 routes: `review` / `approve` / `publish` / `withdraw`, share links, delivery
+attempts, revisions, `GET :slug/lifecycle`, an admin legacy-classification route,
+and a token-only public HTML render. The G10 gate (`assertReadyToPublish`) now
+runs before release, so "clients only see approved reports" holds for reports as
+well as content — it previously held only for content, and the approvals README
+claimed otherwise.
+
+Public sharing and editorial release are separate axes with no shared code path.
+Released revisions are frozen (verified by sha256 across an out-of-band row
+rewrite and across supersession). Share tokens are stored as sha256 and the raw
+token is returned once. A failed email never rolls back a release.
+
+**A serious bug was caught during verification:** `buildRevisionSnapshot` is
+`async` and both call sites omitted `await`. `JSON.stringify(promise)` is `"{}"`,
+so 23 migrated reports were frozen **empty** with a clean typecheck. Fixed, the
+empty rows purged and the migration re-run, and an `assertUsableSnapshot` guard
+added so it cannot recur silently. Verified after: 20 revisions, none empty,
+smallest snapshot 28 KB.
+
+### G19 — Appendix B repairs
+
+- **D16** `pageBudget` was validated then dropped. Now forwarded and honoured:
+  proven on the same 12-URL target — default crawled 12 of a 150 budget; with
+  `pageBudget: 3` it crawled exactly 3. `0`/`1001`/`1.5` → 400.
+- **D17** the Google consent requested `webmasters.readonly` while `submitSitemaps`
+  issues a `PUT` — a permission mismatch that guaranteed failure. Now requests
+  `webmasters` and checks the *stored* grant, returning 409 with a reconnect
+  instruction rather than a bare 403. `submitSitemaps` no longer reports success
+  with an empty submission list.
+- **D20** `measurement` used `?runId=` as a filter with **no ownership check** —
+  any operator could read another project's observations by id. Now 404s.
+  Empty cohorts return `null` rates instead of `0`; a measured zero still returns `0`.
+- **D26** operator message writes now validate the project belongs to the client,
+  matching the check the portal path already had.
+- **D01/D12/D19** contract annotations corrected, including three competitor
+  routes that existed only as a bare summary. **No wire shape was changed** — a
+  frontend already normalizes those envelopes and changing them late would break
+  working screens.
+
+### G07/G18 — adoption and breadth
+
+Job heartbeats are real: `technical-audit`, `seo-audit` and `presence-discovery`
+jobs now produce `JobRun` rows that settle to `completed`/`failed`/`partial` and
+are swept by `recoverStaleRuns`. 14 Day-1 stage executors are registered, and
+AEO's enqueue now carries `projectId`, closing the last untracked pipeline kind.
+
+**A defect found and fixed:** the resume guard keyed on run status, and a run with
+one settled step derives to `running` — so a 14-stage pipeline would have taken a
+heartbeat window *per stage*, making the executors unusable. Now a compare-and-set
+on the step row.
+
+Capability registry grew 30 → 44 keys, each naming env vars read verbatim from the
+module that reads them.
+
+### Schema, migrations, and the budget gate
+
+- `CheckResult` gained `projectId`/`clientId` (denormalized, because the subject
+  is polymorphic and the owning project could otherwise only be guessed from a
+  subjectType→table mapping). `GET /approvals/check-results?projectId=` is the
+  read that was previously impossible.
+- `SpendReservation` gained `note`; `release` now records a reason.
+- **`prisma/migrations/` now exists.** Baseline `0_init` generated and marked
+  applied; verified by applying its SQL to an empty SQLite file — 137 tables from
+  137 models. This was the item blocking any shared deployment.
+- **Budget policies now bound something.** `assertWithinBudget` refuses work that
+  would breach a hard ceiling, called from the queue — the one place every
+  background run passes through. Narrow by design: no policy means no change,
+  only hard enforcement refuses, and a failure to *evaluate* the policy enqueues
+  anyway so a budget-module outage cannot halt every pipeline. This is a gate,
+  not a reservation: nothing is held for the run's duration.
+
+### Screen coverage closed
+
+Three screens were missed by the original dispatch and written directly, taking
+**every screen in design_plan §4 to a built route — 116 of 116, zero unmatched**:
+
+- **AU06** `/setup` — bootstrap administration. The plan's §5.1 step 6 is explicit
+  that this "is not a public SaaS signup path", so the screen asks the server
+  whether an administrator exists and, once one does, renders **no form at all**
+  rather than a form that would 403. It re-checks at submit time, because two
+  people can open it at once and the second must get "someone else completed
+  setup" rather than a puzzling failure. Required a new
+  `GET /api/auth/bootstrap-state` — G01 asks for exactly this "controlled
+  bootstrap-state discovery", and `hasUsers()` had no route exposing it. It
+  answers one boolean and nothing else.
+- **CL01** `/claims` and **CL02** `/claims/[claimId]` — claim library and check.
+  A claim's discipline result is a **refusal, not a warning**: `banned-phrase`,
+  `ungraded-number` and `single-run-rate` can never be approved, so the approve
+  control is *absent* in those states with the reason stated, never present and
+  returning 400. An ungraded claim is likewise not approvable — approving an
+  unevidenced assertion is the thing the module exists to prevent.
+
+Where screens landed differs from the plan in two places, both deliberate:
+SL03–SL06 are specified under `/ops/projects/:projectId/...` but shipped under
+`/projects/:projectId/...`, where the project shell actually lives; and PB05 is
+implemented as `src/app/not-found.tsx`, Next's convention for it.
+
+### Live verification against a scratch database
+
+Run against a copy of the dev DB (`/tmp/cailyx-verify/verify.db`) with a
+throwaway admin — approved by the owner — so no writes touched the real dev
+database. The Prisma datasource now reads `DATABASE_URL` rather than a hardcoded
+path, which is what made an isolated verification possible without editing the
+schema between runs.
+
+**Passed:** every new read endpoint across G01–G20 returns 200; G05's full write
+path (`review` → `publish` refused 409 `not-approved` → `approve` → `publish` →
+released, revision 1 superseded with its **34,064-byte snapshot byte-identical**);
+401 on every protected route anonymously; 404 on a resource outside the URL's
+project; and **`pageBudget` honoured against a live site** — `5/60 crawled
+(budget 5)`, audit completed at score 66.
+
+### Five more bugs, found only by running it
+
+1. **Bootstrap was impossible.** `POST /api/auth/register` had lost its
+   `@Public()` — a decorator displaced when the AU06 route was inserted — so the
+   global guard rejected it and **no installation could ever create its first
+   administrator.** Caught on the first call of the pass.
+2. **`GET /projects/:id/work-items` returned 500.** The query carried
+   `include: { acceptanceChecks: false } as never`; the schema reaches acceptance
+   checks through a plain `workItemId` column, not a relation. The `as never` is
+   exactly why the compiler never saw it.
+3. **One abandoned run blocked all later tracking.** The per-project lock counted
+   `queued` as in flight for the full hour-long lock window. The lock now uses a
+   separate, shorter bound for `queued` than for `running`, and the sweep
+   reconciles never-started runs. `JOB_ABANDONED_QUEUED_MS` is floored at five
+   minutes — the first version of this fix was tested at 20 seconds and
+   **destructively failed a run that was still legitimately waiting.**
+4. **PDF content collided with the fixed footer** on every report: the footer sits
+   at 770pt on an 841.89pt page while `paddingBottom: 56` let content reach 785.9.
+   Now derived from one constant.
+5. **Executive summaries truncated at the first period.** `split('.')[0]` turned
+   `https://day1tech.com/sitemap.xml` into `https://day1tech.` in **every** report,
+   HTML and PDF alike.
+
+### Charts and PDF (owner-approved)
+
+Recharts 3.10 for charts — score history, GSC daily clicks/impressions, and
+per-surface AI rates, each with an **always-visible table carrying the same
+numbers** (§3.4) and nulls drawn as gaps, never as zero. `@react-pdf/renderer`
+4.9 for report PDFs, driven from the same snapshot the HTML render uses so the
+two can differ only in presentation.
+
+**PDF fonts are now embedded, which fixes a blank-render bug.** `@react-pdf`
+defaults to the base-14 fonts (Helvetica/Courier), which are *referenced*, not
+embedded — the viewer has to supply them. Preview and CoreGraphics do; **poppler
+does not**, so the PDF rendered as boxes and rules with no text in `pdftoppm` and
+anything built on it, including much server-side PDF tooling. Proven with a
+one-line document: base-14 blank, embedded correct. The report now embeds
+**Inter 4.1** and **JetBrains Mono 2.304**, both SIL OFL, committed with their
+licence texts under `backend/src/modules/reporting/assets/fonts/` and copied into
+`dist` by `nest-cli.json`. `renderReportPdf` throws if a face is missing, because
+a silent fallback would reproduce exactly this bug.
+
+**Also fixed in the PDF:** content was drawn underneath the fixed footer. The
+footer sits at 770pt on an 841.89pt page while `paddingBottom: 56` let content
+reach 785.9, so the last table rows were overlapped on every report. The padding
+is now derived from the footer constant so the two cannot drift.
+
+### OpenAPI
+
+The checked-in spec had drifted to **261 operations against 535 served**, and no
+generator existed — which is why it drifted. `npm run openapi` now regenerates it
+from the compiled app with no TypeScript runner and no port binding.
+
+### Verified
+
+- `backend` `tsc --noEmit` 0 errors; `nest build` clean; boots at **536 routes**
+  with no DI errors, logging the budget gate, job ledger and stage executors
+- `web` `tsc --noEmit` 0 errors; `npm run build` clean at 121 route entries
+- `prisma migrate status` → "Database schema is up to date"
+- Probe artifacts left by verification runs removed; dev DB left consistent
+  (20 released reports, 0 empty snapshots)
+
+## 2026-09-16 — Design-plan implementation: new `web/` app + backend G01–G20
+
+Implements the design plan rather than describing it. Two deliverables: a new
+frontend at `web/`, and the backend work packages the plan's Appendix A
+specifies. `frontend/` and `client-portal/` are untouched.
+
+### New frontend — `web/` (Next.js 15 App Router, TypeScript, Tailwind)
+
+25 routes across three route groups: `(ops)` operator workspace, `(client)`
+portal, `(public)` shared/recovery surfaces.
+
+Three-layer component architecture, enforced rather than suggested:
+- `components/ui/` — 30 shadcn/ui primitives (generated, never hand-edited)
+- `components/patterns/` — 19 shared components implementing design_plan §3.3,
+  composed from `ui/`
+- `components/layouts/` — 4 shells (§3.2 page anatomy, §2.3 navigation model)
+
+Design tokens from §3.1 live as CSS custom properties in `globals.css`; every
+component consumes them, so no component contains a raw hex value.
+
+**Session boundary.** The browser never talks to NestJS directly.
+`app/api/[...path]/route.ts` is a server-side authenticating proxy that reads
+the HttpOnly session cookie, attaches the Bearer token, and owns the §10.3
+refresh race (one rotation, one replay — not a cascade). Tokens are never
+reachable from page JavaScript.
+
+Screens: sign-in, recovery, three error surfaces, operator Today / Clients /
+Client overview / Add client / All projects / My Work / Report center, the
+project overview / Connections / Run center / Report reader / AI visibility,
+and client Home / Approvals / Reports / Messages.
+
+### Backend — G01–G20
+
+**234 new endpoints** across 17 modules. The Prisma schema gained ~46 models
+(G01–G20) and is pushed and generated.
+
+| Pkg | Endpoints | Pkg | Endpoints |
+|---|---|---|---|
+| G01 Identity | 11 | G12 Budgets | 10 |
+| G02 Client access | 26 | G13 Results | 14 |
+| G04 Business profile | 18 | G14 Operations | 9 |
+| G06 Delivery plan | 36 | G15 Activity | 5 |
+| G07 Jobs/cadence | 21 | G16 Billing | 12 |
+| G08 Notifications | 4 | G17 Lifecycle | 22 |
+| G09 Content | 12 | G18 Capabilities | 3 |
+| G10 Approvals | 9 | G20 Organization | 17 |
+| G11 Publishing | 16 | | |
+
+G03 (enforced scoping) is a shared `@Global` guard service now injected across
+the app. G05 editorial states and G19 contract repair are partial.
+
+### Bugs found and fixed
+
+Each was reproduced against a running backend before being fixed:
+
+1. `activity` query DTO — `limit` had `@IsInt()` with no `@Type(() => Number)`,
+   so every request carrying it was rejected with 400. Same defect found in
+   `approvals`, `notifications` and `digital-presence` query DTOs; all fixed.
+2. `CreateSavedViewDto.filters` had no validator, so the global
+   `whitelist` + `forbidNonWhitelisted` pipe rejected every request carrying it —
+   **saved views were silently inert**. Fixed with `@IsObject()`.
+3. Route collision: `PATCH .../growth-execution/assets/:assetId` already
+   existed, so the G09 handler would have been dead code. Content writes moved
+   to `.../assets/:assetId/content`. The pre-existing PATCH has no `@Roles` at
+   all and should be reviewed separately.
+4. `RunStatus` (§3.3) had no `cancelled` member, so a deliberately stopped run
+   was unrepresentable and read as a fault. Added to the union, label map, tone
+   map and icon set.
+5. `/ops/work` used the `no-results` empty copy — telling readers to "clear the
+   filters" on a page with no filters. Added a `no-work` variant.
+
+### Flagged, not fixed
+
+- `CheckResult` has no `projectId`/`clientId` column, so `listCheckResults`
+  cannot be project-scoped without inventing a subjectType→table mapping. The
+  route is operator-only as a compensating control.
+- `SpendReservation` has no note/rationale column, so `release` takes no body
+  rather than accepting a reason it would drop.
+- `JobsModule` registers `projects/:projectId/onboarding` with `@Get(':runId')`
+  before `BusinessProfileModule`; a sibling literal route added under that
+  prefix later would be silently swallowed. A live hazard for future modules,
+  not a current bug.
+- Budget enforcement only applies where a pipeline calls `reserve`. G12's
+  transaction is correct and concurrency-proven, but wiring it into the
+  existing audit pipelines is per-module work still outstanding.
+- G20's branding/template pinning is built and exported, but `reporting/` does
+  not call `getReleaseSnapshot()` yet, so no delivered report actually pins a
+  version.
+
+### Frontend screens (second wave)
+
+Dispatched eight agents against non-overlapping route trees; **94 screens landed**,
+taking `web/` from 25 routes to **116**, with 32 typed service adapters and ~92k
+lines excluding the shadcn primitives.
+
+Families completed: content (CT01–CT09), authority (AT01–AT05), monitoring
+(MO01–MO03), research hubs (TA01–TA03, SE01–SE03, AE02–AE05), research library
+(QS, EN, DP, CO, KW, SP, JO — 19 screens), client portal (CP02–CP08, CP10,
+CP12, CP14–CP16), ops work planning (OP05–OP08, OP12–OP13, PJ02, PJ04–PJ10),
+ops admin + sales (OP15–OP21, SL01–SL06), reports (RP01–RP06), public (PB01–PB04)
+and the remaining auth screens (AU02, AU04, AU05).
+
+### Bugs the screen agents found — seven real breakages, all fixed
+
+Every one of these was found by an agent binding a screen to source rather than
+guessing, and every one would have shipped as a runtime failure:
+
+| # | Bug | Effect |
+|---|---|---|
+| 1 | `services/operations.ts` sent `cursor`/`limit`; the API whitelists `page`/`pageSize` under `forbidNonWhitelisted` | `/ops/work` and `/ops/reports` **400 on load** |
+| 2 | `services/integrations.ts` read `{authorizationUrl}`; the route returns `{url}` | "Connect Google account" navigated to `/undefined` |
+| 3 | `services/approvals.ts` omitted `revision`, which `DecideApprovalDto` requires | CP09's approve/request-changes **400'd on every decision** |
+| 4 | `services/types.ts` `PortalProject` declared `status`/`score`/`band`, none of which the route sends | CP01 always showed "Not measured yet" |
+| 5 | `services/jobs.ts` had two same-named `CadenceRule` shapes, the stale one declaring `stored` where the API returns `configured` | A trap for any later caller |
+| 6 | `GET /api/portal/activity` returned `actorId`/`actorLabel` to clients | Operator identity leaked onto a client surface |
+| 7 | `GET /api/portal/me` was never registered | The client shell resolved **every authenticated client as signed out** |
+
+Also closed: the `@Public()` upgrade-completion stand-in is now `@Roles('admin')`.
+It let anyone reachable on the API mark an upgrade paid.
+
+### Coordination problems worth recording
+
+1. **Eight agents each ran `npm run build` in the same tree.** Next deletes
+   `.next` at the start of a build, so concurrent runs corrupted each other's
+   manifests (`ENOENT … pages-manifest.json`). Two agents stalled on the 10-minute
+   watchdog as a result, and several reported build failures that were not theirs.
+   Their work was unaffected — every assigned route landed. The fix for next time
+   is to have agents run `tsc --noEmit` only and serialize builds centrally.
+2. **Two service adapters disagreed with the real API.** `integrations.ts` was
+   written against an assumed envelope (`{authorizationUrl}` for a route that
+   returns `{url}`), and `clients.ts` used `category`/`runPipeline` for a DTO that
+   takes `runAeoAudit`/`runKeywordResearch`/etc. Agents found both against source.
+3. **`services/jobs.ts` carried two same-named `CadenceRule` shapes.** The stale
+   one (mine) declared `stored` where the API returns `configured`; the correct one
+   was added alongside it. The stale interface was removed.
+
+### Verified
+
+- `backend` `npx tsc --noEmit` → 0 errors; `npx nest build` → clean
+- `backend` boots: 520 routes mapped, no DI errors
+- `web` `npx tsc --noEmit` → 0 errors; `npm run build` → 25 routes, 0 warnings
+
+### Left for later
+
+- ~100 of 123 screens; research/content/authority surfaces outstanding
+- G05 editorial lifecycle enforcement; G19's remaining Appendix B repairs
+- Charts (deferred pending an approved tool analysis, per §10.2)
+- **No `prisma/migrations/` directory** — DB state comes from `db push`. A
+  migration baseline is required before any shared deployment.
+- No automated test suite; verification was live endpoint calls plus typecheck
+  and build.
+
+See `docs/analysis/design-plan-status.md` for the per-package state and the
+remaining work.
+
+## 2026-09-16 — Fresh backend-grounded frontend design plan
+
+Added [design_plan.md](design_plan.md): a from-scratch client/operator design
+covering 123 screens, complete user journeys, visual/interaction specifications,
+report contents and metrics, team cadence, 17 sequence diagrams, sequential
+implementation phases, and 20 prioritized backend gap groups with proposed
+contracts and acceptance criteria. Existing frontend code and design flows were
+excluded from the review.
+
+Verified all 261 OpenAPI operations against backend controller routes and included
+three additional competitor-candidate operations found in source: 264 mapped
+operations total. Checked endpoint uniqueness/coverage, screen and gap references,
+source links, Markdown tables and diagram fences. Recorded documentation/source
+differences affecting authentication, onboarding, report visibility, generation,
+scheduling, permissions and payment handling. This was static documentation work;
+no live API calls, application builds, dependencies or environment changes.
+Implementation and tool selections remain subject to module analysis/approval.
+
 ## 2026-09-13 — One SERP vendor, and the cache bug that was waiting for Redis
 
 Cailyx was paying two vendors for the same search. `serp-intelligence` and

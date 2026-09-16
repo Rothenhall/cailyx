@@ -1,3 +1,4 @@
+import { AuthService } from '../auth/auth.service';
 /**
  * Client Portal Controller — client-facing REST API.
  *
@@ -20,7 +21,30 @@ import { PostPortalMessageDto } from './dto/client-portal.dto';
 @Controller('portal')
 @ClientPortal()
 export class ClientPortalController {
-  constructor(private readonly portal: ClientPortalService) {}
+  constructor(
+    private readonly portal: ClientPortalService,
+    private readonly auth: AuthService,
+  ) {}
+
+  /**
+   * The signed-in client's own identity.
+   *
+   * `AuthService.getPortalMe` has existed since G01, but no route exposed it,
+   * so this path 404'd. That mattered: the web client shell calls it to
+   * establish the session, and a 404 read as "not signed in" — a properly
+   * authenticated client saw a signed-out account menu.
+   *
+   * Not `GET /auth/me`: that route is operator-only by design (it serves
+   * `SafeUserDto` with a `role`, which a client has no meaningful value for).
+   */
+  @Get('me')
+  @ApiOperation({ summary: "This client login's own profile" })
+  @ApiResponse({ status: 200, description: 'PortalMeDto — always carries its Client; never carries a role' })
+  @ApiResponse({ status: 403, description: 'Reached by an operator account' })
+  async me(@Req() req: Request) {
+    const user = req.user as AuthedRequestUser;
+    return this.auth.getPortalMe(user.userId);
+  }
 
   @Get('projects')
   @ApiOperation({ summary: "This client's own projects, with status/score/band" })

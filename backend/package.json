@@ -11,7 +11,8 @@
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-    "postinstall": "prisma skills sync || exit 0"
+    "postinstall": "prisma skills sync || exit 0",
+    "openapi": "nest build && node scripts/generate-openapi.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
@@ -27,6 +28,7 @@
     "@prisma/adapter-better-sqlite3": "^7.10.0",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^5.22.0",
+    "@react-pdf/renderer": "^4.9.0",
     "@types/handlebars": "^4.0.40",
     "@upstash/redis": "^1.38.3",
     "axios": "^1.20.0",

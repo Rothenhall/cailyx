@@ -1,0 +1,718 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Cailyx API Reference</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f7f7fb;
+    --surface: #ffffff;
+    --surface-2: #f0f0f6;
+    --ink: #16161d;
+    --ink-dim: #5c5c68;
+    --ink-faint: #8c8c98;
+    --line: #e4e3ea;
+    --accent: #5b46e0;
+    --accent-ink: #4636c4;
+    --accent-soft: #edeaff;
+    --m-get: #0f8f83;
+    --m-post: #2c8f4f;
+    --m-put: #8a52d6;
+    --m-patch: #b5750c;
+    --m-delete: #cf4335;
+    --code-bg: #f2f1fa;
+    --shadow: rgba(24, 20, 60, 0.06);
+    --focus: #5b46e0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f0f15;
+      --surface: #17171f;
+      --surface-2: #1c1c27;
+      --ink: #ecebf5;
+      --ink-dim: #a6a5b8;
+      --ink-faint: #77768a;
+      --line: #2a2a37;
+      --accent: #9a8bff;
+      --accent-ink: #b3a6ff;
+      --accent-soft: #232042;
+      --m-get: #36c9ba;
+      --m-post: #58cf85;
+      --m-put: #ba92f2;
+      --m-patch: #e6a940;
+      --m-delete: #f0776a;
+      --code-bg: #1c1b2b;
+      --shadow: rgba(0, 0, 0, 0.35);
+      --focus: #9a8bff;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f0f15;
+    --surface: #17171f;
+    --surface-2: #1c1c27;
+    --ink: #ecebf5;
+    --ink-dim: #a6a5b8;
+    --ink-faint: #77768a;
+    --line: #2a2a37;
+    --accent: #9a8bff;
+    --accent-ink: #b3a6ff;
+    --accent-soft: #232042;
+    --m-get: #36c9ba;
+    --m-post: #58cf85;
+    --m-put: #ba92f2;
+    --m-patch: #e6a940;
+    --m-delete: #f0776a;
+    --code-bg: #1c1b2b;
+    --shadow: rgba(0, 0, 0, 0.35);
+    --focus: #9a8bff;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Manrope', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-size: 14.5px;
+    line-height: 1.55;
+  }
+  code, .mono, .path, .badge-method, table.props td.name, .schema-key, kbd {
+    font-family: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  a { color: var(--accent-ink); }
+  h1, h2, h3, h4 { text-wrap: balance; margin: 0; }
+  ::selection { background: var(--accent-soft); }
+
+  /* ---------- Shell ---------- */
+  .shell {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    min-height: 100vh;
+  }
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; }
+    .nav { position: static; height: auto; max-height: 60vh; }
+  }
+
+  /* ---------- Nav rail ---------- */
+  .nav {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+    padding: 20px 14px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .brand {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 2px 8px 10px;
+  }
+  .brand .mark {
+    font-weight: 800;
+    font-size: 17px;
+    letter-spacing: -0.01em;
+  }
+  .brand .mark span { color: var(--accent-ink); }
+  .brand .sub {
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .search-wrap { position: relative; padding: 0 4px; }
+  .search-wrap input {
+    width: 100%;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 9px 12px 9px 32px;
+    font-size: 13px;
+    color: var(--ink);
+    font-family: inherit;
+  }
+  .search-wrap input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .search-wrap svg {
+    position: absolute;
+    left: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 14px;
+    height: 14px;
+    stroke: var(--ink-faint);
+    pointer-events: none;
+  }
+  .nav-count {
+    padding: 0 8px;
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .nav-groups { display: flex; flex-direction: column; gap: 2px; }
+  .nav-group summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 8px;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 12.5px;
+    text-transform: capitalize;
+    color: var(--ink-dim);
+  }
+  .nav-group summary::-webkit-details-marker { display: none; }
+  .nav-group summary:hover { background: var(--surface-2); color: var(--ink); }
+  .nav-group summary .chev { transition: transform 0.15s ease; flex-shrink: 0; width: 10px; height: 10px; stroke: var(--ink-faint); }
+  .nav-group[open] summary .chev { transform: rotate(90deg); }
+  .nav-group summary .gcount { font-weight: 500; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+  .nav-rows { display: flex; flex-direction: column; padding-left: 2px; }
+  .nav-row {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    padding: 5px 8px 5px 14px;
+    border-radius: 6px;
+    text-decoration: none;
+    color: var(--ink-dim);
+    font-size: 12.5px;
+  }
+  .nav-row:hover { background: var(--accent-soft); color: var(--ink); }
+  .nav-row .m { font-weight: 700; font-size: 10px; width: 34px; flex-shrink: 0; }
+  .nav-row .p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-get { color: var(--m-get); } .m-post { color: var(--m-post); }
+  .m-put { color: var(--m-put); } .m-patch { color: var(--m-patch); } .m-delete { color: var(--m-delete); }
+
+  /* ---------- Main column ---------- */
+  main { min-width: 0; }
+  .overview {
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 56px 28px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+  .overview .eyebrow {
+    font-size: 11.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--accent-ink);
+  }
+  .overview h1 { font-size: 32px; font-weight: 800; letter-spacing: -0.02em; }
+  .overview p.lede { color: var(--ink-dim); font-size: 15px; max-width: 62ch; }
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .stat {
+    background: var(--surface);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .stat .n { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .stat .l { font-size: 11px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.06em; }
+  .info-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    font-size: 13px;
+  }
+  .info-card .row { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .info-card .row .k { color: var(--ink-faint); min-width: 100px; flex-shrink: 0; }
+  .info-card code.inline {
+    background: var(--code-bg);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12.5px;
+  }
+  .role-chip {
+    display: inline-block;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 2px 9px;
+    font-size: 11.5px;
+    font-family: 'IBM Plex Mono', monospace;
+    margin: 2px 4px 2px 0;
+  }
+  .tag-jump { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tag-jump a {
+    text-decoration: none;
+    color: var(--ink-dim);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 4px 11px;
+    font-size: 12px;
+    text-transform: capitalize;
+  }
+  .tag-jump a:hover { border-color: var(--accent); color: var(--accent-ink); }
+
+  .doc {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 28px 100px;
+  }
+  section.tag-section { padding-top: 44px; scroll-margin-top: 16px; }
+  section.tag-section h2 {
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    text-transform: capitalize;
+  }
+  section.tag-section .tag-desc { color: var(--ink-dim); font-size: 13px; margin-top: 4px; max-width: 68ch; }
+  section.tag-section > .tag-head { border-bottom: 2px solid var(--line); padding-bottom: 14px; margin-bottom: 4px; }
+
+  .op {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    margin-top: 18px;
+    padding: 18px 20px 20px;
+    box-shadow: 0 1px 2px var(--shadow);
+    scroll-margin-top: 16px;
+  }
+  .op-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .badge-method {
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    padding: 3px 8px;
+    border-radius: 5px;
+    color: #fff;
+    flex-shrink: 0;
+  }
+  .bg-get { background: var(--m-get); } .bg-post { background: var(--m-post); }
+  .bg-put { background: var(--m-put); } .bg-patch { background: var(--m-patch); } .bg-delete { background: var(--m-delete); }
+  .op-head .path { font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+  .op-head .spacer { flex: 1; }
+  .lock {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--ink-faint);
+    white-space: nowrap;
+  }
+  .lock svg { width: 12px; height: 12px; }
+  .lock.public { color: var(--m-get); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+  }
+  .chip.role { background: var(--surface-2); color: var(--ink-dim); font-family: 'IBM Plex Mono', monospace; }
+
+  .op-summary { margin-top: 10px; color: var(--ink); font-size: 13.5px; }
+  .op-id { margin-top: 3px; font-size: 11px; color: var(--ink-faint); }
+
+  .op h4 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--ink-faint);
+    margin-top: 20px;
+    margin-bottom: 8px;
+  }
+  table.props { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.props th {
+    text-align: left;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-faint);
+    border-bottom: 1px solid var(--line);
+    padding: 0 8px 6px 0;
+    font-weight: 600;
+  }
+  table.props td {
+    padding: 6px 8px 6px 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  table.props tr:last-child td { border-bottom: none; }
+  table.props td.name { font-size: 12px; white-space: nowrap; }
+  table.props td.req { color: var(--m-delete); font-size: 11px; white-space: nowrap; }
+  table.props td.opt { color: var(--ink-faint); font-size: 11px; white-space: nowrap; }
+  table.props td.type { color: var(--accent-ink); white-space: nowrap; font-size: 11.5px; }
+  table.props td.desc { color: var(--ink-dim); }
+  table.props td.desc .enum { display: block; margin-top: 2px; font-size: 11px; color: var(--ink-faint); }
+  .overflow-x { overflow-x: auto; }
+
+  .resp-block { margin-top: 10px; }
+  .resp-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .dot.ok { background: var(--m-get); } .dot.warn { background: var(--m-patch); } .dot.err { background: var(--m-delete); }
+  .resp-desc { font-size: 12.5px; color: var(--ink-dim); margin-bottom: 6px; }
+
+  footer.doc-foot {
+    max-width: 900px;
+    margin: 40px auto 60px;
+    padding: 0 28px;
+    color: var(--ink-faint);
+    font-size: 12px;
+    border-top: 1px solid var(--line);
+    padding-top: 18px;
+  }
+
+  [hidden] { display: none !important; }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+
+<div class="shell">
+  <nav class="nav">
+    <div class="brand">
+      <div class="mark">Cailyx <span>API</span></div>
+      <div class="sub">REST Reference</div>
+    </div>
+    <div class="search-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input id="search" type="text" placeholder="Search endpoints…" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="nav-count" id="navCount">261 endpoints · 44 modules</div>
+    <div class="nav-groups" id="navGroups"></div>
+  </nav>
+
+  <main>
+    <div class="overview">
+      <div class="eyebrow">Internal · Operator &amp; Client-Portal Backend</div>
+      <h1>Cailyx API Reference</h1>
+      <p class="lede">
+        REST surface for Cailyx, an AI-visibility platform that audits and measures how a brand
+        is represented across search and AI-answer engines — ChatGPT, SERPs, and beyond — then
+        runs the swarm-research, growth-execution and reporting tooling built around that data.
+        This reference covers every route in <code class="inline">backend/src</code>, generated
+        from the live controller definitions.
+      </p>
+
+      <div class="stat-row">
+        <div class="stat"><div class="n">261</div><div class="l">Endpoints</div></div>
+        <div class="stat"><div class="n">203</div><div class="l">Paths</div></div>
+        <div class="stat"><div class="n">44</div><div class="l">Modules</div></div>
+        <div class="stat"><div class="n">JWT</div><div class="l">Auth scheme</div></div>
+      </div>
+
+      <div class="info-card">
+        <div class="row"><span class="k">Base URL</span><code class="inline">http://localhost:3002/api</code></div>
+        <div class="row"><span class="k">Auth header</span><code class="inline">Authorization: Bearer &lt;accessToken&gt;</code></div>
+        <div class="row"><span class="k">Default access</span><span>Every route requires a valid operator JWT <strong>unless</strong> marked <span class="chip">public</span> (login, register, refresh, logout, health, Google OAuth callback).</span></div>
+        <div class="row"><span class="k">Role-gated</span><span>Some routes additionally require an operator role — shown as <span class="chip role">role</span> chips below. Admin is always allowed.</span></div>
+        <div class="row"><span class="k">Client portal</span><span>Routes marked <span class="chip">client-portal</span> are the only ones a client-type (non-operator) user may call.</span></div>
+        <div class="row"><span class="k">Rate limit</span><span>100 requests / 60s per IP globally, with tighter per-route throttles on auth endpoints.</span></div>
+        <div class="row"><span class="k">Operator roles</span>
+          <span>
+            <span class="role-chip">admin</span><span class="role-chip">delivery-lead</span><span class="role-chip">content</span><span class="role-chip">technical</span><span class="role-chip">outreach</span><span class="role-chip">sales</span>
+          </span>
+        </div>
+      </div>
+
+      <div class="tag-jump" id="tagJump"></div>
+    </div>
+
+    <div class="doc" id="doc"></div>
+
+    <footer class="doc-foot">Generated from <code class="inline">backend/openapi.json</code> (OpenAPI 3.0.3) — served alongside this page.</footer>
+  </main>
+</div>
+
+<script>
+const LOCK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+const UNLOCK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/></svg>';
+const CHEV_SVG = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function resolveRef(spec, schema) {
+  if (schema && schema.$ref) {
+    const name = schema.$ref.split('/').pop();
+    return (spec.components && spec.components.schemas && spec.components.schemas[name]) || schema;
+  }
+  return schema;
+}
+
+// Flatten a JSON-schema object into rows: {path, type, required, description, enum}
+function flattenSchema(spec, schema, prefix, requiredSet, depth) {
+  schema = resolveRef(spec, schema);
+  if (!schema || depth > 4) return [];
+  let rows = [];
+  if (schema.type === 'object' || schema.properties) {
+    const req = new Set(schema.required || []);
+    const props = schema.properties || {};
+    for (const key of Object.keys(props)) {
+      const p = resolveRef(spec, props[key]);
+      const path = prefix ? `${prefix}.${key}` : key;
+      const isReq = requiredSet ? requiredSet.has(key) : req.has(key);
+      rows.push(rowFor(spec, path, p, isReq));
+      if ((p.type === 'object' || p.properties) && Object.keys(p.properties || {}).length) {
+        rows = rows.concat(flattenSchema(spec, p, path, req, depth + 1));
+      } else if (p.type === 'array' && p.items) {
+        const items = resolveRef(spec, p.items);
+        if (items.type === 'object' || items.properties) {
+          rows = rows.concat(flattenSchema(spec, items, path + '[]', new Set(items.required || []), depth + 1));
+        }
+      }
+    }
+  } else if (schema.type === 'array' && schema.items) {
+    const items = resolveRef(spec, schema.items);
+    rows.push(rowFor(spec, prefix || '(item)', schema, false));
+    if (items.type === 'object' || items.properties) {
+      rows = rows.concat(flattenSchema(spec, items, (prefix || '') + '[]', new Set(items.required || []), depth + 1));
+    }
+  }
+  return rows;
+}
+
+function typeLabel(schema) {
+  if (!schema) return 'any';
+  if (schema.$ref) return schema.$ref.split('/').pop();
+  if (schema.type === 'array') {
+    const items = schema.items || {};
+    return `${typeLabel(items)}[]`;
+  }
+  let t = schema.type || 'object';
+  if (schema.format) t += ` (${schema.format})`;
+  return t;
+}
+
+function rowFor(spec, path, schema, required) {
+  return {
+    path,
+    type: typeLabel(schema),
+    required: !!required,
+    description: schema.description || '',
+    enum: schema.enum || null,
+  };
+}
+
+function renderPropsTable(spec, schema) {
+  const resolved = resolveRef(spec, schema);
+  const rows = flattenSchema(spec, resolved, '', new Set(resolved.required || []), 0);
+  if (!rows.length) {
+    if (resolved.description) return `<p class="resp-desc">${esc(resolved.description)}</p>`;
+    return '';
+  }
+  const body = rows.map(r => `
+    <tr>
+      <td class="name">${esc(r.path)}</td>
+      <td class="type">${esc(r.type)}</td>
+      <td class="${r.required ? 'req' : 'opt'}">${r.required ? 'required' : 'optional'}</td>
+      <td class="desc">${esc(r.description)}${r.enum ? `<span class="enum">enum: ${r.enum.map(esc).join(' · ')}</span>` : ''}</td>
+    </tr>`).join('');
+  return `<div class="overflow-x"><table class="props">
+    <thead><tr><th>Field</th><th>Type</th><th></th><th>Description</th></tr></thead>
+    <tbody>${body}</tbody>
+  </table></div>`;
+}
+
+function renderParams(params) {
+  if (!params || !params.length) return '';
+  const body = params.map(p => `
+    <tr>
+      <td class="name">${esc(p.name)} <span style="color:var(--ink-faint); font-size:10.5px;">(${esc(p.in)})</span></td>
+      <td class="type">${esc((p.schema && p.schema.type) || 'string')}</td>
+      <td class="${p.required ? 'req' : 'opt'}">${p.required ? 'required' : 'optional'}</td>
+      <td class="desc">${esc(p.description || '')}${p.schema && p.schema.enum ? `<span class="enum">enum: ${p.schema.enum.map(esc).join(' · ')}</span>` : ''}</td>
+    </tr>`).join('');
+  return `<h4>Parameters</h4><div class="overflow-x"><table class="props">
+    <thead><tr><th>Name</th><th>Type</th><th></th><th>Description</th></tr></thead>
+    <tbody>${body}</tbody>
+  </table></div>`;
+}
+
+function statusDot(code) {
+  const n = parseInt(code, 10);
+  if (n >= 200 && n < 300) return 'ok';
+  if (n >= 400 && n < 500) return 'warn';
+  return 'err';
+}
+
+function renderResponses(spec, responses) {
+  if (!responses) return '';
+  const blocks = Object.keys(responses).sort().map(code => {
+    const r = responses[code];
+    const schema = r.content && r.content['application/json'] ? r.content['application/json'].schema
+      : (r.content && Object.values(r.content)[0] ? Object.values(r.content)[0].schema : null);
+    return `<div class="resp-block">
+      <div class="resp-status"><span class="dot ${statusDot(code)}"></span>${esc(code)}</div>
+      ${r.description ? `<div class="resp-desc">${esc(r.description)}</div>` : ''}
+      ${schema ? renderPropsTable(spec, schema) : ''}
+    </div>`;
+  }).join('');
+  return `<h4>Responses</h4>${blocks}`;
+}
+
+function operationHtml(spec, path, method, op) {
+  const isPublic = !op.security || op.security.length === 0;
+  const roles = op['x-roles'];
+  const clientPortal = op['x-client-portal'];
+  const id = op.operationId || `${method}-${path}`;
+
+  let chips = '';
+  if (roles && roles.length) chips += roles.map(r => `<span class="chip role">${esc(r)}</span>`).join('');
+  if (clientPortal) chips += `<span class="chip">client-portal</span>`;
+
+  const rb = op.requestBody;
+  const rbSchema = rb && rb.content && rb.content['application/json'] ? rb.content['application/json'].schema : null;
+
+  return `
+  <article class="op" id="${esc(id)}">
+    <div class="op-head">
+      <span class="badge-method bg-${method}">${method.toUpperCase()}</span>
+      <span class="path">${esc(path)}</span>
+      <span class="spacer"></span>
+      ${chips ? `<span class="chips">${chips}</span>` : ''}
+      <span class="lock ${isPublic ? 'public' : ''}">${isPublic ? UNLOCK_SVG + ' public' : LOCK_SVG + ' bearer'}</span>
+    </div>
+    <div class="op-summary">${esc(op.summary || '')}</div>
+    <div class="op-id">operationId: ${esc(id)}</div>
+    ${renderParams(op.parameters)}
+    ${rbSchema ? `<h4>Request Body${rb.required ? ' (required)' : ''}</h4>${renderPropsTable(spec, rbSchema)}` : ''}
+    ${renderResponses(spec, op.responses)}
+  </article>`;
+}
+
+async function boot() {
+  const spec = await fetch('openapi.json').then(r => r.json());
+  const tagOrder = (spec.tags || []).map(t => t.name);
+  const tagDesc = {};
+  (spec.tags || []).forEach(t => tagDesc[t.name] = t.description || '');
+
+  // Group operations by tag, in path order within a tag
+  const byTag = {};
+  const allOps = [];
+  Object.keys(spec.paths).sort().forEach(path => {
+    const methods = spec.paths[path];
+    ['get','post','put','patch','delete'].forEach(method => {
+      if (!methods[method]) return;
+      const op = methods[method];
+      const tag = (op.tags && op.tags[0]) || 'Other';
+      if (!byTag[tag]) byTag[tag] = [];
+      const entry = { path, method, op, tag };
+      byTag[tag].push(entry);
+      allOps.push(entry);
+    });
+  });
+
+  const orderedTags = tagOrder.filter(t => byTag[t]).concat(Object.keys(byTag).filter(t => !tagOrder.includes(t)).sort());
+
+  // ---- Nav ----
+  const navGroups = document.getElementById('navGroups');
+  orderedTags.forEach((tag, i) => {
+    const entries = byTag[tag];
+    const details = document.createElement('details');
+    details.className = 'nav-group';
+    details.dataset.tag = tag;
+    if (i < 3) details.open = true;
+    const rowsHtml = entries.map(e => `
+      <a class="nav-row" href="#${esc(e.op.operationId || '')}" data-path="${esc(e.path.toLowerCase())}" data-summary="${esc((e.op.summary||'').toLowerCase())}">
+        <span class="m m-${e.method}">${e.method.toUpperCase()}</span>
+        <span class="p">${esc(e.path)}</span>
+      </a>`).join('');
+    details.innerHTML = `
+      <summary>${CHEV_SVG}<span style="flex:1">${esc(tag)}</span><span class="gcount">${entries.length}</span></summary>
+      <div class="nav-rows">${rowsHtml}</div>`;
+    navGroups.appendChild(details);
+  });
+
+  // ---- Overview tag jump chips ----
+  const tagJump = document.getElementById('tagJump');
+  tagJump.innerHTML = orderedTags.map(t => `<a href="#tag-${esc(t.replace(/[^a-z0-9]+/gi,'-').toLowerCase())}">${esc(t)} · ${byTag[t].length}</a>`).join('');
+
+  // ---- Main doc ----
+  const doc = document.getElementById('doc');
+  doc.innerHTML = orderedTags.map(tag => {
+    const anchor = 'tag-' + tag.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+    const ops = byTag[tag].map(e => operationHtml(spec, e.path, e.method, e.op)).join('');
+    return `<section class="tag-section" id="${anchor}" data-tag="${esc(tag)}">
+      <div class="tag-head">
+        <h2>${esc(tag)}</h2>
+        ${tagDesc[tag] ? `<div class="tag-desc">${esc(tagDesc[tag])}</div>` : ''}
+      </div>
+      ${ops}
+    </section>`;
+  }).join('');
+
+  // ---- Search / filter ----
+  const search = document.getElementById('search');
+  const navCount = document.getElementById('navCount');
+  const totalOps = allOps.length;
+  const totalTags = orderedTags.length;
+  navCount.textContent = `${totalOps} endpoints · ${totalTags} modules`;
+
+  search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    let visible = 0;
+    document.querySelectorAll('.nav-group').forEach(group => {
+      let groupHasMatch = false;
+      group.querySelectorAll('.nav-row').forEach(row => {
+        const match = !q || row.dataset.path.includes(q) || row.dataset.summary.includes(q);
+        row.hidden = !match;
+        if (match) { groupHasMatch = true; visible++; }
+      });
+      group.hidden = !groupHasMatch;
+      if (q && groupHasMatch) group.open = true;
+    });
+    document.querySelectorAll('section.tag-section').forEach(section => {
+      const tag = section.dataset.tag;
+      let sectionHasMatch = false;
+      section.querySelectorAll('.op').forEach(op => {
+        const path = op.querySelector('.path').textContent.toLowerCase();
+        const summary = op.querySelector('.op-summary').textContent.toLowerCase();
+        const match = !q || path.includes(q) || summary.includes(q);
+        op.hidden = !match;
+        if (match) sectionHasMatch = true;
+      });
+      section.hidden = !sectionHasMatch;
+    });
+    navCount.textContent = q ? `${visible} / ${totalOps} endpoints` : `${totalOps} endpoints · ${totalTags} modules`;
+  });
+}
+
+boot().catch(err => {
+  document.getElementById('doc').innerHTML = `<p style="padding:40px;color:var(--m-delete)">Failed to load openapi.json: ${esc(err.message)}</p>`;
+});
+</script>
+
+</body></html>

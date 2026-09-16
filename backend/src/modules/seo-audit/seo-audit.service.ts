@@ -564,19 +564,38 @@ export class SeoAuditService {
     };
   }
 
-  /** The one thing this audit can *do*: re-submit the property's sitemap(s). */
+  /**
+   * The one thing this audit can *do*: re-submit the property's sitemap(s).
+   *
+   * Per-sitemap failures are collected rather than thrown, so one bad feedpath
+   * does not lose the others — but a run that submitted NOTHING is a failure,
+   * not a `{ submitted: [] }` success. That distinction is what the operator's
+   * control reads: an empty list with HTTP 200 looked like "nothing to do"
+   * when it actually meant "the write did not happen".
+   */
   async submitSitemaps(projectId: string, userId: string): Promise<{ submitted: string[] }> {
     const site = await this.connections.requireProjectResource(projectId, 'search-console');
     const sitemaps = await this.gsc.listSitemaps(userId, site);
     if (!sitemaps.length) throw new ConflictException('No sitemap is registered for this property in Search Console.');
     const submitted: string[] = [];
+    const failures: string[] = [];
     for (const s of sitemaps) {
       try {
         await this.gsc.submitSitemap(userId, site, s.path);
         submitted.push(s.path);
       } catch (err) {
+        failures.push(`${s.path}: ${(err as Error).message}`);
         this.logger.warn(`sitemap submit ${s.path} failed: ${(err as Error).message}`);
       }
+    }
+    if (submitted.length === 0) {
+      // The most likely cause is a read-only grant, and `submitSitemap` has
+      // already phrased that as a 409 with the reconnect instruction — keep
+      // the original error rather than flattening it into a 502.
+      const first = failures[0] ?? 'no sitemap could be submitted';
+      throw new ConflictException(
+        `Google rejected every sitemap submission for ${site}. ${first}${failures.length > 1 ? ` (+${failures.length - 1} more)` : ''}`,
+      );
     }
     return { submitted };
   }

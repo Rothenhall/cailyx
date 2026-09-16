@@ -107,9 +107,14 @@ export class ClientsController {
   }
 
   @Post(':clientId/messages')
-  @ApiOperation({ summary: 'Post a message to this client (visible to them in the client portal)' })
+  @ApiOperation({
+    summary: 'Post a message to this client (visible to them in the client portal)',
+    description:
+      'Author type is set server-side to `operator` — it is never taken from the request. A supplied `projectId` must belong to THIS client; a project id owned by anyone else is rejected with 403, the same rule the client-portal write applies.',
+  })
   @ApiBody({ type: PostClientMessageDto })
   @ApiResponse({ status: 201, description: 'The posted message' })
+  @ApiResponse({ status: 403, description: 'The supplied projectId does not belong to this client' })
   @ApiResponse({ status: 404, description: 'Client not found' })
   async postMessage(@Param('clientId') clientId: string, @Body() body: PostClientMessageDto, @Req() req: Request) {
     const user = req.user as AuthedRequestUser;
