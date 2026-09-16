@@ -9,6 +9,30 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-16 — Platform improvement plan for the current web and backend
+
+Added `platform_improvement_plan.md`, a detailed implementation specification
+for the 36 changes from the two product discussions. It covers client-friendly
+navigation and copy, affected screens and route migration, the new Cailyx score,
+business understanding and corrections, market-aware discovery and measurement,
+unified Website/AI/Presence experiences, competitor keyword opportunities,
+content/style/generation, one content calendar, client-safe APIs, team cadence,
+reports, data migrations, sequence diagrams, and sequential rollout/acceptance
+tests. The original `design_plan.md` remains unchanged.
+
+Source inspection distinguishes already implemented capabilities from required
+extensions and new contracts; supporting findings are recorded in
+`docs/analysis/platform-change-contract-research.md`. Pending product decisions
+and unsupported automated publishing channels remain explicit rather than
+being represented as implemented features.
+
+**Verified:** static comparison with current source/controller/schema/OpenAPI
+contracts, local Markdown-link checks, requirement coverage, balanced code
+fences, and JSON-example parsing. No application code, dependencies, database,
+credentials, live jobs, or external publications changed; no runtime or build
+verification claimed for this documentation-only task. Implementation and
+module-specific tool-choice approvals remain for the subsequent build phases.
+
 ## 2026-09-16 — G05 report editorial lifecycle, client release and share policy (+ D11)
 
 The largest remaining backend gap: until now a generated report was immediately
