@@ -183,6 +183,62 @@ export class EntityAuditService {
   // ─── Schema Check (FR-3.2) ─────────────────────────────────────
 
   /**
+   * Hosts known to answer an automated, logged-out fetch with a wall rather
+   * than the real page — Cloudflare challenges, login gates, bot-detection
+   * blocks. A failed fetch against one of these says nothing about whether
+   * the entity's schema or the linked profile is actually broken; it is a
+   * limit of what this check can see, not a fault to report to the client.
+   *
+   * Mirrors the reasoning `digital-presence`'s own `WALLED` map documents
+   * (`presence.discovery.service.ts`) for the platforms it already covers
+   * (Instagram/Facebook/LinkedIn/X/TikTok/Threads); this list additionally
+   * names the B2B directories (G2, Crunchbase, Glassdoor) that block
+   * automated fetches just as aggressively but were not catalogued anywhere
+   * yet. Kept separate rather than importing that map directly: this one has
+   * to classify a raw `sameAs` URL with no prior platform-classification
+   * step, where that one is keyed off an already-classified platform enum.
+   */
+  private static readonly WALLED_HOSTS = new Set([
+    'instagram.com',
+    'instagr.am',
+    'facebook.com',
+    'fb.com',
+    'fb.me',
+    'linkedin.com',
+    'twitter.com',
+    'x.com',
+    'tiktok.com',
+    'threads.net',
+    'threads.com',
+    'g2.com',
+    'crunchbase.com',
+    'glassdoor.com',
+  ]);
+
+  /**
+   * Whether a failed `sameAs` fetch is a wall (the platform blocked an
+   * automated check) rather than a break (the link is actually gone). Only a
+   * genuine break should ever fail the schema check.
+   *
+   * A host not on {@link WALLED_HOSTS} still gets one generic signal: HTTP
+   * 403/429 are the standard deliberate-block responses across the web (WAF
+   * rule, rate limit, Cloudflare challenge) and are treated the same way.
+   * Everything else — a genuine network failure (status 0), 404, 410 — is a
+   * real break and still fails the check.
+   */
+  private isWalledLink(url: string, statusCode: number | null): boolean {
+    let host = '';
+    try {
+      host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+    } catch {
+      // Malformed URL — not a walled host, and the missing statusCode check
+      // below will correctly still call this a genuine break.
+    }
+    if (EntityAuditService.WALLED_HOSTS.has(host)) return true;
+    return statusCode === 403 || statusCode === 429;
+  }
+
+  /**
    * Run a schema check on a URL — extract JSON-LD, validate fields,
    * and verify each sameAs link resolves and matches the entity identity.
    * Handles @graph, multiple blocks, and string vs array sameAs.
@@ -259,7 +315,19 @@ export class EntityAuditService {
 
     // Determine status
     const hasSchema = schemas.length > 0;
-    const hasBrokenSameAs = sameAsVerification.some((v) => !v.resolves);
+    // A link that only failed because the platform walled the fetch (G2,
+    // Crunchbase, Facebook, ...) is not a broken link — it is unverifiable,
+    // which is a limit of this check, not a fault of the entity's schema.
+    // Splitting the two up front means the fail/pass verdict below only ever
+    // reacts to a genuine break, while the per-link detail (still rendered on
+    // the sameAs table) keeps reporting every status code exactly as fetched.
+    const brokenSameAs = sameAsVerification.filter(
+      (v) => !v.resolves && !this.isWalledLink(v.url, v.statusCode),
+    );
+    const walledSameAs = sameAsVerification.filter(
+      (v) => !v.resolves && this.isWalledLink(v.url, v.statusCode),
+    );
+    const hasBrokenSameAs = brokenSameAs.length > 0;
     const hasIdentityMismatch = sameAsVerification.some((v) => v.resolves && v.identityMatch === false);
     const status: 'pass' | 'fail' | 'error' =
       !hasSchema ? 'fail' : hasBrokenSameAs || hasIdentityMismatch ? 'fail' : 'pass';
@@ -271,13 +339,17 @@ export class EntityAuditService {
     } else if (fieldsMissing.length > 0) {
       recommendedFix = `Schema found but missing recommended fields: ${fieldsMissing.join(', ')}. Add these to improve entity recognition by AI assistants.`;
     } else if (hasBrokenSameAs) {
-      const broken = sameAsVerification.filter((v) => !v.resolves).map((v) => v.url);
+      const broken = brokenSameAs.map((v) => v.url);
       recommendedFix = `Broken sameAs links detected: ${broken.join(', ')}. These links don't resolve — update or remove them from your schema.`;
     } else if (hasIdentityMismatch) {
       const mismatched = sameAsVerification.filter((v) => v.resolves && v.identityMatch === false).map((v) => v.url);
       recommendedFix = `sameAs identity mismatch at: ${mismatched.join(', ')}. The linked page's title doesn't match the entity name — verify these are correct references.`;
     } else {
-      recommendedFix = `Schema looks complete: ${schemaType}, ${fieldsPresent.length} fields, ${sameAsUrls.length} sameAs links (all verified).`;
+      const verifiedCount = sameAsUrls.length - walledSameAs.length;
+      const walledNote = walledSameAs.length > 0
+        ? ` ${walledSameAs.length} link(s) could not be verified because the platform blocks automated checks (${walledSameAs.map((v) => v.url).join(', ')}) — this is a limit of the check, not a fault in your schema.`
+        : '';
+      recommendedFix = `Schema looks complete: ${schemaType}, ${fieldsPresent.length} fields, ${sameAsUrls.length} sameAs links (${verifiedCount} verified${walledSameAs.length ? `, ${walledSameAs.length} blocked from checking` : ''}).${walledNote}`;
     }
 
     const result: SchemaCheckResult = {
