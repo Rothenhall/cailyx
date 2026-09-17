@@ -702,6 +702,80 @@ model GoogleProjectResource {
   @@index([connectionId])
 }
 
+// ─── Website (P12) — unified page identity, Google data extensions, insights ──
+// §7.3/§7.4: a shared normalized page identity per project (never discards the
+// original source URLs it was built from); stored Google fact snapshots at
+// each source's own grain (GSC page/query/date, GA landing-session) so the
+// Website overview reads from storage and never triggers a live/paid call on
+// GET; stored insight snapshots that reference exact source extracts + rule
+// version, so a rule's wording/thresholds are reproducible after the fact.
+
+model WebsitePageIdentity {
+  id           String   @id @default(cuid())
+  projectId    String
+  /// Normalized identity key — lowercased scheme+host, case-preserved path,
+  /// tracking params stripped only per the configured rule, trailing slash
+  /// normalized. NOT the same as any single raw source URL.
+  canonicalUrl String
+  host         String
+  path         String
+  /// JSON string[] — every raw URL variant this identity was built from
+  /// (GSC `page` keys, GA `landingPage` values, technical-audit AuditPage.url,
+  /// page-analysis url). Never discarded, so a join is always traceable back.
+  sourceUrls   String   @default("[]")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([projectId, canonicalUrl])
+  @@index([projectId])
+}
+
+model GoogleDataSnapshot {
+  id           String   @id @default(cuid())
+  projectId    String
+  /// "search-console" | "analytics"
+  service      String
+  /// "page-query-date" (GSC) | "landing-session" (GA) | "channel" (GA)
+  kind         String
+  /// Source's own clock, disclosed rather than relabeled: GSC dates are
+  /// Pacific; GA dates are the GA4 property's configured timezone.
+  windowStart  String
+  windowEnd    String
+  timezoneNote String
+  /// JSON — rows at the source's own aggregation grain, never pre-joined.
+  rows         String
+  rowCount     Int      @default(0)
+  /// false when the API's own pagination/rowLimit indicates more rows exist
+  /// than were fetched — §7.3's "does not guarantee every row" honesty.
+  complete     Boolean  @default(true)
+  fetchedAt    DateTime @default(now())
+
+  @@index([projectId, service, kind])
+}
+
+model WebsiteInsightSnapshot {
+  id             String    @id @default(cuid())
+  projectId      String
+  pageIdentityId String?
+  /// One of §7.5's 7 rule ids.
+  ruleId         String
+  ruleVersion    Int       @default(1)
+  severity       String
+  message        String
+  limitations    String    @default("")
+  actionTarget   String    @default("")
+  /// JSON string[] — exact source extract ids/keys the rule fired on.
+  sourceIds      String    @default("[]")
+  /// JSON — the fact inputs the rule evaluated, for after-the-fact audit.
+  factsJson      String    @default("{}")
+  validFrom      DateTime  @default(now())
+  validUntil     DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([projectId, ruleId])
+  @@index([pageIdentityId])
+}
+
 // ─── SEO audit (Search Console data + fixes) ──────────────────────────
 // The technical audit's sibling: it reads Google Search Console (Search
 // Analytics + URL Inspection), then attaches a fix — and, where it can, a
@@ -920,6 +994,198 @@ model ScoreRun {
 
   @@index([projectId])
   @@index([projectId, createdAt])
+}
+
+// ─── P14: the Cailyx digital-performance score family (§5.2–§5.5) ───────────
+// A SEPARATE score family from the five-dimension ScoreRubric/ScoreRun roll-up
+// above. §5.2: "The existing score answers a narrower AI/search-readiness
+// question. The requested Cailyx score covers broader digital performance.
+// These are not interchangeable." Nothing in this family reads, rewrites or
+// relabels a ScoreRun row or a ScoreRubric version — old reports keep their old
+// score name and methodology, and no historical record is rewritten.
+//
+// Analysis: docs/analysis/digital-performance-score.md (the §5.4 metric design
+// gate). Weights/thresholds live in ScoreMethodology.config so a later approved
+// change is a NEW methodology version, not a code rewrite.
+
+/// One versioned methodology for a score family: the bucket set, weights,
+/// per-metric thresholds, minimum samples and maximum source ages, held as
+/// configuration. §5.4 requires thresholds to be configurable per metric
+/// version — in particular social cadence, where "a B2B business must not be
+/// penalized for not posting daily on TikTok".
+model ScoreMethodology {
+  id      String @id @default(cuid())
+  /// digital-performance
+  family  String
+  version Int
+  label   String
+  /// JSON ScoreMethodologyConfig:
+  /// { rounding, buckets: [{ key, label, weight, detailPath, metricVersion,
+  ///   maxAgeDays, minSample, scope, thresholds }] }
+  config String
+  /// Which version the next run uses. NOT a claim that the weights are
+  /// approved: §22 D01 ("Score buckets and weighting") is still an open
+  /// product decision, so `active` only selects a version, it does not
+  /// validate it.
+  active Boolean @default(false)
+  note    String?
+  createdAt DateTime @default(now())
+
+  // No back-relation to ScoreFamilyRun: a run is keyed by (family, version),
+  // and a relation on `version` alone would be ambiguous across families. The
+  // pairing is enforced in the service, which refuses to write a run whose
+  // (family, methodologyVersion) has no methodology row.
+  @@unique([family, version])
+  @@index([family, active])
+}
+
+/// One run of a score family. Immutable once written (P14 exit gate: "immutable
+/// runs") — the service has no update or delete path for this table, and
+/// `fingerprint` lets a reader prove a stored run was not rewritten.
+///
+/// `total` is NULL whenever any applicable bucket is unmeasured or invalid
+/// (§5.3 rule 4: "return overall incomplete with no numeric total"). There is
+/// deliberately no partial-total column: a partial sum that a reader could
+/// mistake for a total is exactly the silent score inflation the rule exists to
+/// prevent. `weightedPointsTotal` is nulled for the same reason.
+model ScoreFamilyRun {
+  id                 String @id @default(cuid())
+  projectId          String
+  family             String @default("digital-performance")
+  methodologyVersion Int
+  /// complete | incomplete
+  status             String
+  /// 0-100, rounded half-up from weightedPointsTotal / applicableWeightTotal —
+  /// the ONLY rounding step in the calculation. NULL when incomplete.
+  total Int?
+  band  String?
+  /// Sum of the weights of buckets recorded as applicable. An input to the
+  /// calculation, not a score.
+  applicableWeightTotal Int
+  /// Sum of weight × value over MEASURED buckets. NULL when incomplete, so no
+  /// reader can present a partial sum as a total.
+  weightedPointsTotal Int?
+  /// Weighted evidence coverage 0-100: the share of applicable weight that was
+  /// actually measured. Coverage — NOT statistical confidence and NOT business
+  /// performance (§5.3 rule 6).
+  evidenceCoverage Int
+  /// §5.5: sha256 over (family, methodologyVersion, applicability decisions,
+  /// scope definitions). Two runs may be compared only when these keys match.
+  comparisonKey String
+  /// 1-based; incremented whenever the comparison key changes, so old and new
+  /// scores land in different segments and are never averaged together.
+  segmentIndex Int
+  /// new-segment | comparable | scoring-changed
+  comparisonState String
+  previousRunId   String?
+  /// sha256 of the canonical stored payload.
+  fingerprint String
+  /// JSON ScoreRunScope — market set, source definitions and window DEFINITIONS
+  /// this run measured against. Concrete window dates live per bucket: the
+  /// comparison key must not change merely because a day passed.
+  scope String
+  /// JSON — the applicability decisions in force for this run, snapshotted so a
+  /// later decision cannot silently reinterpret an old run.
+  applicabilitySnapshot String @default("{}")
+  createdAt DateTime @default(now())
+
+  buckets ScoreBucketRun[]
+
+  @@index([projectId, createdAt])
+  @@index([projectId, family, createdAt])
+  @@index([projectId, family, comparisonKey])
+}
+
+/// One bucket's stored detail inside a run — every field §5.3 requires a bucket
+/// to carry: key, label, weight, applicability, value or absent state,
+/// measurement window, methodology version, metric inputs, thresholds, source
+/// references, source ages, missing reasons and effective contribution.
+model ScoreBucketRun {
+  id    String @id @default(cuid())
+  runId String
+  key   String
+  label String
+  /// The weight this run was actually calculated with, stored per row so an old
+  /// run keeps its own weights after a methodology change.
+  weight Int
+  /// applicable | not-applicable. "Not relevant" is a recorded decision with a
+  /// reason (§5.3 rule 1), never inferred from missing data.
+  applicability       String
+  applicabilityReason String?
+  /// measured | not-measured | not-applicable | outdated | failed
+  state String
+  /// 0-100 bucket value. NULL unless state = measured — an absent value always
+  /// carries a state and a reason, never a 0 standing in for "unknown".
+  value Int?
+  /// weight × value, exact and unrounded. 0 when not measured.
+  weightedPoints Int @default(0)
+  /// The weight this bucket contributes to the denominator: its weight when
+  /// applicable, 0 only when explicitly not-applicable. A bucket that is merely
+  /// unmeasured keeps its full effective weight — that is what makes the run
+  /// incomplete instead of redistributing its weight away.
+  effectiveWeight Int @default(0)
+  /// weightedPoints / applicableWeightTotal — the bucket's exact share of the
+  /// 0-100 total, unrounded by design (only the final total is rounded).
+  contribution Float @default(0)
+  /// The measurement window actually used for this bucket.
+  windowStart DateTime?
+  windowEnd   DateTime?
+  methodologyVersion Int
+  /// e.g. "website-health/1" — the formula version, so a formula change is
+  /// visible rather than silently reinterpreted.
+  metricVersion String
+  /// JSON MetricInput[] — numerator, denominator, units, rounding and any
+  /// submetric excluded from the bucket mean, per submetric.
+  metricInputs String @default("[]")
+  /// JSON — the thresholds actually applied (from the methodology version).
+  thresholds String @default("{}")
+  /// JSON SourceRef[] — { kind, ref, observedAt, ageDays } per source read.
+  sources String @default("[]")
+  maxAgeDays Int
+  minSample  Int
+  /// JSON string[] — plain-English reasons the bucket is not measured.
+  missingReasons String @default("[]")
+  /// JSON string[] — disclosures that are neither missing data nor a score:
+  /// the scope actually measured, what the metric deliberately does NOT claim,
+  /// and any known limitation of this metric version.
+  notes String @default("[]")
+  /// Client-safe detail destination with the period preserved (§5.5).
+  detailPath  String?
+  detailQuery String?
+  createdAt   DateTime @default(now())
+
+  run ScoreFamilyRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, key])
+  @@index([key, state])
+}
+
+/// §5.3 rule 1 — an explicit, recorded decision that a bucket is not relevant
+/// to this project. Mirrors PresenceApplicabilityOverride's shape (§11.2): the
+/// absence of a row means "applicable", and a bucket that simply could not be
+/// measured stays applicable and `not-measured`. Those are different things and
+/// only an explicit not-applicable decision redistributes weight.
+model ScoreApplicabilityDecision {
+  id        String @id @default(cuid())
+  projectId String
+  bucketKey String
+  /// applicable | not-applicable
+  decision  String
+  /// Required by the service for a not-applicable decision — "not relevant" is
+  /// a decision with a reason, not an absence of data.
+  reason     String
+  actorEmail String?
+  /// Methodology version the decision was taken against, so a later bucket-set
+  /// change reads as "this decision predates the current buckets" rather than
+  /// being silently reinterpreted.
+  methodologyVersion Int
+  createdAt    DateTime  @default(now())
+  /// Null while this row is the latest for (projectId, bucketKey). Superseding
+  /// writes a new row rather than deleting history.
+  supersededAt DateTime?
+
+  @@index([projectId, bucketKey])
+  @@index([projectId, supersededAt])
 }
 
 // A factual statement tracked through claims discipline (FR-9.4): provenance,
@@ -1141,6 +1407,18 @@ model GrowthAsset {
   /// dangling reference here must never delete a recommendation someone may
   /// already be acting on.
   sourceGapId    String?
+  /// P07 §12.7 opportunity->content conversion contract: the `Opportunity`
+  /// this asset was created from, if any. Not a foreign key for the same
+  /// reason as `sourceGapId` — an opportunity may later be pruned/reanalyzed
+  /// independently, and a dangling reference here must never delete or break
+  /// a brief someone is already acting on. `Opportunity.convert()` is the
+  /// only writer.
+  sourceOpportunityId String?
+  /// Caller-supplied idempotency key for opportunity-triggered creation only
+  /// (null for every other creation path). Unique so a retried "Create
+  /// content" click with the same key can never create a second brief —
+  /// `OpportunitiesService.convertToContent` checks this before writing.
+  idempotencyKey String?   @unique
   status         String    @default("recommended") // recommended | in-progress | published
   /// deterministic (template) | generated-llm — same honesty convention as
   /// Persona.source: a reader must be able to tell which one produced this.
@@ -1154,12 +1432,120 @@ model GrowthAsset {
   content        String?
   publishedAt    DateTime?
   assetUrl       String?
+  /// P08 §13.3 workspace filter — the staff member responsible for moving
+  /// this piece forward next. Not a foreign key (User rows can be
+  /// deactivated without silently orphaning content ownership history);
+  /// content-workspace.service.ts validates it against real users on write.
+  assigneeId     String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
   @@index([projectId])
   @@index([projectId, assetType])
   @@index([projectId, status])
+  @@index([sourceOpportunityId])
+  @@index([assigneeId])
+}
+
+// ---------------------------------------------------------------------------
+// P07 — Keyword gaps / content opportunities (platform_improvement_plan.md
+// §12.5-§12.7). Canonical opportunity ("idea") records: Content -> Ideas is
+// the one home per §12.5; Competitors/Website/Reports link into a filtered
+// view of these rows rather than keeping their own copies.
+// ---------------------------------------------------------------------------
+
+/// One canonical content opportunity ("idea"). Origin-tagged, deduplicated by
+/// (projectId, topic, market, language, intent, evidenceSourceFamily) per
+/// §12.6's last paragraph — re-running analysis UPDATES the matching row's
+/// evidence/measuredAt/recommendation rather than creating a duplicate, and
+/// never silently un-dismisses a row a human dismissed without a new reason.
+model Opportunity {
+  id        String @id @default(cuid())
+  projectId String
+
+  /// search-gap | ai-question-gap | refresh | client-request | editorial-idea
+  /// — §12.5's exact origin list. Only origins with a real, wired source are
+  /// ever written: this build wires search-gap (keyword-gap engine, below)
+  /// and editorial-idea (explicit manual "Research a search term" /
+  /// operator-added ideas). ai-question-gap/refresh/client-request are valid
+  /// values the schema supports but nothing in this build populates them —
+  /// no placeholder rows are fabricated to fill the enum.
+  origin String
+
+  /// Normalized (trim/lowercase/collapsed-whitespace) topic or keyword — the
+  /// dedup key's core field. `topicDisplay` keeps the original casing for
+  /// rendering.
+  topic        String
+  topicDisplay String
+
+  /// Target market/language the opportunity was evaluated for. Nullable:
+  /// some editorial ideas have no single target market.
+  market   String?
+  language String?
+  /// informational | commercial | navigational | transactional | unspecified
+  /// — coarse search intent, used only as a dedup-identity field per §12.6;
+  /// never inferred beyond what the evidence actually supports.
+  intent String @default("unspecified")
+
+  /// Groups WHICH kind of evidence backs this row for dedup purposes, e.g.
+  /// "serp-keyword-gap" | "competitor-topic-signal" | "manual-lookup". Two
+  /// evidence records of the same family reinforce one Opportunity; a
+  /// different family for the same topic is a distinct row (§12.6).
+  evidenceSourceFamily String
+
+  reason String
+
+  /// JSON OpportunityEvidence[] (see opportunities.types.ts) — every backing
+  /// observation, appended to (not replaced) on each re-run: checked depth,
+  /// query/location/device, capture date, competitor name/domain, source ids.
+  /// Multiple evidence records may reinforce one idea (§12.6).
+  evidence String @default("[]")
+
+  measuredAt DateTime
+
+  /// ranked | unknown | not-observed. A null/failed capture is `unknown`,
+  /// never coerced into "not ranking" (§12.6).
+  clientPositionStatus String  @default("unknown")
+  clientPosition       Int?
+  rivalPositionStatus  String  @default("unknown")
+  rivalPosition         Int?
+  rivalName              String?
+  rivalCompetitorId      String?
+
+  /// 0-100 relevance/priority signal, disclosed formula (see
+  /// opportunities.service.ts) — a ranking aid, not a promise, same
+  /// convention as keyword-research's priorityScore.
+  relevance Int @default(0)
+
+  /// unavailable when no demand data exists — never coerced to 0.
+  demandVolume      Int?
+  demandCpc         Float?
+  demandCompetition String?
+
+  suggestedContentType String?
+  /// GrowthAsset.id of a pre-existing piece this topic already has, if the
+  /// analysis found one by target keyword match. Null = no match found.
+  existingContentMatchId String?
+
+  /// new | in-progress | dismissed | converted
+  status String @default("new")
+  /// Required whenever status is set to "dismissed" — re-running analysis
+  /// with unchanged evidence must never silently flip a dismissed row back
+  /// to "new" (§12.6). A NEW reason (operator or materially new evidence) is
+  /// the only thing allowed to reopen it.
+  dismissedReason String?
+  dismissedAt     DateTime?
+
+  /// The GrowthAsset created by "Create content" (§12.7), once converted.
+  linkedGrowthAssetId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([projectId, topic, market, language, intent, evidenceSourceFamily], name: "opportunityIdentity")
+  @@index([projectId])
+  @@index([projectId, status])
+  @@index([projectId, origin])
 }
 
 // ---------------------------------------------------------------------------
@@ -1700,11 +2086,145 @@ model SiteContext {
   llmModel     String?
   costUsd      Float    @default(0)
   createdAt    DateTime @default(now())
+  // P03 (§9.3/§9.4) — the staged run that produced this row, when it was built
+  // by the staged pipeline rather than the legacy one-shot path. Nullable so
+  // every pre-P03 row (and any direct legacy `build()` call) stays valid.
+  runId        String?  @unique
+  // JSON Record<field, Array<{url,excerpt,observedAt}>> — per-field source
+  // citations for every value above, keyed by the same field names as the
+  // arrays themselves ("services", "icp", …). "[]" when a field has no
+  // citation on file (pre-P03 rows, or a field the pipeline left empty).
+  fieldSources String   @default("{}")
 
   audits AeoAudit[]
+  run    SiteContextRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
 
   @@index([projectId])
   @@index([projectId, createdAt])
+}
+
+// ─── P03 — staged website-understanding pipeline (plan §9.3/§9.4) ─────────
+// One persisted, resumable run through discover → inspect → select →
+// extract → reconcile → validate. `status`/`stage` follow the same
+// last-completed-stage convention `AeoAudit` already uses, so a crash mid
+// run resumes from the last persisted stage rather than restarting —
+// re-fetching only pages that were never successfully read, and retrying
+// only extraction that actually failed, up to a capped number of attempts.
+model SiteContextRun {
+  id        String @id @default(cuid())
+  projectId String
+  domain    String
+
+  // pending | discovering | inspecting | selecting | extracting | reconciling | validating | completed | failed
+  status String  @default("pending")
+  // last stage fully persisted — what a resume reads to know where to continue
+  stage  String?
+  error  String?
+
+  // Budgets (§9.4): tracked and enforced independently, never traded off
+  // against each other. A failed page's retries are capped by
+  // maxRetriesPerPage regardless of how much of the other budgets remain.
+  maxPages         Int @default(12)
+  maxRequests      Int @default(40)
+  maxChars         Int @default(24000)
+  maxElapsedMs     Int @default(300000)
+  maxRetriesPerPage Int @default(2)
+
+  // Actual spend, updated as the run progresses.
+  pagesSpent    Int @default(0)
+  requestsSpent Int @default(0)
+  charsSpent    Int @default(0)
+  elapsedMs     Int @default(0)
+
+  refine Boolean @default(true) // whether the extract stage may call the LLM
+
+  // JSON: purpose-category coverage plan produced by the select stage, e.g.
+  // {"homepage":{"target":1,"filled":1},"pricing":{"target":1,"filled":0},...}
+  coveragePlan String @default("{}")
+  // JSON string[] — human-readable notes from reconcile/validate: unresolved
+  // conflicts, dropped unsupported assertions, incomplete-discovery disclosures.
+  notes        String @default("[]")
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  pages   SiteContextRunPage[]
+  facts   SiteContextFact[]
+  context SiteContext?
+
+  @@index([projectId])
+  @@index([projectId, createdAt])
+}
+
+// One candidate/discovered page within a run — stage 1's persisted candidate
+// inventory, enriched in place by stage 2 (metadata) and stage 3 (selection),
+// consumed (not re-fetched) by stage 4.
+model SiteContextRunPage {
+  id              String @id @default(cuid())
+  runId           String
+  url             String
+  discoverySource String // homepage | sitemap | nav | guess
+
+  fetched     Boolean   @default(false)
+  statusCode  Int?
+  fetchedAt   DateTime?
+  // Cached fetched content so stage 4 never re-fetches a page stage 1/2
+  // already read. Large text is truncated at capture time (see service).
+  html        String?
+  text        String?
+
+  // Stage 2 — metadata inspection.
+  title           String?
+  description     String?
+  headings        String  @default("[]") // JSON string[]
+  language        String?
+  pageType        String? // homepage | service | about | pricing | industries | location | case-study | blog | login | cart | policy | other
+  contentHash     String?
+  duplicateOfUrl  String?
+
+  // Stage 3 — selection.
+  selected        Boolean @default(false)
+  selectionReason String?
+  purposeCategory String? // homepage | service-product | about | pricing | industries | location | case-study | other
+
+  // Stage 4 — extraction.
+  extractStatus String  @default("pending") // pending | success | failed | skipped
+  extractError  String?
+  retryCount    Int     @default(0)
+
+  run SiteContextRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, url])
+  @@index([runId])
+  @@index([runId, selected])
+}
+
+// One extracted, cited assertion. Stage 4 writes these; stage 6 flips
+// `validated` after checking the assertion against its own cited page text
+// (never against another page's), and an unsupported assertion is excluded
+// from the final `SiteContext` row rather than deleted — the record of what
+// was proposed and rejected stays on file.
+model SiteContextFact {
+  id    String @id @default(cuid())
+  runId String
+  // services | icp | valueProps | painPoints | outcomes | markets | category | vertical | description | brand | geo
+  field String
+  value String
+
+  sourceUrl   String
+  excerpt     String?
+  contentHash String?
+  observedAt  DateTime @default(now())
+
+  validated      Boolean @default(false)
+  validationNote String?
+
+  run SiteContextRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([runId, field])
 }
 
 // One AEO audit: a context + a generated matrix + a measurement run on one
@@ -1897,6 +2417,51 @@ model PresenceDiscovery {
   @@index([projectId, startedAt])
 }
 
+/// P05 §11.2 — the explicit applicability policy, persisted as versioned
+/// overrides only. The computed default (business type × delivery model ×
+/// local presence × markets) is pure and re-derived on every read; this table
+/// exists solely so a staff/client correction survives a rediscovery run
+/// instead of being silently recomputed away.
+model PresenceApplicabilityOverride {
+  id          String    @id @default(cuid())
+  projectId   String
+  platform    String
+  /// relevant | optional | not-relevant | needs-confirmation
+  status      String
+  reason      String
+  /// Rule version the override was made against, so a later engine change is
+  /// visible as "this override predates the current rules" rather than silently
+  /// reinterpreted.
+  ruleVersion String
+  actorEmail  String?
+  createdAt   DateTime  @default(now())
+  /// Null while active. A superseding override does not delete history — it is
+  /// simply no longer the latest row for this projectId+platform.
+  supersededAt DateTime?
+
+  @@index([projectId, platform])
+}
+
+/// P05 §11.4 — "a human said this candidate is not ours." Keyed by normalized
+/// URL so the next discovery/SERP run does not keep resurfacing the same
+/// rejected candidate. No hard delete: `reconsideredAt` records an authorized
+/// undo without destroying the original rejection.
+model PresenceRejection {
+  id               String    @id @default(cuid())
+  projectId        String
+  platform         String
+  /// Lowercased, tracking-params stripped, trailing slash trimmed — the same
+  /// normalization the account dedupe already applies.
+  normalizedUrl    String
+  reason           String
+  actorEmail       String?
+  createdAt        DateTime  @default(now())
+  reconsideredAt   DateTime?
+  reconsideredBy   String?
+
+  @@index([projectId, platform, normalizedUrl])
+}
+
 // ─── Tech Stack (wave-6 D3/step 3) ──────────────────────────────────────────
 // Deterministic technology fingerprinting over one fetched homepage — no
 // vendor, no per-lookup cost. Analysis: docs/analysis/tech-stack.md, decision
@@ -2077,19 +2642,82 @@ model Competitor {
   domain    String?
   /// project-json (promoted from Project.competitors) | manual (operator-added
   /// via an explicit body list on /discover) | aeo-answer (name an AI surface
-  /// mentioned that wasn't already recorded — see AeoStanceService)
+  /// mentioned that wasn't already recorded — see AeoStanceService) |
+  /// market-discovery (§12.2 — composed from confirmed services/segments +
+  /// target markets, plus names/domains already observed in stored AEO/SERP
+  /// evidence; see CompetitorsService.discoverByMarket)
   source    String   @default("project-json")
   /// tracked | candidate. Candidates are never profiled, never shown in
   /// /discover or /gap, and never fed back into the AEO stance prompt as a
   /// "known competitor" — they need an explicit confirm first (D: an
   /// LLM-mentioned name is not yet a trusted competitive claim).
   status    String   @default("tracked")
+  /// direct-competitor | adjacent-alternative | not-relevant (§12.2).
+  /// Manually/explicitly added competitors default to direct-competitor;
+  /// market-discovery candidates are classified by grounded heuristics
+  /// (never an invented domain) and can be reclassified by an operator via
+  /// PATCH .../candidates/:id/relevance without needing a confirm/reject.
+  relevance       String  @default("direct-competitor")
+  /// Free-text explanation of why a market-discovery candidate was
+  /// suggested (matched service/market/evidence source) — shown to the
+  /// operator doing the review; null for project-json/manual/aeo-answer rows.
+  discoveryReason String?
   createdAt DateTime @default(now())
 
   profiles CompetitorProfile[]
 
   @@unique([projectId, name])
   @@index([projectId])
+}
+
+/// Rejection memory (§12.2 third paragraph): a candidate a human explicitly
+/// discarded must not keep resurfacing. Keyed on both the lowercased name and
+/// (when known) the canonical domain, since a rediscovery pass may find the
+/// same rival again under a slightly different name but the same domain, or
+/// vice versa. Read by CompetitorsService.listCandidates (filters out any
+/// candidate row matching a tombstone — self-heals rows written by other
+/// producers, e.g. AeoStanceService) and by discoverByMarket (never re-proposes
+/// a match). There is no undo; re-adding is always available as an explicit
+/// manual add, which is a deliberate act distinct from a rediscovery loop.
+model CompetitorRejection {
+  id        String   @id @default(cuid())
+  projectId String
+  /// Lowercased, trimmed candidate name at rejection time.
+  nameKey   String
+  /// Canonical registrable domain (via hostOf()) at rejection time, null when
+  /// the rejected candidate had no domain on record.
+  domainKey String?
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, nameKey])
+  @@index([projectId, domainKey])
+}
+
+/// A frozen comparison (§12.3): exactly which source observations, extraction
+/// version and competitor-set version produced a given GapResult. Written as a
+/// new row on every GET .../gap call (an "Update comparison" read from
+/// already-stored evidence — never a new paid AEO/SERP/tech run). Never
+/// mutated after creation: the `result` JSON keeps the competitor set and
+/// figures exactly as computed at that moment, so an older snapshot stays
+/// readable even after competitors are added/removed later.
+model CompetitorComparisonSnapshot {
+  id                    String   @id @default(cuid())
+  projectId             String
+  /// Hash of the sorted (competitorId:status) pairs considered — lets a
+  /// reader tell whether two snapshots were built over the same tracked set.
+  competitorSetVersion  String
+  /// Bumped only when the comparison's derivation logic changes shape.
+  extractionVersion     String   @default("gap-v1")
+  /// JSON { techScanIds, profileIds, aeoAuditIds, serpResultSample } — the
+  /// exact source observation ids the comparison was derived from.
+  sourceObservationIds  String
+  /// The full frozen GapResult, JSON-stringified, exactly as returned to the
+  /// caller at generation time.
+  result                String
+  generatedAt           DateTime @default(now())
+
+  @@index([projectId, generatedAt])
 }
 
 /// One light profile snapshot for a competitor. A new row per `/discover`
@@ -2469,10 +3097,17 @@ model BusinessProfile {
   services    String    @default("[]")
   /// JSON — ideal customer profile { segments, roles, painPoints }.
   icp         String    @default("{}")
-  /// JSON string[] — geographic markets.
+  /// JSON string[] — geographic markets. Legacy flat shape, kept for
+  /// backward-compat consumers; `targets` below is the structured P04 model.
   markets     String    @default("[]")
   /// JSON string[] — BCP-47 language tags.
   languages   String    @default("[]")
+  /// JSON — MarketTarget[] (plan §10.1): structured
+  /// { country, region, city, language, priority, active, productApplicability }.
+  /// Rides along in the same draft/confirm versioning as every other field on
+  /// this row — a confirmed target is just a confirmed field group, not a
+  /// separate approval workflow (plan §9.2).
+  targets     String    @default("[]")
   /// JSON — { fact, evidenceUrl }[] the client stands behind. Feeds claims.
   facts       String    @default("[]")
   /// JSON — { name, domain }[] the client names as rivals.
@@ -2490,6 +3125,31 @@ model BusinessProfile {
   updatedAt   DateTime  @updatedAt
 
   @@unique([projectId, version])
+  @@index([projectId])
+}
+
+/// A suggested field value (from extracted SiteContext) that a human looked at
+/// and declined — "keep current" rather than "accept". Recorded so a later
+/// recrawl producing the SAME value does not resurface it again (plan §9.2:
+/// "Record rejected suggestions or override locks so they are not repeatedly
+/// reintroduced unchanged"). Keyed on a hash of the normalized suggested value
+/// so an actually-changed re-suggestion (the site genuinely said something
+/// different this time) is not silently suppressed by an old rejection.
+model BusinessProfileRejection {
+  id         String   @id @default(cuid())
+  projectId  String
+  /// Dot-path into BusinessProfileData, e.g. "brandName", "services", "icp.segments".
+  fieldPath  String
+  /// sha256 of the canonicalized (sorted, JSON-stringified) rejected value.
+  valueHash  String
+  /// JSON snapshot of the rejected value itself, kept for audit/display only —
+  /// matching is always done on valueHash, never by re-parsing this.
+  value      String
+  actorType  String // "operator" | "client"
+  actorId    String?
+  createdAt  DateTime @default(now())
+
+  @@unique([projectId, fieldPath, valueHash])
   @@index([projectId])
 }
 
@@ -2642,6 +3302,85 @@ model Cycle {
 
   @@index([projectId, status])
   @@index([engagementId])
+}
+
+/// P11 — a "plan commitment": what the team intends to accomplish in a
+/// period ("Publish ten useful articles"), explicitly distinct from a
+/// WorkItem (who does a concrete step) and a content-schedule entry (when a
+/// piece publishes — P10's job). Always scoped to one Cycle, per §6.3
+/// ("extend with a stable commitment resource ... under a cycle; do not
+/// create a second independent plan engine"). Progress is never stored here
+/// — it is always derived at read time from linked WorkItem.status/verified
+/// counts (countable commitments) or from outcomeMetricCurrent (outcome
+/// commitments), so a commitment can never silently drift out of sync with
+/// its evidence.
+model Commitment {
+  id           String    @id @default(cuid())
+  projectId    String
+  cycleId      String
+  /// Plain-English outcome, e.g. "Publish ten useful articles for the new product".
+  title        String
+  /// Short reason this matters, shown next to the outcome.
+  reason       String?
+  /// website | content | email | ads | online-presence | other — §6.2's
+  /// workstream tag. A section only renders in the UI when at least one
+  /// commitment carries its tag; there is no separate "purchased services"
+  /// table, so an empty tag never appears without a commitment behind it.
+  workstream   String    @default("other")
+  /// draft -> proposed -> agreed -> active -> completed | closed;
+  /// cancelled | superseded are explicit alternatives at any open state.
+  /// See COMMITMENT_TRANSITIONS in delivery-plan.types.ts.
+  status       String    @default("draft")
+  /// Countable target, e.g. 10 (articles). Null for a pure outcome goal.
+  targetCount  Int?
+  /// Unit label for targetCount, e.g. "articles".
+  targetUnit   String?
+  targetDate   DateTime?
+  /// Outcome-style commitments (e.g. "Increase qualified visits") carry their
+  /// own metric instead of / alongside a countable target. currentValue is
+  /// only ever written through recordOutcomeMetric/completeCommitment — never
+  /// inferred from linked WorkItems — so "outcome-goal completed" always
+  /// means a human recorded the outcome, not that tasks closed.
+  outcomeMetricLabel     String?
+  outcomeMetricUnit      String?
+  outcomeMetricBaseline  Float?
+  outcomeMetricTarget    Float?
+  outcomeMetricCurrent   Float?
+  outcomeMetricObservedAt DateTime?
+  /// Staff userId accountable for this commitment. The client view shows
+  /// "Your Cailyx team" unless clientVisibleLead is explicitly set true —
+  /// mirrors the portal's actor-hiding convention (see toPortalText/
+  /// toPortalScopeChanges), applied here rather than reinvented.
+  accountableLead      String?
+  clientVisibleLead    Boolean   @default(false)
+  /// JSON string[] of WorkItem ids belonging to this commitment. Progress
+  /// for a countable commitment = count of these whose WorkItem.status is
+  /// "verified", against targetCount — the same verification concept G06
+  /// already established, never a second one.
+  linkedWorkItemIds    String    @default("[]")
+  /// Loose reference to relevant content/results (e.g. a content asset id or
+  /// URL) — deliberately not a foreign key into the P08/P10 content-identity
+  /// tables, which this phase does not own.
+  contentRef           String?
+  /// "Agreed" requires this recorded confirmation — an operator saving the
+  /// plan is never enough on its own (§6.3).
+  agreedAt             DateTime?
+  agreedBy             String?
+  /// JSON — { at, by, reason, previousTarget, newTarget, previousDate,
+  /// newDate, requiresReconfirmation }[]. Appended, never rewritten, exactly
+  /// like Cycle.scopeChanges.
+  scopeChanges         String    @default("[]")
+  /// Set when this commitment is superseded by a newer one rather than
+  /// edited in place, so completed work is never silently erased.
+  supersededBy         String?
+  cancelledAt          DateTime?
+  cancelReason         String?
+  createdBy            String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([projectId, status])
+  @@index([cycleId])
 }
 
 /// A single deliverable. §7.1's minimum fields.
@@ -2971,6 +3710,18 @@ model Attachment {
 model ContentBrief {
   id           String    @id @default(cuid())
   projectId    String
+  /// P08 §13.2 stable brief-family identity, DECOUPLED from title. Versioning
+  /// used to be keyed by (projectId, version, title) — renaming a brief broke
+  /// its own version chain and could accidentally collide with an unrelated
+  /// brief that happened to share a new title. A fresh cuid on every row that
+  /// does not explicitly reuse its parent's briefFamilyId (ContentService only
+  /// reuses it when forking a version of an existing family); a rename never
+  /// changes it. Existing pre-P08 rows are backfilled to their own `id` — one
+  /// family per legacy row, a safe no-op migration (§13.2: "existing ambiguous
+  /// title-based history cannot be safely auto-merged"). See
+  /// content-workspace.service.ts's `mergeBriefFamilies` for the staff tool
+  /// that manually reunites legacy rows an operator recognizes as one lineage.
+  briefFamilyId String   @default(cuid())
   version      Int       @default(1)
   title        String
   /// article | ad-copy | landing-page | faq | comparison | guide | case-study
@@ -3001,8 +3752,10 @@ model ContentBrief {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  @@unique([projectId, version, title])
+  @@unique([projectId, briefFamilyId, version])
   @@index([projectId, status])
+  @@index([projectId, briefFamilyId])
+  @@index([projectId, title])
 }
 
 /// An immutable saved version of a piece of content. Editing writes a new row;
@@ -3027,14 +3780,31 @@ model ContentRevision {
   authorId   String?
   /// Hash of body+fields, used for the edit-invalidates-approval check.
   contentHash String?
+  /// P08 §13.5/§14.4 explicit sharing state. Default false (private, an
+  /// internal draft/working iteration) — a client route must NEVER infer
+  /// visibility implicitly from approval status alone, and must never fall
+  /// back to "latest revision" for a client read. Only a revision an
+  /// operator deliberately marks here is ever returned by a client-portal
+  /// content read.
+  clientVisible   Boolean   @default(false)
+  clientVisibleAt DateTime?
+  clientVisibleBy String?
   createdAt  DateTime @default(now())
 
   @@unique([assetId, revision])
   @@index([assetId])
+  @@index([assetId, clientVisible])
 }
 
 /// A batch generation request. Holds requested vs. succeeded vs. failed so a
 /// short batch is visible instead of silently looking complete.
+///
+/// P09 (plan §13.7, durable generation) extended this from a bookkeeping row
+/// written AFTER a synchronous call into the durable unit of work itself:
+/// everything the worker is allowed to use is pinned here BEFORE execution
+/// starts, so editing the writing style / business profile after enqueue can
+/// never change what an in-flight or already-completed job used. The worker
+/// (content-generation.service.ts) resolves ONLY these pinned fields.
 model GenerationJob {
   id          String    @id @default(cuid())
   projectId   String
@@ -3045,7 +3815,7 @@ model GenerationJob {
   requested   Int       @default(0)
   succeeded   Int       @default(0)
   failed      Int       @default(0)
-  /// queued | running | partial | completed | failed
+  /// queued | running | partial | completed | failed | cancelled
   status      String    @default("queued")
   provider    String?
   model       String?
@@ -3057,7 +3827,44 @@ model GenerationJob {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
+  /// P09 durability additions ────────────────────────────────────────
+  /// Client-supplied dedupe key. A retry/resubmit with the same key on the
+  /// same project returns the existing job/output rather than creating a
+  /// second one — the concrete guard against "worker crashed after creating
+  /// the revision but before acknowledging".
+  idempotencyKey        String?
+  actorId               String?
+  /// Pinned target: null = this job creates a NEW content piece; set = this
+  /// job produces a new revision on an existing GrowthAsset (P08 identity).
+  contentAssetId        String?
+  /// Pinned approved brief version this job was authorized against (§13.7).
+  writingStyleProfileId String?
+  writingStyleVersion   Int?
+  /// sha256 of the pinned style's substantive fields at enqueue time — lets a
+  /// caller PROVE a later edit to the active style did not leak into this job,
+  /// without re-reading history.
+  writingStyleFingerprint String?
+  /// Pinned confirmed BusinessProfile.version (read-only reference; P02/P04
+  /// owns the live row, this only pins which version was used).
+  businessProfileVersion  Int?
+  /// JSON string[] — source evidence record ids (claims, gap ids, etc.).
+  sourceEvidenceIds       String   @default("[]")
+  /// JSON — generation knobs (temperature/length/etc.), never shown to a client.
+  generationSettings      String   @default("{}")
+  costReservationUsd      Float    @default(0)
+  /// Lease/ownership so two workers can't double-process the same job.
+  leaseOwner              String?
+  leaseExpiresAt          DateTime?
+  attempts                Int      @default(0)
+  maxAttempts             Int      @default(3)
+  cancelledAt             DateTime?
+  /// Set the moment a ContentRevision is created — read BEFORE creating a
+  /// second one on retry, so a crash between "revision created" and "job
+  /// marked succeeded" is recoverable without duplicating output.
+  revisionId              String?
+
   @@index([projectId, status])
+  @@unique([projectId, idempotencyKey])
 }
 
 /// One requested artifact inside a GenerationJob. A failed item is retryable
@@ -3080,6 +3887,55 @@ model GenerationItem {
   updatedAt       DateTime  @updatedAt
 
   @@index([generationJobId, status])
+}
+
+// ─── P09 — Writing style profile (plan §13.8) ──────────────────────
+//
+// Owned by Content (never by digital-presence). Same draft->confirmed
+// versioning discipline as BusinessProfile: confirming never mutates a prior
+// confirmed row, and a new suggestion (from PresenceBrandVoice) never
+// overwrites the active confirmed profile — it is surfaced separately until
+// a human folds it into a NEW draft/confirm.
+
+/// A versioned, editable writing-style record for one project. Monotonic
+/// version per project, exactly like BusinessProfile; `confirmedAt` null =
+/// still a draft/candidate, not yet the active style generation may use.
+model WritingStyleProfile {
+  id            String    @id @default(cuid())
+  projectId     String
+  version       Int       @default(1)
+  name          String    @default("Default style")
+  /// Short plain-English summary, e.g. "Clear and friendly, short sentences; avoid hype."
+  summary       String?
+  tone          String?
+  /// JSON string[]
+  preferredWords String   @default("[]")
+  /// JSON string[]
+  avoidWords     String   @default("[]")
+  /// JSON string[] — example sentences written in this voice.
+  exampleSentences String @default("[]")
+  ctaPreferences String?
+  /// casual | conversational | neutral | formal
+  formality     String    @default("neutral")
+  audience      String?
+  /// JSON — { [channel: string]: { tone?, notes? } }, optional per-channel deltas.
+  channelDifferences String @default("{}")
+  /// manual | suggested-accepted — where this draft's content came from.
+  sourceType    String    @default("manual")
+  /// PresenceBrandVoice.id this draft accepted/started from, if any (read-only reference).
+  suggestionSourceId String?
+  /// Deterministic fingerprint (sha256) of the substantive fields above, so a
+  /// GenerationJob can pin "exactly this content" without copying it whole.
+  fingerprint   String?
+  confirmedBy   String?
+  confirmedAt   DateTime?
+  createdBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([projectId, version])
+  @@index([projectId])
+  @@index([projectId, confirmedAt])
 }
 
 // ─── G10 — Approvals and claim gates ───────────────────────────────
@@ -3231,6 +4087,13 @@ model Publication {
   revisionId    String
   /// The approval that authorized this specific push.
   approvalId    String?
+  /// P10 (plan §6.6) — the `ContentSchedule` placement this attempt executes.
+  /// Null for a publication created straight from content detail (that path
+  /// predates the calendar and is unchanged). This is the *child* side of the
+  /// relationship: the placement owns the calendar event identity, and a
+  /// publication is an execution record hanging off it, so N attempts can
+  /// never turn one placement into N calendar events.
+  scheduleId    String?
   /// draft | publish
   mode          String    @default("draft")
   scheduledFor  DateTime?
@@ -3252,6 +4115,103 @@ model Publication {
 
   @@index([projectId, status])
   @@index([assetId])
+  @@index([scheduleId])
+}
+
+// ─── P10 — Content calendar: planned placements (plan §6.6) ─────────
+//
+// §6.1 keeps three concepts apart, and this table is deliberately none of the
+// other two: a plan `Commitment` is what the team intends to accomplish, a
+// `WorkItem` is who does which step and how it is verified, and a
+// `ContentSchedule` is *when a specific piece should be published or sent*.
+//
+// It is also not a `Publication`. `Publication` creation requires a revision
+// with a recorded approval (§6.6), so a planned date shown before approval
+// cannot be a publication row — faking one there would be a plan that bypasses
+// the approval gate. The placement is the intention; the publication is the
+// execution.
+
+/// One intended channel placement for one content piece: the *intention* half
+/// of §6.6's split. Its `id` IS the calendar event identity (`scheduleId`).
+model ContentSchedule {
+  id            String    @id @default(cuid())
+  projectId     String
+  /// GrowthAsset.id — the content piece this placement is for. Required: a
+  /// calendar entry with no content record behind it is an operational task
+  /// (audit run, crawler check, report release, monitoring job), which §6.4
+  /// explicitly excludes from this calendar and keeps on its own schedule.
+  assetId       String
+  /// ContentBrief.id when the piece came from a brief family (§6.6's
+  /// "content piece / brief family").
+  briefId       String?
+  /// Loose reference to the plan `Commitment` this placement serves. Not a
+  /// foreign key, for the same reason `Commitment.contentRef` is not: §6.7
+  /// requires that editing a plan date never silently reschedules content and
+  /// that editing a content schedule never silently moves a commitment's
+  /// target. Nothing propagates in either direction, so nothing can cascade.
+  commitmentId  String?
+  /// article | social-post | email | ad-creative | landing-page | other —
+  /// §6.4's explicitly supported content types. Stored rather than re-derived
+  /// from `GrowthAsset.assetType` on every read: the piece's type can be
+  /// revised later, and the placement records what was planned.
+  contentType   String
+  /// Where it is intended to go — a `PublishDestination.provider` id for an
+  /// automatable channel, or a planning-only channel id (email, paid-ads)
+  /// that has no adapter in this build. §6.6: an unsupported channel may only
+  /// be planned or delivered manually, clearly labelled, with no Send/Launch
+  /// action offered anywhere.
+  channel       String
+  /// automated | manual. `automated` is refused unless the channel has a real
+  /// implemented provider AND a connected destination, so "automated" is never
+  /// a label on something that cannot actually happen.
+  deliveryMode  String    @default("manual")
+  /// The chosen destination for an automated placement. Null for manual.
+  destinationId String?
+  /// The UTC instant. This is THE scheduling truth: every scope (staff
+  /// project, portfolio, client) reads this one column, so the three views
+  /// cannot disagree about when something is planned.
+  plannedForUtc DateTime
+  /// The intended local wall clock and zone, stored beside the instant so the
+  /// intention can be reproduced exactly. Without these a timezone-database
+  /// update would silently rewrite what a human chose.
+  plannedLocalDate String
+  plannedLocalTime String
+  timezone      String
+  /// earlier | later — which of the two instants a *repeated* fall-back local
+  /// time means. Null when the reading was unambiguous. Set only when the
+  /// caller disambiguated; §6.7 forbids guessing on their behalf.
+  dstDisambiguation String?
+  /// planned | cancelled — the only persisted lifecycle, plus the source
+  /// facts. Every other state in §6.6's vocabulary (awaiting-approval, ready,
+  /// scheduled, held, publishing, published, failed) is DERIVED on read from
+  /// the piece's revisions, its approvals and its linked publications, so a
+  /// stored state can never go stale or contradict what it describes.
+  status        String    @default("planned")
+  cancelledAt   DateTime?
+  /// Why it was cancelled, in the operator's words. Cancellation is a state,
+  /// never a delete: the row stays so history (and anything already
+  /// published) survives.
+  cancelReason  String?
+  /// Staff owner, for §6.5's owner filter. Staff-only in every client
+  /// projection (the portal shows no user ids anywhere else either).
+  ownerId       String?
+  /// Optimistic concurrency (§6.7): an update sends the version it read and is
+  /// refused if another writer got there first.
+  version       Int       @default(1)
+  /// Caller-supplied dedupe key (§6.7 idempotency): a retried create with the
+  /// same key returns the existing placement instead of a second one.
+  idempotencyKey String?
+  createdBy     String?
+  updatedBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([projectId, idempotencyKey])
+  @@index([projectId, plannedForUtc])
+  @@index([projectId, status])
+  @@index([assetId])
+  @@index([plannedForUtc])
+  @@index([ownerId])
 }
 
 // ─── G12 — Budgets and spend ───────────────────────────────────────
