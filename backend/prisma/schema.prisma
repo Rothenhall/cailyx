@@ -1,6 +1,10 @@
 // Cailyx Prisma Schema
-// Database: SQLite (file-based, no Docker needed for dev)
-// For production, switch datasource to postgresql and migrate Json fields back
+// Database: Supabase Postgres — the same database production (Railway) uses.
+// SQLite (prisma/dev.db) is retired as of 2026-09-16; every environment now
+// shares this one datasource. See prisma/schema.production.prisma's header
+// for why a second, mechanically-identical file still exists (Railway's
+// backend build/start commands still point at it explicitly — kept in sync
+// by hand rather than repointing that deploy without asking first).
 
 generator client {
   provider = "prisma-client-js"
@@ -8,7 +12,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   // Read from the environment rather than hardcoded, so a scratch database can
   // be pointed at without editing this file — which is what makes it possible
   // to verify against a copy of real data without writing to the real file.

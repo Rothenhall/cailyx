@@ -1,21 +1,17 @@
-// Cailyx Prisma Schema — PRODUCTION (Postgres)
+// Cailyx Prisma Schema — Railway build/start target.
 //
-// Mechanical twin of schema.prisma with one line changed: the datasource
-// provider. Prisma does not support one schema file targeting two database
-// providers, and this repo's dev workflow is SQLite (prisma/dev.db, no
-// Docker needed) — flipping the shared schema.prisma to "postgresql" would
-// break every local `npx prisma db push` / `start:dev`. This file exists so
-// Railway's backend build can target Postgres (DATABASE_URL there is set to
-// the Supabase pooler URL) without touching local dev at all.
+// As of 2026-09-16, this is a byte-for-byte mirror of the model body in
+// schema.prisma (both target Postgres now -- SQLite is fully retired, local
+// dev included). The only reason this separate file still exists: Railway's
+// backend service build/start commands reference
+// 'prisma/schema.production.prisma' by that literal path, and repointing
+// them at schema.prisma directly means touching a live service's config,
+// which needs a green light first, not a silent side effect of a schema
+// edit. Ask before removing this duplication.
 //
-// Used ONLY by: `prisma generate --schema=prisma/schema.production.prisma`
-// and `prisma db push --schema=prisma/schema.production.prisma` in the
-// Railway build/start commands (see the backend service config). Never
-// referenced by local dev, the smoke harness, or `npm run start:dev`.
-//
-// Keep in sync with schema.prisma by hand — every model/field change made
-// there needs the same change here. If this drifts, `db push` against
-// production will diverge from what the app's TypeScript types expect.
+// Kept in sync by hand -- every model/field change made in schema.prisma
+// needs the same change copied here, or Railway's build drifts from what
+// local dev and the app's TypeScript types actually expect.
 
 generator client {
   provider = "prisma-client-js"
@@ -24,8 +20,9 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  // Railway's backend service sets DATABASE_URL to the Supabase pooler URL
-  // for the production build; local dev never sets or reads this schema file.
+  // Railway's backend service sets its own DATABASE_URL (see the Railway
+  // project config, not this repo) -- same Supabase database local dev's
+  // .env now points at too.
   url      = env("DATABASE_URL")
 }
 
