@@ -20,17 +20,17 @@ const CONFIG: Record<
     classes: 'bg-success-subtle text-success-foreground border-success/30',
   },
   'model-interpretation': {
-    label: 'Model interpretation',
+    label: 'Read by Cailyx',
     icon: Sparkles,
     classes: 'bg-info-subtle text-info-foreground border-info/30',
   },
   'operator-supplied': {
-    label: 'Operator supplied',
+    label: 'Provided by your team',
     icon: UserCheck,
     classes: 'bg-primary-subtle text-primary border-primary/30',
   },
   'discovered-candidate': {
-    label: 'Discovered candidate',
+    label: 'Found; needs confirmation',
     icon: Waypoints,
     classes: 'bg-warning-subtle text-warning-foreground border-warning/30',
   },

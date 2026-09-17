@@ -6,7 +6,7 @@
 
 import { ApiPropertyOptional, ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsArray, IsNotEmpty, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
 
 /**
  * One competitor to promote/attach on a `/discover` call. Both an operator
@@ -52,4 +52,45 @@ export class DiscoverCompetitorsDto {
   @ValidateNested({ each: true })
   @Type(() => CompetitorInputDto)
   competitors?: CompetitorInputDto[];
+}
+
+/**
+ * Request body for POST /projects/:projectId/competitors/discover/market
+ * (§12.2 — service/market-based discovery).
+ */
+export class DiscoverByMarketDto {
+  /**
+   * When false/omitted (the default), discovery only mines names/domains
+   * already present in stored AEO verdicts and SERP snapshots — free, no
+   * vendor call. When true, it additionally composes a small bounded set of
+   * Google searches (confirmed services x confirmed target markets) through
+   * the gated SERP provider — an explicit, budgeted "Collect new results"
+   * action, never triggered by a page load.
+   */
+  @ApiPropertyOptional({
+    description:
+      'When true, also runs a bounded set of fresh Google searches (services x markets) through the gated SERP provider — a paid/explicit action. Default false: mine only what is already stored.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  collectNew?: boolean;
+
+  /**
+   * Only meaningful with collectNew=true. Lets a caller force the offline
+   * `fixture` provider (SERP_ALLOW_FIXTURE=1) — used by the smoke harness so
+   * this action can be proven without a vendor account or real spend.
+   */
+  @ApiPropertyOptional({ enum: ['dataforseo', 'fixture'], description: 'SERP provider override for the bounded search pass.' })
+  @IsOptional()
+  @IsIn(['dataforseo', 'fixture'])
+  provider?: 'dataforseo' | 'fixture';
+}
+
+/** Request body for PATCH /projects/:projectId/competitors/candidates/:competitorId/relevance. */
+export class SetCandidateRelevanceDto {
+  @ApiProperty({ enum: ['direct-competitor', 'adjacent-alternative', 'not-relevant'] })
+  @IsString()
+  @IsIn(['direct-competitor', 'adjacent-alternative', 'not-relevant'])
+  relevance!: 'direct-competitor' | 'adjacent-alternative' | 'not-relevant';
 }

@@ -10,10 +10,14 @@
  */
 
 import { Module } from '@nestjs/common';
+import { ApprovalsModule } from '../approvals/approvals.module';
 import { AssetContentController, ContentBriefsController, GenerationJobsController } from './content.controller';
 import { ContentService } from './content.service';
 
 @Module({
+  // ApprovalsModule supplies the §13.10 rule that a saved revision supersedes
+  // earlier consent. It does not import this module, so there is no cycle.
+  imports: [ApprovalsModule],
   controllers: [ContentBriefsController, AssetContentController, GenerationJobsController],
   providers: [ContentService],
   exports: [ContentService],

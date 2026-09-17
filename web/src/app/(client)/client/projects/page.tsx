@@ -12,7 +12,7 @@ import { PageHeader } from '@/components/patterns/PageHeader';
 import { StatusPill } from '@/components/patterns/StatusPill';
 import { Timestamp } from '@/components/patterns/Timestamp';
 import { useUrlState } from '@/hooks/useUrlState';
-import { formatNumber } from '@/lib/format';
+import { formatNumber, humanizeLabel } from '@/lib/format';
 import { onboardingStatusTone } from '@/lib/status-tones';
 import { listPortalProjectSummaries, type PortalProjectSummary } from '@/services/portal';
 
@@ -86,7 +86,13 @@ const COLUMNS: ColumnDef<PortalProjectSummary>[] = [
           tone={row.onboardingStatus ? onboardingStatusTone(row.onboardingStatus) : 'unmeasured'}
         />
         {row.onboardingStep ? (
-          <span className="text-meta text-muted-foreground">{row.onboardingStep}</span>
+          // §4.3: the stored step is a slug ("profile-setup"), so it is
+          // de-slugged before it is shown — a raw identifier never reaches a
+          // client screen. "Setting up:" gives the bare word its context, so
+          // the column does not read as a second status.
+          <span className="text-meta text-muted-foreground">
+            Setting up: {humanizeLabel(row.onboardingStep, 'not recorded')}
+          </span>
         ) : null}
       </span>
     ),
@@ -103,7 +109,9 @@ const COLUMNS: ColumnDef<PortalProjectSummary>[] = [
         <span className="tabular-nums">
           {formatNumber(row.latestScore)}
           {row.latestBand ? (
-            <span className="ml-2 text-meta text-muted-foreground">{row.latestBand}</span>
+            <span className="ml-2 text-meta text-muted-foreground">
+              · {humanizeLabel(row.latestBand, '')}
+            </span>
           ) : null}
         </span>
       ) : (
@@ -207,7 +215,7 @@ function ProjectsScreen() {
     return (
       <div className="space-y-6">
         <PageHeader title="Your projects" />
-        <ErrorState error={error} onRetry={() => void load()} />
+        <ErrorState error={error} onRetry={() => void load()} showServerMessage={false} />
       </div>
     );
   }

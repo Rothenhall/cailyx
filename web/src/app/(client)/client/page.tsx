@@ -88,7 +88,7 @@ export default function ClientHomePage() {
     return (
       <div className="space-y-6">
         <PageHeader title="Your workspace" />
-        <ErrorState error={error} onRetry={() => void load()} />
+        <ErrorState error={error} onRetry={() => void load()} showServerMessage={false} />
       </div>
     );
   }
@@ -154,11 +154,15 @@ export default function ClientHomePage() {
                       tone={onboardingStatusTone(project.onboardingStatus)}
                     />
                     {typeof project.latestScore === 'number' ? (
-                      <span
-                        className="w-10 text-right text-table font-semibold tabular-nums"
-                        title="Latest report score"
-                      >
-                        {project.latestScore}
+                      // §4.5: the meaning of this number is visible text, not
+                      // a `title` only — and §3.4 forbids a score reading as
+                      // account health, so it names its source: the latest
+                      // report, not the state of the engagement.
+                      <span className="flex items-baseline gap-1.5">
+                        <span className="text-meta text-muted-foreground">Report score</span>
+                        <span className="w-10 text-right text-table font-semibold tabular-nums">
+                          {project.latestScore}
+                        </span>
                       </span>
                     ) : (
                       // §3.5 — never measured is not a zero score.

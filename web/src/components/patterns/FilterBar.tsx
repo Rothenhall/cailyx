@@ -393,7 +393,18 @@ export function FilterBar<T extends UrlStateShape>({
               Clear all filters
             </Button>
           )}
-          {summary && <span className="ml-auto text-meta text-muted-foreground">{summary}</span>}
+          {/* §4.5: the summary counts change as filters change, so it is a
+              live region — a reader using a screen reader is told the result
+              count changed rather than having to re-read the list. */}
+          {summary && (
+            <span
+              role="status"
+              aria-live="polite"
+              className="ml-auto text-meta text-muted-foreground"
+            >
+              {summary}
+            </span>
+          )}
         </div>
       )}
     </div>

@@ -1,14 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyState } from './EmptyState';
-import { ErrorState, toApiError } from './ErrorState';
+import { ErrorState, clientActionMessage, toApiError } from './ErrorState';
 import { Timestamp } from './Timestamp';
 
 /**
@@ -94,12 +93,11 @@ export function MessageThread({ viewer, load, post, onSent }: MessageThreadProps
       textareaRef.current?.focus();
     } catch (caught) {
       // §10.4: keep the content. The draft is deliberately NOT cleared here.
+      // §4.3: a client reader gets what kind of failure this was, in words —
+      // never the server's own message, which can name internal records.
+      // §10.4: the draft is kept either way, and the sentence says so.
       setSendError(
-        caught instanceof ApiError
-          ? caught.kind === 'network'
-            ? 'Not sent — the server could not be reached. Your message is still in the box below.'
-            : caught.message
-          : 'Not sent. Your message is still in the box below.',
+        clientActionMessage(caught, 'Not sent. Your message is still in the box below.'),
       );
     } finally {
       setSending(false);
@@ -107,7 +105,17 @@ export function MessageThread({ viewer, load, post, onSent }: MessageThreadProps
   }
 
   if (loadError) {
-    return <ErrorState error={loadError} onRetry={() => void refresh()} layout="inline" />;
+    // `viewer` is already the client/operator switch, so it is the same
+    // boundary that decides whether the server's own message may be shown: a
+    // client reader sees the kind of failure, staff keep the diagnostic text.
+    return (
+      <ErrorState
+        error={loadError}
+        onRetry={() => void refresh()}
+        layout="inline"
+        showServerMessage={viewer === 'operator'}
+      />
+    );
   }
 
   if (!messages) {

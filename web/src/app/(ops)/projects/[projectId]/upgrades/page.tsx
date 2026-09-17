@@ -192,7 +192,7 @@ export default function UpgradesPage() {
           return (
             <Link
               className="text-primary underline-offset-4 hover:underline"
-              href={`/ops/projects/${projectId}/sales/${lead.id}`}
+              href={`/projects/${projectId}/sales/${lead.id}`}
             >
               {lead.name ?? lead.email}
             </Link>

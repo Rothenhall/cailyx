@@ -43,6 +43,8 @@ import type { AuthedRequestUser } from '../auth/strategies/jwt.strategy';
 import { ScopeValidationService } from '../../common/guards/scope-validation.service';
 import { CohortService } from './cohort.service';
 import { PeriodService } from './period.service';
+import { OverviewService } from './overview.service';
+import { ResultsTabsService } from './results-tabs.service';
 import { EvidenceService } from './evidence.service';
 import { ResultsService } from './results.service';
 import { CreateCohortDto, RecordBreakDto, UpdateCohortDto } from './dto/cohort.dto';
@@ -382,6 +384,8 @@ export class ResultsPortalController {
   constructor(
     private readonly results: ResultsService,
     private readonly scope: ScopeValidationService,
+    private readonly overview: OverviewService,
+    private readonly tabs: ResultsTabsService,
   ) {}
 
   @Get('results')
@@ -395,5 +399,98 @@ export class ResultsPortalController {
   ) {
     await this.scope.assertProjectAccess(user, projectId);
     return this.results.getResults(projectId, query, 'client');
+  }
+
+  /**
+   * §5.1's Overview, composed server-side (§5.7). Every panel is its own
+   * section envelope, so one failed source read degrades one panel instead of
+   * blanking the page (§4.5).
+   */
+  @Get('overview')
+  @ApiOperation({
+    summary: "This client's project overview",
+    description:
+      'One prominent score with its applicable bucket cards, at most three action cards with the true total, ' +
+      'at most five upcoming items, and a compact plan/report footer. Reads stored data only: loading this ' +
+      'never starts an audit, refreshes a paid provider, builds a score or creates a job.',
+  })
+  @ApiResponse({ status: 200, description: 'ClientOverviewView' })
+  @ApiResponse({ status: 404, description: 'Project does not belong to this client' })
+  async overviewView(@CurrentUser() user: AuthedRequestUser, @Param('projectId') projectId: string) {
+    const clientId = this.clientId(user);
+    await this.scope.assertProjectAccess(user, projectId);
+    return this.overview.getClientOverview(clientId, projectId);
+  }
+
+  /** §3.3's Results tab: Website. */
+  @Get('results/website')
+  @ApiOperation({
+    summary: 'Website results, client-safe',
+    description:
+      'A projection of the same website read model the staff research screen uses: health, search performance, ' +
+      'important pages and the source-availability disclosures. Rule ids and page identity handles are removed.',
+  })
+  async websiteTab(@CurrentUser() user: AuthedRequestUser, @Param('projectId') projectId: string) {
+    await this.scope.assertProjectAccess(user, projectId);
+    return this.tabs.websiteTab(projectId);
+  }
+
+  /** §3.3's Results tab: AI visibility. */
+  @Get('results/ai')
+  @ApiOperation({
+    summary: 'AI visibility results, client-safe',
+    description:
+      'Appeared and recommended stay separate counts, every failed or gated surface is named, and the question-set ' +
+      'version stays in the details rather than a headline.',
+  })
+  async aiTab(@CurrentUser() user: AuthedRequestUser, @Param('projectId') projectId: string) {
+    await this.scope.assertProjectAccess(user, projectId);
+    return this.tabs.aiVisibilityTab(projectId);
+  }
+
+  /**
+   * §3.3's Results tab: Online presence.
+   *
+   * The projection is P05's own client-safe presence read
+   * (`PresenceService.portalInventory`, also served by
+   * `GET /portal/projects/:id/presence`); this route only adds the section
+   * envelope so the tab fails the same way as the other three.
+   */
+  @Get('results/presence')
+  @ApiOperation({
+    summary: 'Online presence results, client-safe',
+    description:
+      'Where the client already exists online: found profiles with their state, and the platforms that apply but ' +
+      'where nothing was found yet. Candidate confidence scores, discovery-run ids and spend figures stay out.',
+  })
+  async presenceTab(@CurrentUser() user: AuthedRequestUser, @Param('projectId') projectId: string) {
+    await this.scope.assertProjectAccess(user, projectId);
+    return this.tabs.presenceTab(projectId);
+  }
+
+  /**
+   * §3.3's Results tab: Competitors.
+   *
+   * Reads the stored competitor rows and the newest **frozen** comparison
+   * snapshot. It deliberately does not build a new comparison: `gap()` can
+   * fetch and score a homepage, which §5.7 forbids on a page load.
+   */
+  @Get('results/competitors')
+  @ApiOperation({
+    summary: 'Competitor comparison, from the last frozen snapshot',
+    description:
+      'Never recomputed on read. A newer rival added today does not change what an earlier published comparison said.',
+  })
+  async competitorsTab(@CurrentUser() user: AuthedRequestUser, @Param('projectId') projectId: string) {
+    await this.scope.assertProjectAccess(user, projectId);
+    return this.tabs.competitorsTab(projectId);
+  }
+
+  /** Structurally guaranteed by RolesGuard; re-checked rather than trusted two layers away. */
+  private clientId(user: AuthedRequestUser): string {
+    if (!user.clientId) {
+      throw new Error('Client-portal route reached by a user with no clientId — this is a guard bug, not a client error.');
+    }
+    return user.clientId;
   }
 }

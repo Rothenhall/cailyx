@@ -25,6 +25,8 @@ import { titleIdentifies, type ConsistencyStatus } from '../entity-audit/entity-
 import { PresenceSerpService } from './presence.serp.service';
 import { PresenceDataForSeoService, type ReviewPlatform } from './presence.dataforseo.service';
 import { PresenceApifyService, type ApifyPlatform, type ApifyTarget } from './presence.apify.service';
+import { PresenceApplicabilityService, type PlatformApplicability } from './presence.applicability.service';
+import { PresenceRejectionService } from './presence.rejection.service';
 import { PipelineQueueService } from '../jobs/pipeline-queue.service';
 import {
   EXPECTED_BY_PROFILE,
@@ -80,6 +82,8 @@ export class PresenceService {
     private readonly apify: PresenceApifyService,
     private readonly config: ConfigService,
     private readonly pipelineQueue: PipelineQueueService,
+    private readonly applicability: PresenceApplicabilityService,
+    private readonly rejections: PresenceRejectionService,
   ) {
     this.pipelineQueue.registerHandler('presence-discovery', (data: {
       runId: string; projectId: string; searchWeb: boolean;
@@ -214,7 +218,20 @@ export class PresenceService {
           })
         ).map((r) => r.platform),
       );
-      const stillMissing = EXPECTED_PLATFORMS.filter((p) => !held.has(p));
+      // P05 §11.2 — the applicability policy decides what the collector looks
+      // for, not the generic default set. A `not-relevant` platform (an
+      // online-only SaaS's local listing, an app-store entry with no app) is
+      // never searched for, and a `needs-confirmation` platform is still
+      // searched (asking the question costs nothing extra here; not searching
+      // it would silently resolve the ambiguity as "irrelevant").
+      const category = await this.currentCategory(projectId, project.category);
+      const applicable = await this.applicability.relevantOrOptional(projectId, category);
+      const applicableSet = new Set<PresencePlatform>(applicable);
+      const needsConfirmation = (await this.applicability.forProject(projectId, category))
+        .filter((a) => a.status === 'needs-confirmation')
+        .map((a) => a.platform);
+      for (const p of needsConfirmation) applicableSet.add(p);
+      const stillMissing = [...applicableSet].filter((p) => !held.has(p));
       const sweep = searchWeb
         ? await this.serp.sweep(brand, project.domain, [...stillMissing])
         : {
@@ -234,6 +251,11 @@ export class PresenceService {
         // Never touch a row we already know about by a better route. A crawled
         // or operator-supplied account outranks a search guess, always.
         if (existing) continue;
+        // P05 §11.4 — a human already said this exact URL is not ours. Without
+        // this check the next sweep would recreate the identical rejected
+        // candidate every run, which is precisely the bug the tombstone exists
+        // to prevent.
+        if (await this.rejections.isTombstoned(projectId, c.platform, c.url)) continue;
         await this.prisma.presenceAccount.create({
           data: {
             projectId,
@@ -619,6 +641,114 @@ export class PresenceService {
   // ─── The inventory ──────────────────────────────────────────────────────
 
   /**
+   * The client's own words about what they do. `SiteContext.category` is the
+   * richer one (synthesised from their site); the project column is the
+   * operator's, used when no context has been built yet. Shared by the
+   * inventory and by the SERP-targeting applicability lookup so both read the
+   * same category.
+   */
+  private async currentCategory(projectId: string, projectCategory: string | null): Promise<string | null> {
+    const ctx = await this.prisma.siteContext.findFirst({
+      where: { projectId },
+      orderBy: { createdAt: 'desc' },
+      select: { category: true },
+    });
+    return ctx?.category ?? projectCategory ?? null;
+  }
+
+  /**
+   * Public form of {@link currentCategory} for callers outside this service
+   * (the applicability GET route) that need the same category resolution
+   * without duplicating the SiteContext-then-Project fallback. Returns
+   * `undefined` when the project itself does not exist, distinct from `null`
+   * (project exists, no category recorded either way).
+   */
+  async getProjectCategory(projectId: string): Promise<string | null | undefined> {
+    const project = await this.prisma.project.findUnique({ where: { id: projectId } });
+    if (!project) return undefined;
+    return this.currentCategory(projectId, project.category);
+  }
+
+  /**
+   * The client-portal projection of the inventory — P05 §11.1's screen, minus
+   * everything §4.6 says a client must not see: no raw candidate confidence
+   * score, no discovery-run ids, no internal `foundOn` query strings, no
+   * `serpCostUsd`/spend detail. A "candidate" reads as "Recommended profile"
+   * with its plain-English match evidence, never an unexplained percentage —
+   * §11.4's own rule against exposing a precise score to clients.
+   */
+  async portalInventory(projectId: string): Promise<{
+    projectId: string;
+    domain: string;
+    accounts: Array<{
+      platform: PresencePlatform;
+      label: string;
+      group: PresenceGroup;
+      url: string;
+      state: 'confirmed' | 'needs-confirmation' | 'unverified';
+      statusLabel: string;
+    }>;
+    relevantNotFound: Array<{ platform: PresencePlatform; label: string; group: PresenceGroup }>;
+    counts: { total: number; needsConfirmation: number };
+  }> {
+    const full = await this.inventory(projectId);
+    const accounts = full.accounts
+      .filter((a) => a.entity !== 'personal')
+      .map((a) => {
+        const state: 'confirmed' | 'needs-confirmation' | 'unverified' =
+          a.state === 'candidate' ? 'needs-confirmation' : a.state === 'confirmed' ? 'confirmed' : 'unverified';
+        const statusLabel =
+          a.state === 'candidate'
+            ? 'Recommended profile — needs confirmation'
+            : a.state === 'confirmed'
+              ? 'Confirmed account'
+              : a.state === 'unverified'
+                ? 'Found; not fully checked'
+                : 'Not checked yet';
+        return { platform: a.platform, label: a.label, group: a.group, url: a.url, state, statusLabel };
+      });
+
+    return {
+      projectId: full.projectId,
+      domain: full.domain,
+      accounts,
+      relevantNotFound: full.gaps.map((g) => ({ platform: g.platform, label: g.label, group: g.group })),
+      counts: {
+        total: accounts.filter((a) => a.state === 'confirmed').length,
+        needsConfirmation: accounts.filter((a) => a.state === 'needs-confirmation').length,
+      },
+    };
+  }
+
+  /**
+   * "Not ours" — P05 §11.4. Records the tombstone and removes the live
+   * candidate row; a personal/manual/confirmed row cannot be rejected this
+   * way (use DELETE for those — rejection is specifically the candidate
+   * validation action, not general account removal).
+   */
+  async rejectCandidate(
+    projectId: string,
+    accountId: string,
+    reason: string,
+    actorEmail: string | null,
+  ): Promise<{ rejectionId: string }> {
+    const row = await this.prisma.presenceAccount.findUnique({ where: { id: accountId } });
+    if (!row || row.projectId !== projectId) throw new NotFoundException('Account not found');
+    if (row.state !== 'candidate') {
+      throw new BadRequestException('Only a search candidate can be rejected as "Not ours".');
+    }
+    const tombstone = await this.rejections.reject(
+      projectId,
+      row.platform as PresencePlatform,
+      row.url,
+      reason,
+      actorEmail,
+    );
+    await this.prisma.presenceAccount.delete({ where: { id: accountId } });
+    return { rejectionId: tombstone.id };
+  }
+
+  /**
    * Everything known about where this client exists online.
    *
    * @param projectId Project to report on.
@@ -628,15 +758,7 @@ export class PresenceService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found');
 
-    // The client's own words about what they do. `SiteContext.category` is the
-    // richer one (synthesised from their site); the project column is the
-    // operator's, used when no context has been built yet.
-    const ctx = await this.prisma.siteContext.findFirst({
-      where: { projectId },
-      orderBy: { createdAt: 'desc' },
-      select: { category: true },
-    });
-    const category = ctx?.category ?? project.category ?? null;
+    const category = await this.currentCategory(projectId, project.category);
 
     const [rows, lastRun, latestProfileRow, reviewRows, postRows] = await Promise.all([
       this.prisma.presenceAccount.findMany({
@@ -687,7 +809,16 @@ export class PresenceService {
     // visible at all — a flat social-only list left four of stage 2's five
     // categories permanently reading "not checked".
     const profile = inferBusinessProfile(category);
-    const expected = EXPECTED_BY_PROFILE[profile] ?? EXPECTED_PLATFORMS;
+    // P05 §11.2 — the applicability policy is THE expected set from here on,
+    // not a second opinion layered on top of EXPECTED_BY_PROFILE (which the
+    // policy itself uses as its base signal). Only `relevant` platforms can
+    // produce a gap; `not-relevant` never does, and `optional` /
+    // `needs-confirmation` stay visible without counting as a finding —
+    // "a relevant but missing platform stays visible; absence must not itself
+    // make a platform irrelevant" and the reverse: irrelevance must never cost
+    // a finding either.
+    const applicabilityList = await this.applicability.forProject(projectId, category);
+    const expected = applicabilityList.filter((a) => a.status === 'relevant').map((a) => a.platform);
     const gaps: PresenceGap[] = expected
       .filter((p) => !havePlatforms.has(p))
       .map((p) => ({ platform: p, label: PLATFORM_LABELS[p], group: PLATFORM_GROUP[p] }));
@@ -726,6 +857,7 @@ export class PresenceService {
       businessProfile: latestProfileRow ? this.toProfileDto(latestProfileRow) : null,
       reviews,
       socialActivity,
+      applicability: applicabilityList,
     };
   }
 

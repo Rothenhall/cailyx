@@ -3,76 +3,101 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { AlertTriangle, ArrowRight, CalendarCheck, FileText, ListChecks, Target } from 'lucide-react';
+import { AlertTriangle, Info } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { EmptyState } from '@/components/patterns/EmptyState';
 import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
-import { MetricTile } from '@/components/patterns/MetricTile';
+import {
+  ActionPanelView,
+  overviewReadFailedSection,
+  PlanPanelView,
+  ReportPanelView,
+  TeamAttentionPanelView,
+  UpcomingPanelView,
+} from '@/components/patterns/OverviewPanels';
 import { PageHeader } from '@/components/patterns/PageHeader';
+import { ScoreSummary, ScoreSummarySkeleton } from '@/components/patterns/ScoreSummary';
 import { ScopeBanner } from '@/components/patterns/ScopeBanner';
 import { StatusPill } from '@/components/patterns/StatusPill';
-import { Timestamp } from '@/components/patterns/Timestamp';
-import { TechnicalScoreHistory } from '@/components/charts/TechnicalScoreHistory';
 import { projectStatusLabel, projectStatusTone } from '@/lib/status-tones';
-import { getProject, type ProjectStats } from '@/services/projects';
-import { getTechnicalTrend, type TechnicalTrendPoint } from '@/services/research';
+import { getProject } from '@/services/projects';
+import { getStaffOverview, type StaffOverviewView } from '@/services/overview';
 import type { ProjectDetail } from '@/services/types';
 
 /**
- * PJ01 — Project overview.
+ * PJ01 — Project overview, recomposed as §5.1's Overview (P15).
  *
- * design_plan.md §4.3 and the client/project overview layout family (§4):
- * "Context/lead/status, decision-needed panel, evidence/result cards, work
- * commitments, recent report/message; **each number links to its scoped
- * evidence**; unavailable target widgets remain absent or explicitly
- * unavailable."
+ * platform_improvement_plan.md §5.1: one prominent overall score with "View
+ * results", the applicable bucket cards, "Needs your action" (≤3 cards + the
+ * truthful total + "View all"), "Upcoming content" (≤5 items + calendar link),
+ * a compact plan/report footer — and *"for staff, a small 'Team attention'
+ * shortcut can sit below the main client-equivalent information."*
  *
- * The two rules this page obeys that are easy to get wrong elsewhere:
+ * ## The staff read is the client read plus one panel
  *
- *  1. **Every figure links to the run it came from.** A score with no route
- *     back to its evidence is an assertion, not a measurement.
- *  2. **Missing capabilities are named, not faked.** The plan/cycle/approval
- *     widgets in §3.2's target layout need G06/G10 data that this deployment
- *     does not have yet, so they render as explicit "not available" rows
- *     rather than as empty cards that look like real zeroes.
+ * `GET /projects/:id/overview` composes the client-equivalent panels from the
+ * project's own client and then adds `teamAttention`. This page renders the
+ * same components the client's Overview renders (`@/components/patterns/
+ * OverviewPanels`), in the same order, with the team shortcut last — which is
+ * what "below the main client-equivalent information" means, and what stops the
+ * two pages drifting apart. Only three things differ from the client's screen:
+ * the header (operator statuses and connections), the destinations the server
+ * put in the links, and the presence of the last panel.
  *
- * `ProjectDetail` carries no score field today — only counts of artifacts that
- * exist — so the headline tiles below are artifact counts, not scores, and this
- * page does not invent a score tile from them.
+ * ## The §5.1 limits, and what they removed from this page
  *
- * The score history is different: it is a **measured series** read from the
- * technical-audit trend route, one point per scored run, exactly what that run
- * recorded. It is not derived from the project record, and when no run has been
- * scored the section says so rather than plotting a zero.
+ * §5.1: *"Do not fill the page with audit counts, run histories, social
+ * discovery tables, all tasks, or disconnected widgets."* This page used to be
+ * exactly that — four artifact counts, a score-history chart, a month preview
+ * of the calendar and four "not available yet" rows — and each figure that
+ * survives here links to the screen that owns it. What was removed did not
+ * disappear:
+ *
+ *  - artifact counts and the score history → `research/website` and the other
+ *    research reads, which is where the runs themselves are;
+ *  - the calendar preview → the calendar, and the §5.1 "Upcoming content" panel
+ *    that replaces it (30 days, ≤5 items, honest total);
+ *  - project details and cadence → `settings` and `monitoring`;
+ *  - the "Priorities / cycle commitments / pending approvals — not available
+ *    yet" rows → gone because they were no longer true. Those surfaces exist
+ *    now, and what is genuinely outstanding for this project arrives in "Needs
+ *    your action" and "Team attention" with its real state, its deadline and
+ *    the place it can be resolved. A page that says a deployed feature is
+ *    missing is worse than one that omits it.
+ *
+ * ## §5.7 and §4.5
+ *
+ * Loading this page starts nothing: both reads are pure storage reads, and the
+ * score panel shows the last stored run rather than building one. Nothing here
+ * completes an action item — every card is a link to the screen that owns it,
+ * and resolving it happens there (§5.6).
  */
 export default function ProjectOverviewPage() {
   const params = useParams<{ projectId: string }>();
   const projectId = params.projectId;
 
-  const [project, setProject] = useState<(ProjectDetail & { stats: ProjectStats }) | null>(null);
-  const [trend, setTrend] = useState<TechnicalTrendPoint[] | null>(null);
-  const [trendError, setTrendError] = useState<ReturnType<typeof toApiError> | null>(null);
+  const [project, setProject] = useState<ProjectDetail | null>(null);
+  const [overview, setOverview] = useState<StaffOverviewView | null>(null);
+  const [overviewFailed, setOverviewFailed] = useState(false);
   const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
       try {
         setError(null);
-        setTrendError(null);
         setProject(await getProject(projectId, { signal }));
 
-        // A read of stored runs; it starts nothing (§4 audit-hub contract).
-        // Read separately so a failed history read cannot hide the project
-        // itself, and cannot be mistaken for "this project has no scores".
+        // The overview is a second, composed read. Its failure is reported on
+        // the page rather than thrown: the project identity, its status, the
+        // setup warning and the links stay usable (§4.5).
         try {
-          setTrend((await getTechnicalTrend(projectId, { signal, limit: 30 })).history);
+          setOverview(await getStaffOverview(projectId, { signal }));
+          setOverviewFailed(false);
         } catch (caught) {
-          if (caught instanceof DOMException && caught.name === 'AbortError') throw caught;
-          setTrend(null);
-          setTrendError(toApiError(caught));
+          if (caught instanceof DOMException && caught.name === 'AbortError') return;
+          setOverview(null);
+          setOverviewFailed(true);
         }
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === 'AbortError') return;
@@ -98,20 +123,28 @@ export default function ProjectOverviewPage() {
   }
 
   if (!project) {
+    // The loading state is shaped like the page that replaces it: identity,
+    // the score block, then the panels.
     return (
       <div className="space-y-6">
+        <Skeleton className="h-16 rounded-lg" />
         <Skeleton className="h-9 w-64" />
-        <Skeleton className="h-16 rounded-xl" />
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {[0, 1, 2, 3].map((index) => (
-            <Skeleton key={index} className="h-32 rounded-xl" />
-          ))}
-        </div>
+        <ScoreSummarySkeleton />
+        <Skeleton className="h-32 rounded-xl" />
+        <Skeleton className="h-32 rounded-xl" />
       </div>
     );
   }
 
   const setupFailed = project.onboardingStatus === 'failed';
+  const header = overview?.header ?? null;
+  const sections = overview?.sections ?? null;
+
+  // §4.5 when the composed read itself failed: each panel says so rather than
+  // showing a skeleton that will never resolve.
+  const unread = overviewFailed
+    ? overviewReadFailedSection('We could not load this part of the overview just now.')
+    : undefined;
 
   return (
     <div className="space-y-6">
@@ -162,6 +195,11 @@ export default function ProjectOverviewPage() {
         }
       />
 
+      <p className="text-table text-muted-foreground">
+        {header?.explanation ??
+          'The score, anything waiting on the client or the team, what is coming up, and the latest released report.'}
+      </p>
+
       {/*
         A failed day-1 pipeline is the single most important thing on this page:
         the project looks set up but its evidence is incomplete. §3.5's partial
@@ -184,201 +222,64 @@ export default function ProjectOverviewPage() {
         </Alert>
       ) : null}
 
-      {/*
-        Artifact counts — what evidence actually exists for this project. Each
-        is a link into the screen that holds it, per §4's "each number links to
-        its scoped evidence".
-      */}
-      <section aria-labelledby="evidence-heading" className="space-y-3">
-        <h2 id="evidence-heading" className="text-subsection font-semibold tracking-tight">
-          Evidence on file
-        </h2>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricTile
-            label="Technical audits"
-            value={project.stats.technicalAudits}
-            unit="runs"
-            provenance="measured"
-            runHref={`/projects/${project.id}/research/website`}
-          />
-          <MetricTile
-            label="Classified gaps"
-            value={project.stats.gaps}
-            unit="gaps"
-            provenance="measured"
-            runHref={`/projects/${project.id}/priorities`}
-          />
-          <MetricTile
-            label="Brand entities"
-            value={project.stats.entities}
-            unit="entities"
-            provenance="measured"
-            runHref={`/projects/${project.id}/research/entities`}
-          />
-          <MetricTile
-            label="Reports"
-            value={project.stats.reports}
-            unit="reports"
-            provenance="measured"
-            runHref={`/projects/${project.id}/reports`}
-          />
-        </div>
-        <p className="text-meta text-muted-foreground">
-          Counts of what has been collected. A count of zero means nothing has
-          run yet — it is not a measured result of zero.
-        </p>
-      </section>
-
-      {/*
-        §4's overview family asks for result cards whose numbers link back to
-        their evidence. A score with no route to the run that produced it is an
-        assertion, so the series links to the audit hub and its own table names
-        the target each run audited — the comparison key that breaks the line.
-      */}
-      <section aria-labelledby="score-history-heading" className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 id="score-history-heading" className="text-subsection font-semibold tracking-tight">
-            Technical score across runs
-          </h2>
-          <Button asChild variant="outline" size="sm">
-            <Link href={`/projects/${project.id}/research/website`}>Open website health</Link>
-          </Button>
-        </div>
-        <Card>
-          <CardContent className="pt-6">
-            {trendError ? (
-              <ErrorState
-                error={trendError}
-                layout="inline"
-                onRetry={() => void load()}
-                preserveNotice="The project itself was read successfully; only the score history failed."
-              />
-            ) : (
-            <TechnicalScoreHistory
-              history={trend ?? []}
-              emptyState={
-                <EmptyState
-                  variant="not-measured"
-                  subject="a technical score history"
-                  prerequisite="a technical audit has to run and finish with a score before there is a series to draw."
-                  action={{
-                    label: 'Go to website health',
-                    href: `/projects/${project.id}/research/website`,
-                  }}
-                />
-              }
-              note="The series is read from the technical-audit trend route — one point per scored run. The project record itself carries no score, so nothing here is inferred from the artifact counts above."
-            />
-            )}
-          </CardContent>
-        </Card>
-      </section>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-subsection">Recurring collection</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex items-center gap-2 text-table">
-              <CalendarCheck
-                aria-hidden="true"
-                className={
-                  project.stats.scheduleActive
-                    ? 'h-4 w-4 text-success'
-                    : 'h-4 w-4 text-muted-foreground'
-                }
-              />
-              {project.stats.scheduleActive ? (
-                <span>Scheduled technical audits are running</span>
-              ) : (
-                <span className="text-muted-foreground">
-                  No recurring audit is scheduled for this project
-                </span>
-              )}
-            </div>
-            <Button asChild variant="outline" size="sm">
-              <Link href={`/projects/${project.id}/monitoring`}>
-                Monitoring &amp; cadence
-                <ArrowRight aria-hidden="true" className="ml-1.5 h-3.5 w-3.5" />
-              </Link>
+      {overviewFailed ? (
+        <Alert>
+          <Info aria-hidden="true" className="h-4 w-4" />
+          <AlertTitle>We could not load the composed overview just now</AlertTitle>
+          <AlertDescription className="flex flex-wrap items-center gap-3">
+            <span>
+              The project itself was read successfully; only the assembled panels failed. Nothing
+              below should be read as an empty result.
+            </span>
+            <Button variant="outline" size="sm" onClick={() => void load()}>
+              Try again
             </Button>
-          </CardContent>
-        </Card>
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-subsection">Project details</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-table">
-            <DetailRow label="Domain">
-              <span className="font-mono text-meta">{project.domain}</span>
-            </DetailRow>
-            {project.category ? (
-              <DetailRow label="Category">{project.category}</DetailRow>
-            ) : null}
-            {project.timezone ? (
-              <DetailRow label="Reporting timezone">{project.timezone}</DetailRow>
-            ) : null}
-            <DetailRow label="Created">
-              <Timestamp value={project.createdAt} dateOnly />
-            </DetailRow>
-          </CardContent>
-        </Card>
-      </div>
+      {/* ── Client-equivalent information, in §5.1's order ────────────────── */}
 
-      {/*
-        §4: "unavailable target widgets remain absent or explicitly
-        unavailable." These four surfaces are specified in §3.2's target layout
-        but depend on packages that are not deployed here yet, so they are
-        named as unavailable rather than rendered as empty cards.
-      */}
-      <section aria-labelledby="planned-heading" className="space-y-3">
-        <h2 id="planned-heading" className="text-subsection font-semibold tracking-tight">
-          Planned work
-        </h2>
-        <Card>
-          <CardContent className="py-4">
-            <ul className="space-y-2 text-table text-muted-foreground">
-              <UnavailableRow icon={Target} label="Priorities and roadmap" />
-              <UnavailableRow icon={ListChecks} label="Cycle commitments and work items" />
-              <UnavailableRow icon={FileText} label="Pending approvals" />
-            </ul>
-            <p className="mt-3 text-meta text-muted-foreground">
-              These need the engagements and approvals work (design_plan G06 and
-              G10). They are shown here so the gap is visible rather than
-              mistaken for “nothing outstanding”.
-            </p>
-          </CardContent>
-        </Card>
-      </section>
+      {/* §5.1's one prominent score. `audience="operator"` is what makes the
+          "How this score works" sheet carry the full stored calculation (§5.5)
+          — the client's sheet stops at the plain-English explanation. */}
+      <ScoreSummary section={sections?.score ?? unread} projectId={projectId} audience="operator" />
+
+      <ActionPanelView section={sections?.actions ?? unread} />
+
+      <UpcomingPanelView section={sections?.upcomingContent ?? unread} />
+
+      <PlanPanelView section={sections?.plan ?? unread} />
+
+      <ReportPanelView section={sections?.report ?? unread} />
+
+      {/* ── §5.1's staff shortcut, below the client-equivalent information ── */}
+      <TeamAttentionPanelView section={sections?.teamAttention ?? unread} />
+
+      {/* Navigation, not widgets: the screens §5.1 moved off this page. */}
+      <nav aria-label="More on this project" className="flex flex-wrap items-center gap-x-4 gap-y-2 text-meta">
+        <Link href={`/projects/${projectId}/research/website`} className="text-primary underline underline-offset-4">
+          Website health
+        </Link>
+        <Link href={`/projects/${projectId}/priorities`} className="text-primary underline underline-offset-4">
+          Priorities
+        </Link>
+        <Link href={`/projects/${projectId}/cycles`} className="text-primary underline underline-offset-4">
+          Plan &amp; cycles
+        </Link>
+        <Link href={`/projects/${projectId}/calendar`} className="text-primary underline underline-offset-4">
+          Calendar
+        </Link>
+        <Link href={`/projects/${projectId}/monitoring`} className="text-primary underline underline-offset-4">
+          Monitoring
+        </Link>
+        <Link href={`/projects/${projectId}/reports`} className="text-primary underline underline-offset-4">
+          Reports
+        </Link>
+        <Link href={`/projects/${projectId}/runs`} className="text-primary underline underline-offset-4">
+          Run history
+        </Link>
+      </nav>
     </div>
-  );
-}
-
-function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center justify-between gap-4">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="text-right">{children}</span>
-    </div>
-  );
-}
-
-function UnavailableRow({
-  icon: Icon,
-  label,
-}: {
-  icon: typeof Target;
-  label: string;
-}) {
-  return (
-    <li className="flex items-center gap-2">
-      <Icon aria-hidden="true" className="h-4 w-4 shrink-0 opacity-60" />
-      <span>{label}</span>
-      <span className="ml-auto rounded-full bg-unmeasured-subtle px-2 py-0.5 text-meta text-unmeasured-foreground">
-        Not available yet
-      </span>
-    </li>
   );
 }

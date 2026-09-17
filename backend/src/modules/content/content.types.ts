@@ -38,6 +38,8 @@ export interface ReferenceSource {
 export interface ContentBriefDto {
   id: string;
   projectId: string;
+  /** P08 §13.2 — stable identity for this brief's version lineage, decoupled from `title`. Renaming the brief never changes this. */
+  briefFamilyId: string;
   version: number;
   title: string;
   assetType: ContentAssetType;

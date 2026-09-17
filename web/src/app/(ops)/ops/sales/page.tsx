@@ -470,7 +470,7 @@ function StatusGroup({
         render: (row) => (
           <a
             className="inline-flex items-center gap-1 text-table text-primary underline-offset-4 hover:underline"
-            href={`/ops/projects/${row.projectId}/sales/${row.id}`}
+            href={`/projects/${row.projectId}/sales/${row.id}`}
           >
             {NEXT_STEP[status]}
             <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
@@ -508,7 +508,7 @@ function StatusGroup({
         rows={group.leads}
         getRowId={(row) => row.id}
         defaultSort={{ key: 'createdAt', direction: 'desc' }}
-        rowHref={(row) => `/ops/projects/${row.projectId}/sales/${row.id}`}
+        rowHref={(row) => `/projects/${row.projectId}/sales/${row.id}`}
         linkColumnKey="lead"
         error={group.error}
         onRetry={onRetry}

@@ -27,7 +27,7 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
-import { REBUILD_TARGETS } from '../business-profile.types';
+import { BUSINESS_INFO_FIELDS, REBUILD_TARGETS } from '../business-profile.types';
 
 export class IcpDto {
   @ApiPropertyOptional({ type: [String], description: 'Who the business sells to.' })
@@ -97,6 +97,53 @@ export class ApproverDto {
   role?: string;
 }
 
+/**
+ * One structured target market (P04, plan §10.1). `country` is the only
+ * required field — it is the one unit every provider adapter read for this
+ * phase can genuinely target (see `market-provider-support.ts`).
+ */
+export class MarketTargetDto {
+  @ApiProperty({ description: 'ISO-3166 alpha-2 country code, e.g. "US".' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(2)
+  country: string;
+
+  @ApiPropertyOptional({ description: 'State/province, free text.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  region?: string;
+
+  @ApiPropertyOptional({ description: 'City. Narrower than most provider adapters can prove they targeted — see the provider-support preview.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  city?: string;
+
+  @ApiPropertyOptional({ description: 'BCP-47 language tag for this target, when it differs from the profile-wide languages.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(35)
+  language?: string;
+
+  @ApiPropertyOptional({ default: 0, description: 'Lower = higher priority.' })
+  @IsOptional()
+  @IsInt()
+  priority?: number;
+
+  @ApiPropertyOptional({ default: true, description: 'False keeps the target on file but excludes it from measurement scope and cost estimates.' })
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean;
+
+  @ApiPropertyOptional({ type: [String], description: 'Which services/products this target applies to. Empty = all of them.' })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  productApplicability?: string[];
+}
+
 export class PublishingDto {
   @ApiPropertyOptional({ description: 'e.g. "WordPress", "HubSpot", "Webflow".' })
   @IsOptional()
@@ -162,6 +209,17 @@ export class SaveBusinessProfileDto {
   @IsArray()
   @IsString({ each: true })
   languages?: string[];
+
+  @ApiPropertyOptional({
+    type: [MarketTargetDto],
+    description:
+      'Structured target markets (P04, plan §10.1) — replaces the whole array on write, same merge semantics as every other field here: omitted leaves it as it is.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => MarketTargetDto)
+  targets?: MarketTargetDto[];
 
   @ApiPropertyOptional({ type: [FactDto] })
   @IsOptional()
@@ -243,6 +301,20 @@ export class ConfirmBusinessProfileDto {
   @IsString()
   @MaxLength(2000)
   note?: string;
+}
+
+/**
+ * "Keep current" on one field's suggestion — plan §9.2's rejection memory.
+ *
+ * The value being rejected is NOT taken from the request body: the server
+ * reads the field's current suggestion (the newest `SiteContext`'s value for
+ * `field`) itself and records a rejection of exactly that, so a caller cannot
+ * fabricate a rejection of a value nothing ever suggested.
+ */
+export class RejectBusinessProfileSuggestionDto {
+  @ApiProperty({ enum: BUSINESS_INFO_FIELDS, description: 'Which field suggestion to decline.' })
+  @IsIn(BUSINESS_INFO_FIELDS as unknown as string[])
+  field: string;
 }
 
 /** Explicit propagation of confirmed facts to the artifacts they directly feed. */

@@ -110,6 +110,10 @@ export interface GrowthAssetDto {
   brief: string;
   targetKeyword: string | null;
   sourceGapId: string | null;
+  /** P07 §12.7 — the `Opportunity` this asset was created from, if any. */
+  sourceOpportunityId: string | null;
+  /** P07 §12.7 — idempotency key from opportunity-linked creation, if any. */
+  idempotencyKey: string | null;
   status: AssetStatus;
   source: AssetSource;
   generationModel: string | null;

@@ -344,7 +344,7 @@ function ActivityScreen() {
   if (error?.kind === 'forbidden') {
     return (
       <div className="space-y-6">
-        <PageHeader title="Activity" />
+        <PageHeader title="Activity history" />
         <EmptyState
           variant="insufficient-role"
           restrictedAction="read the organization audit log"
@@ -357,7 +357,7 @@ function ActivityScreen() {
   if (error) {
     return (
       <div className="space-y-6">
-        <PageHeader title="Activity" />
+        <PageHeader title="Activity history" />
         <ErrorState error={error} onRetry={() => void loadFirstPage()} />
       </div>
     );
@@ -375,7 +375,7 @@ function ActivityScreen() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Activity"
+        title="Activity history"
         context="Every recorded action, newest first — including the ones that failed."
         secondaryActions={
           <Button variant="outline" size="sm" onClick={() => void onExport()}>

@@ -247,13 +247,23 @@ function ProjectRow({ project }: { project: ProjectSummary }) {
 
         <StatusPill label={projectStatusLabel(project.status)} tone={projectStatusTone(project.status)} />
 
-        {/* Score is absent when never measured — never rendered as 0. */}
+        {/*
+          Score is absent when never measured — never rendered as 0.
+          §3.4: "A project performance score can be a secondary detail, but
+          never confuse it with account health or delivery completion." A bare
+          number sitting next to a setup pill and a lifecycle pill is exactly
+          that confusion, so the number carries its own label. This is the same
+          wording the Clients list uses for the same column.
+        */}
         {typeof project.score === 'number' ? (
-          <span className="w-10 text-right text-table font-semibold tabular-nums">
-            {formatNumber(project.score)}
+          <span className="flex items-baseline gap-1.5">
+            <span className="text-meta text-muted-foreground">Project score</span>
+            <span className="w-10 text-right text-table font-semibold tabular-nums">
+              {formatNumber(project.score)}
+            </span>
           </span>
         ) : (
-          <span className="w-24 text-right text-meta text-muted-foreground">Not measured</span>
+          <span className="text-right text-meta text-muted-foreground">Not measured</span>
         )}
 
         <ArrowRight

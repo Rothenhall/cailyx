@@ -122,3 +122,78 @@ export interface PortalMe {
 export async function getPortalMe(options?: { signal?: AbortSignal }) {
   return api.get<PortalMe>('/portal/me', options);
 }
+
+// ── P08 §13.5/§14.4 — client-safe content ───────────────────────────────
+
+/**
+ * Client content list. **Only pieces with at least one explicitly shared
+ * revision appear here at all.**
+ *
+ * That is enforced on the server (`content-workspace.service.ts`'s
+ * `listClientSafeItems`), not by this adapter or any screen: an unshared draft
+ * is absent from the response, so a client cannot count it, link to it, or
+ * learn it exists. §14.4's closing rule — "Hiding a button is not access
+ * control" — is why the omission happens at the query, and why this function
+ * has no filter parameter that could widen it.
+ */
+export interface PortalContentItem {
+  assetId: string;
+  title: string;
+  assetType: string;
+  /** not-shared | awaiting-review | changes-requested | approved | expired-superseded. */
+  clientReviewState: string;
+  /** unscheduled | planned | scheduled | publishing | published | failed. */
+  publicationStatus: string;
+  updatedAt: string;
+}
+
+export async function listPortalContent(projectId: string, options?: { signal?: AbortSignal }) {
+  const payload = await api.get<{ items: PortalContentItem[] }>(
+    `/portal/projects/${projectId}/content`,
+    options,
+  );
+  return unwrap<PortalContentItem[]>(payload, 'items');
+}
+
+/**
+ * One shared piece, at the **explicitly shared revision**.
+ *
+ * `revision` is the latest revision whose `clientVisible` flag is set — never
+ * the latest internal draft, and never inferred from an approval's existence.
+ * `history` lists only shared revisions, so an internal iteration does not
+ * show up as a gap the client can ask about.
+ *
+ * There is no prompt, provider, model, cost or staff-identity field in this
+ * shape, and none can be added by a screen: the server builds this projection
+ * from a fixed set of columns.
+ *
+ * A piece with nothing shared answers **404**, not an empty body, so "nothing
+ * has been shared yet" and "this piece does not exist" are never confused.
+ */
+export interface PortalContentDetail {
+  assetId: string;
+  title: string;
+  assetType: string;
+  clientReviewState: string;
+  revision: {
+    revision: number;
+    title: string | null;
+    body: string | null;
+    fields: Record<string, unknown>;
+    sharedAt: string | null;
+  };
+  history: Array<{ revision: number; sharedAt: string | null }>;
+  /** The client-reviewer approval status for this exact revision, when one exists. */
+  approvalStatus: string | null;
+}
+
+export async function getPortalContent(
+  projectId: string,
+  assetId: string,
+  options?: { signal?: AbortSignal },
+) {
+  return api.get<PortalContentDetail>(
+    `/portal/projects/${projectId}/content/${encodeURIComponent(assetId)}`,
+    options,
+  );
+}

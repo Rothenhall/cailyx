@@ -19,9 +19,16 @@ import { CompetitorsController } from './competitors.controller';
 import { FetcherModule } from '../fetcher/fetcher.module';
 import { TechStackModule } from '../tech-stack/tech-stack.module';
 import { DigitalPresenceModule } from '../digital-presence/digital-presence.module';
+import { BusinessProfileModule } from '../business-profile/business-profile.module';
+import { SerpIntelligenceModule } from '../serp-intelligence/serp-intelligence.module';
 
 @Module({
-  imports: [FetcherModule, TechStackModule, DigitalPresenceModule],
+  // BusinessProfileModule and SerpIntelligenceModule back §12.2's
+  // service/market-based discovery: confirmed services/segments/target
+  // markets are read-only from BusinessProfileService (that module's own
+  // code is untouched), and bounded searches go through the same gated
+  // SERP provider `serp-intelligence` already exposes for `capture()`.
+  imports: [FetcherModule, TechStackModule, DigitalPresenceModule, BusinessProfileModule, SerpIntelligenceModule],
   controllers: [CompetitorsController],
   providers: [CompetitorsService],
   exports: [CompetitorsService],

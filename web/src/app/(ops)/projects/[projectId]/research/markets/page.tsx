@@ -51,6 +51,13 @@ import {
  * from different snapshots taken at different times. design_plan tracks an
  * aligned-snapshot view as G13; until it exists, the panel says so rather than
  * implying the numbers came from one moment.
+ *
+ * **P04 (plan §10.4).** This screen is read-only results — "what we
+ * checked" for the markets that already have a tracker or a measured run. It
+ * is deliberately not a second place to set the business's target markets:
+ * editing target locations belongs on Business information -> Target
+ * locations (linked below), which also carries the confirmed/suggested
+ * structured targets and the real per-provider support preview.
  */
 export default function MarketsPage() {
   const params = useParams<{ projectId: string }>();
@@ -332,6 +339,19 @@ export default function MarketsPage() {
           </Button>
         }
       />
+
+      <Alert>
+        <AlertTitle>Read-only results — edit target markets on Business information</AlertTitle>
+        <AlertDescription>
+          This page shows what has already been checked, grouped by the market a tracker or run recorded — it does
+          not set which markets the business targets. To add, confirm, or deactivate a target location, or to see
+          which AI/search providers can genuinely target it,{' '}
+          <a className="underline" href={`/projects/${projectId}/business-info#target-locations`}>
+            go to Business information -&gt; Target locations
+          </a>
+          .
+        </AlertDescription>
+      </Alert>
 
       <Alert>
         <AlertTitle>Two measurements, two panels, never one figure</AlertTitle>

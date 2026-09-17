@@ -110,7 +110,7 @@ export default function ScorecardRunPage() {
       const created = await runScorecard(projectId, depth);
       // A new run, not a replacement — so navigate to it rather than mutating
       // this page's record.
-      router.push(`/ops/projects/${projectId}/scorecards/${created.id}`);
+      router.push(`/projects/${projectId}/scorecards/${created.id}`);
     } catch (caught) {
       setRunError(toApiError(caught));
       setBusyDepth(null);
@@ -345,7 +345,7 @@ export default function ScorecardRunPage() {
                       <Timestamp value={sibling.createdAt} />
                     </span>
                     <Button variant="ghost" size="sm" asChild>
-                      <Link href={`/ops/projects/${projectId}/scorecards/${sibling.id}`}>
+                      <Link href={`/projects/${projectId}/scorecards/${sibling.id}`}>
                         Open
                       </Link>
                     </Button>

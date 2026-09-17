@@ -33,6 +33,78 @@ export interface ReportSubScore {
   [key: string]: unknown;
 }
 
+// ── P15 — §14.5/§14.6's frozen score-family and plan sections ──────────────
+//
+// These mirror `ReportDigitalPerformanceSection`, `ReportScoreBucketSnapshot`,
+// `ReportPlanProgressSection` and `ReportCommitmentSnapshot` in the backend's
+// `reporting.types.ts`. They travel inside `ReportRevision.snapshot`, are
+// written once at review-lock time, and are **never** recomputed at read time:
+// that is what makes a released report identical after a later live-score
+// update and after a new draft revision (§14.6, §6.4).
+//
+// The field names deliberately match the live client-safe score read
+// (`DigitalPerformanceService.getClientSafe`) so one component can render both,
+// with the live/report distinction carried by the surrounding label rather than
+// by a second set of field names.
+
+export interface ReportScoreBucketSnapshot {
+  key: string;
+  label: string;
+  weight: number;
+  applicability: string;
+  applicabilityReason: string | null;
+  state: string;
+  /** Client-safe label for `state` (§4.3) — the same words the live Results screen uses. */
+  stateLabel: string;
+  /** Null when the bucket was not measured. Never 0-by-substitution. */
+  value: number | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+  missingReasons: string[];
+  notes: string[];
+  /** Source names and ages only — no internal record handles (§4.6). */
+  sources: Array<{ kind: string; label: string; observedAt: string | null; ageDays: number | null }>;
+}
+
+export interface ReportDigitalPerformanceSection {
+  family: string;
+  scoreName: string;
+  methodology: { version: number; label: string; weightsApproved: boolean; approvalNote: string };
+  runId: string | null;
+  runAt: string | null;
+  /** `complete` | `incomplete` | `none`. */
+  status: string;
+  /** Null whenever `status !== 'complete'`; a frozen partial sum would be a fake total (§5.3). */
+  total: number | null;
+  evidenceCoverage: number | null;
+  coverageMeaning: string;
+  buckets: ReportScoreBucketSnapshot[];
+  missingAreas: string[];
+  excludedFromScore: Array<{ key: string; label: string; reason: string | null }>;
+  /** The snapshot lock time — how a reader tells release time from measurement time. */
+  frozenAt: string;
+}
+
+export interface ReportCommitmentSnapshot {
+  id: string;
+  title: string;
+  workstream: string;
+  status: string;
+  targetDate: string | null;
+  progressLabel: string;
+}
+
+export interface ReportPlanProgressSection {
+  totalCount: number;
+  completedCount: number;
+  /** Rendered verbatim: "3 of 5 commitments completed". */
+  label: string;
+  commitments: ReportCommitmentSnapshot[];
+  windowStart: string | null;
+  windowEnd: string | null;
+  frozenAt: string;
+}
+
 export interface ReportData {
   id: string;
   projectId: string;
@@ -77,6 +149,25 @@ export interface ReportData {
    */
   rubricVersion?: number | null;
   scoreRunId?: string | null;
+
+  // ── P15 — the frozen sections, on a released read only ──────────────
+  //
+  // `ReleasedReportDto` adds these; the operator's mutable-row `/view` read
+  // does not carry them, which is why they are optional rather than nullable.
+  // A screen must keep the two states apart:
+  //
+  //   `undefined` — this route does not serve the frozen section at all;
+  //   `null`      — this revision predates P15, so the section was never
+  //                 frozen. That is "not part of this release", not "zero".
+
+  /** Which frozen revision this payload is. Present on a released read. */
+  revision?: number;
+  /** When the snapshot was locked (review-lock time) — distinct from `releasedAt`. */
+  snapshotAt?: string;
+  /** The frozen Cailyx score family: total, coverage, buckets, excluded areas. */
+  digitalPerformance?: ReportDigitalPerformanceSection | null;
+  /** The frozen 30-day plan progress. */
+  planProgress?: ReportPlanProgressSection | null;
 }
 
 // ── G05 — the report editorial lifecycle (RP04, RP05) ─────────────────────
@@ -138,6 +229,14 @@ export interface ReportRevisionSnapshot {
   backlinks: Record<string, unknown> | null;
   presence: Record<string, unknown> | null;
   competitors: Record<string, unknown> | null;
+  /**
+   * P15 — the frozen score family and plan progress, written into the snapshot
+   * at lock time. Absent (not null) on a snapshot written before P15, so a
+   * reader can tell "this revision predates the section" from "the section was
+   * frozen empty" without guessing.
+   */
+  digitalPerformance?: ReportDigitalPerformanceSection | null;
+  planProgress?: ReportPlanProgressSection | null;
   /** D11 — null means unrecorded, never inferred. */
   rubricVersion: number | null;
   scoreRunId: string | null;
@@ -788,7 +887,9 @@ export async function listEvidenceManifests(
   });
   const rows = unwrap<EvidenceManifestView[]>(payload, 'manifests');
   if (!Array.isArray(rows)) {
-    throw new Error('GET /projects/:id/evidence-manifests answered with a non-list field.');
+    // The reader gets a sentence; the endpoint path stays out of text a
+    // client screen can render (§4.3).
+    throw new Error('The list of sources and dates came back in a shape we did not recognise.');
   }
   return rows;
 }

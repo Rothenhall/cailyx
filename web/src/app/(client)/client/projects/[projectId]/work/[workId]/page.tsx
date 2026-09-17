@@ -12,7 +12,7 @@ import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyState } from '@/components/patterns/EmptyState';
-import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
+import { ErrorState, clientActionMessage, toApiError } from '@/components/patterns/ErrorState';
 import { PageHeader } from '@/components/patterns/PageHeader';
 import { ScopeBanner } from '@/components/patterns/ScopeBanner';
 import { StatusPill, WORK_STATUS_LABEL, workStatusTone } from '@/components/patterns/StatusPill';
@@ -20,11 +20,9 @@ import { Timestamp } from '@/components/patterns/Timestamp';
 import { toViewWorkStatus } from '@/lib/work-mapping';
 import { listPortalProjectSummaries, type PortalProjectSummary } from '@/services/portal';
 import {
-  getPortalPlan,
   listPortalWorkItems,
   splitWorkDescription,
   submitPortalEvidence,
-  type PortalPlan,
   type PortalWorkItem,
 } from '@/services/portal-plan';
 
@@ -38,10 +36,11 @@ import {
  *
  *  1. **The evidence lines are parsed, not printed.** When work is submitted,
  *     the backend appends `[<label> <timestamp> by <userId>] <note> — <url>` to
- *     the work item's `description`. That `by <userId>` is a raw user
- *     identifier, and `toWorkItemDto({ includeInternal: false })` does not strip
- *     it. The parser in `services/portal-plan` removes it, and this page *says
- *     so* rather than silently rewriting the field.
+ *     the work item's `description`, but the portal projection's
+ *     `toPortalText` strips the `by <userId>` token server-side before the
+ *     response is built — a raw user id never reaches this page. The parser
+ *     in `services/portal-plan` still splits guidance from evidence lines,
+ *     just against the already-redacted shape.
  *  2. **The status is the gate.** The server only accepts client evidence on an
  *     item that is `active` and only from its assignee; a successful submission
  *     moves it to `review`. Rather than offer a control that would 403, the page
@@ -51,6 +50,11 @@ import {
  * There is no single-item portal route, so the item is read from the shared
  * work list and selected by id. An id that is not in that list is either not
  * this client's or not flagged client-visible; both render the same state.
+ *
+ * The portal work-item DTO does not carry cycle linkage or dependency ids
+ * (`cycleId`/`dependsOn` are staff-only fields — see `PortalWorkItemDto` on
+ * the backend), so this page cannot show which cycle an item belongs to or
+ * list its dependencies; it shows only what the allowlisted DTO provides.
  */
 export default function ClientWorkDetailPage() {
   const params = useParams<{ projectId: string; workId: string }>();
@@ -58,7 +62,6 @@ export default function ClientWorkDetailPage() {
 
   const [project, setProject] = useState<PortalProjectSummary | null>(null);
   const [item, setItem] = useState<PortalWorkItem | null | undefined>(undefined);
-  const [plan, setPlan] = useState<PortalPlan | null>(null);
   const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
   const [note, setNote] = useState('');
   const [sourceUrl, setSourceUrl] = useState('');
@@ -70,10 +73,9 @@ export default function ClientWorkDetailPage() {
     async (signal?: AbortSignal) => {
       try {
         setError(null);
-        const [projects, workItems, planResult] = await Promise.allSettled([
+        const [projects, workItems] = await Promise.allSettled([
           listPortalProjectSummaries({ signal }),
           listPortalWorkItems(projectId, { signal }),
-          getPortalPlan(projectId, { signal }),
         ]);
         if (projects.status === 'rejected') throw projects.reason;
         setProject(projects.value.find((entry) => entry.id === projectId) ?? null);
@@ -83,7 +85,6 @@ export default function ClientWorkDetailPage() {
           return;
         }
         setItem(workItems.value.find((entry) => entry.id === workId) ?? null);
-        if (planResult.status === 'fulfilled') setPlan(planResult.value);
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === 'AbortError') return;
         setError(toApiError(caught));
@@ -113,9 +114,7 @@ export default function ClientWorkDetailPage() {
       await load();
     } catch (caught) {
       setProblem(
-        caught instanceof Error
-          ? caught.message
-          : 'Your evidence could not be submitted. Nothing was changed.',
+        clientActionMessage(caught, 'Your evidence could not be submitted. Nothing was changed.'),
       );
     } finally {
       setBusy(false);
@@ -126,7 +125,7 @@ export default function ClientWorkDetailPage() {
     return (
       <div className="space-y-6">
         <PageHeader title="Work item" />
-        <ErrorState error={error} onRetry={() => void load()} notFoundReason="missing-or-private" />
+        <ErrorState error={error} onRetry={() => void load()} notFoundReason="missing-or-private" showServerMessage={false} />
       </div>
     );
   }
@@ -157,11 +156,6 @@ export default function ClientWorkDetailPage() {
 
   const parsed = splitWorkDescription(item.description);
   const viewStatus = toViewWorkStatus(item.status);
-  const cycle = plan?.cycles.find((entry) => entry.id === item.cycleId) ?? null;
-  const dependencies = item.dependsOn.map((id) => ({
-    id,
-    visible: plan?.workItems.find((candidate) => candidate.id === id) ?? null,
-  }));
 
   return (
     <div className="space-y-6">
@@ -177,11 +171,10 @@ export default function ClientWorkDetailPage() {
         title={item.title}
         context={
           <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span>{humanize(item.discipline)}</span>
-            {cycle ? <span>{cycle.name}</span> : null}
-            {item.dueAt ? (
+            {item.capabilityLabel ? <span>{item.capabilityLabel}</span> : null}
+            {item.dueOn ? (
               <span>
-                Due <Timestamp value={item.dueAt} dateOnly />
+                Due <Timestamp value={item.dueOn} dateOnly />
               </span>
             ) : (
               <span className="text-muted-foreground">No due date set</span>
@@ -205,7 +198,7 @@ export default function ClientWorkDetailPage() {
           <AlertTriangle aria-hidden="true" className="h-4 w-4" />
           <AlertTitle>This is blocked</AlertTitle>
           <AlertDescription>
-            <p>{item.blockedReason ?? 'No reason was recorded for this blocker.'}</p>
+            <p>{blockedReasonLabel(item.blockedReason) ?? 'No reason was recorded for this blocker.'}</p>
             {item.blockedOn ? <p>Waiting on: {item.blockedOn}</p> : null}
           </AlertDescription>
         </Alert>
@@ -254,18 +247,14 @@ export default function ClientWorkDetailPage() {
               </p>
             )}
 
-            <dl className="grid gap-x-6 gap-y-2 border-t border-border pt-3 sm:grid-cols-2">
-              <div>
-                <dt className="text-meta text-muted-foreground">Category</dt>
-                <dd className="text-table">{humanize(item.category)}</dd>
-              </div>
-              <div>
-                <dt className="text-meta text-muted-foreground">Last updated</dt>
-                <dd className="text-table">
-                  <Timestamp value={item.updatedAt} />
-                </dd>
-              </div>
-            </dl>
+            {item.capabilityLabel ? (
+              <dl className="grid gap-x-6 gap-y-2 border-t border-border pt-3 sm:grid-cols-2">
+                <div>
+                  <dt className="text-meta text-muted-foreground">Area of work</dt>
+                  <dd className="text-table">{item.capabilityLabel}</dd>
+                </div>
+              </dl>
+            ) : null}
           </CardContent>
         </Card>
       </section>
@@ -317,66 +306,6 @@ export default function ClientWorkDetailPage() {
                 ))}
               </ul>
             )}
-
-            {parsed.redactedActor ? (
-              <p className="text-meta text-muted-foreground">
-                Evidence lines are written with the submitting person’s internal
-                identifier. That identifier is removed from the text above —
-                this screen does not show user ids — and it is the only edit made
-                to what was recorded.
-              </p>
-            ) : null}
-          </CardContent>
-        </Card>
-      </section>
-
-      {/* ── Dependency questions ───────────────────────────────────────── */}
-      <section aria-labelledby="dependencies-heading" className="space-y-3">
-        <h2 id="dependencies-heading" className="text-subsection font-semibold tracking-tight">
-          What this depends on
-        </h2>
-        <Card>
-          <CardContent className="space-y-3 py-4">
-            {dependencies.length === 0 ? (
-              <p className="text-table text-muted-foreground">
-                This item does not wait on anything else.
-              </p>
-            ) : (
-              <ul className="divide-y divide-border">
-                {dependencies.map((dependency) => (
-                  <li key={dependency.id} className="py-3">
-                    {dependency.visible ? (
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-table">{dependency.visible.title}</span>
-                        <span className="flex items-center gap-2">
-                          <StatusPill
-                            label={WORK_STATUS_LABEL[toViewWorkStatus(dependency.visible.status)]}
-                            tone={workStatusTone(toViewWorkStatus(dependency.visible.status))}
-                          />
-                          <Button asChild size="sm" variant="ghost">
-                            <Link href={`/client/projects/${projectId}/work/${dependency.visible.id}`}>
-                              Open
-                            </Link>
-                          </Button>
-                        </span>
-                      </div>
-                    ) : (
-                      <p className="text-table text-muted-foreground">
-                        This waits on another piece of work your delivery team is
-                        tracking. It is not shared with you, so it cannot be shown
-                        here — ask in messages if you need to know what it is.
-                      </p>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {item.blockedOn ? (
-              <p className="text-table">
-                <span className="text-muted-foreground">Waiting on:</span> {item.blockedOn}
-              </p>
-            ) : null}
           </CardContent>
         </Card>
       </section>
@@ -479,7 +408,19 @@ function isSafeHref(href: string): boolean {
   }
 }
 
-function humanize(value: string): string {
-  if (!value) return 'Work';
-  return value.charAt(0).toUpperCase() + value.slice(1);
+/** Client-facing text for the normalized blocker category the backend sends
+ * (never the raw internal blockedReason text). */
+function blockedReasonLabel(reason: PortalWorkItem['blockedReason']): string | null {
+  switch (reason) {
+    case 'client-action':
+      return 'Waiting on something from you.';
+    case 'approval':
+      return 'Waiting on an approval.';
+    case 'dependency':
+      return 'Waiting on other work to finish first.';
+    case 'other':
+      return 'Waiting on something on our side.';
+    default:
+      return null;
+  }
 }

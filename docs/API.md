@@ -3,7 +3,11 @@
 > **Base URL:** `http://localhost:3002/api`
 > **Swagger UI:** `http://localhost:3002/api/docs`
 > **Format:** JSON
-> **Auth:** Not yet implemented (planned: JWT-based)
+> **Auth:** JWT bearer tokens — a global guard requires
+> `Authorization: Bearer <accessToken>` on every endpoint except the
+> `@Public()` ones (health, auth register/login/refresh/logout, `/api/docs`).
+> Client-account tokens are default-deny outside `@ClientPortal()` routes.
+> See the Auth Module section below.
 
 ---
 
@@ -566,8 +570,11 @@ Module docs: [`backend/src/modules/aeo-audit/README.md`](../backend/src/modules/
 
 | Method | Path | Description | Rate Limit |
 |---|---|---|---|
-| `POST` | `/api/projects/:projectId/aeo/context` | Crawl the client site → services, ICP, pains, outcomes | 5/60s |
+| `POST` | `/api/projects/:projectId/aeo/context` | Crawl the client site → services, ICP, pains, outcomes. **P03:** a six-stage, resumable pipeline (discover → inspect → select → extract → reconcile → validate); when the elapsed-time budget runs out the response carries `{ paused: true, runId, reachedStage }` instead of a partial context | 5/60s |
 | `GET` | `/api/projects/:projectId/aeo/context` | Latest stored site context | default |
+| `GET` | `/api/projects/:projectId/aeo/context/runs` | Staged-pipeline run history — stage, budgets, coverage plan (staff) | default |
+| `GET` | `/api/projects/:projectId/aeo/context/runs/:runId` | One run in full: every page with its `selectionReason`, every fact with its citation and `validated` flag (staff) | default |
+| `POST` | `/api/projects/:projectId/aeo/context/runs/:runId/resume` | Continue a paused or failed run from its last completed stage — already-fetched pages are not re-fetched, already-extracted pages are not re-extracted | 10/60s |
 | `POST` | `/api/projects/:projectId/aeo/matrix` | Generate the categorised prompt matrix (stored as a versioned QuerySet) | 5/60s |
 | `GET` | `/api/projects/:projectId/aeo/matrix/:querySetId?dimension=` | Read a matrix, grouped by category (the curation view) | default |
 | `POST` | `/api/projects/:projectId/aeo/audits` | Create an audit row — no scraping, no spend. Body takes `surfaces[]` to measure several engines with one matrix | default |
@@ -1054,6 +1061,299 @@ Not built here (see the module's `LEFT-OUT.md`): automatic seed derivation
 from `SiteContext.services` (v1 takes explicit `keywords[]` input only), and
 feeding the AEO matrix generator a demand weighting — an optional stretch
 goal noted in the wave-6 plan, not attempted in this pass.
+
+---
+
+## Platform improvement phases — P01–P11 surfaces (added 2026-09-17)
+
+> `platform_improvement_plan.md` added four backend modules and substantially
+> extended five existing ones. Documented below are the phases whose modules
+> have a written README today: `delivery-plan` (P01/P11), `business-profile`
+> (P02/P04), `digital-presence` (P05), `competitors` (P06) and `opportunities`
+> (P07). **`content-workspace` (P08/P09), `writing-style` and `website` (P12)
+> exist under `backend/src/modules/` but their endpoints are deliberately not
+> documented here yet** — those phases were still landing while this section
+> was written, and a moving target documented once is wrong twice. Their
+> module READMEs are deferred with them.
+
+### Business Profile Module — business information + target locations (P02/P04)
+
+| Method | Path | Roles | Description |
+|---|---|---|---|
+| `GET` | `/api/projects/:projectId/business-profile/overview` | operator | `{ fields[], suppressedRejectedCount }` — `confirmed` / `suggestions` / `gaps` per field |
+| `POST` | `/api/projects/:projectId/business-profile/candidates/reject` | admin, delivery-lead | Body `{ field, reason? }` — the "keep current" decision behind a suggestion |
+| `GET` | `/api/projects/:projectId/business-profile/target-locations` | operator | `MarketTarget[]` + `suggestedCountries` + a `providerSupport` preview |
+| `GET` | `/api/portal/projects/:projectId/business-profile/overview` | `@ClientPortal()` | the same overview, client-safe by construction |
+| `GET` | `/api/portal/projects/:projectId/business-profile/target-locations` | `@ClientPortal()` | the same target locations |
+| `POST` | `/api/portal/projects/:projectId/business-profile/candidates/reject` | `@ClientPortal()` | the client's own "keep current" |
+
+**Three lists per field, never merged.** A confirmed value, a suggestion
+extracted from the client's own site (with its source page and date) and a
+field with no extraction source at all are three different facts, and the
+response keeps them apart.
+
+**A decline is remembered by value, not by field.** `BusinessProfileRejection`
+is keyed `(projectId, fieldPath, valueHash)`, where the hash is a sha256 of a
+canonical form of the suggested value — so declining one suggestion does not
+suppress the next, different suggestion for the same field, and declining the
+same value twice is idempotent. The value is read from the stored
+`SiteContext`, never from the request body: a caller cannot inject a value in
+order to decline it. `suppressedRejectedCount` reports how many suggestions
+are being held back on each read, so a decline is visible rather than silent.
+
+| Status | Refusal |
+|---|---|
+| 404 | `"<field>" has no suggested value to decline.` |
+| 409 | `Project <id> has no extracted site context, so there is no suggestion for "<field>" to decline.` |
+| 409 | `There is no current suggestion for "<field>" to decline.` |
+| 409 | `"<field>" already matches the current confirmed/drafted value — there is nothing to decline.` |
+
+**No target market means no silent US default (§10.2).** The measurement
+market resolves in this order — an explicit `geo` on the run, then
+`getConfirmedTargetCountries()`, then a site-derived provisional value (which
+logs a warning, so a provisional market is never indistinguishable from a
+confirmed one) — and then it **refuses**, naming the screen that fixes it:
+
+```
+409  Project <id> has no confirmed target market (Business information ->
+     Target locations) and no site-derived service-area signal to fall back
+     to. Confirm at least one target country before running this audit, or
+     pass an explicit "geo" for a staff-approved provisional run (results
+     will be marked provisional).
+```
+
+`GET …/target-locations` returns structured targets in `draft` or `confirmed`
+state plus the countries still suggested; the per-provider support table marks
+a city-level market a provider cannot serve rather than widening it to the
+country and calling it the city. See `business-profile/README.md` §10.2 and
+`target-markets.smoke.sh`.
+
+### Digital Presence Module — applicability + "not ours" (P05)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/projects/:id/presence/applicability` | `{ status, reason, ruleVersion, overridden }` per platform (the same list `GET /presence` embeds) |
+| `PATCH` | `/api/projects/:id/presence/applicability/:platform` | Body `{ status, reason }` — a versioned override: the prior one is superseded, never mutated |
+| `POST` | `/api/projects/:id/presence/accounts/:accountId/reject` | "Not ours" — writes a `PresenceRejection` tombstone, then removes the candidate row |
+| `GET` | `/api/projects/:id/presence/rejections` | Tombstones for the project, newest first, reconsidered ones included |
+| `POST` | `/api/projects/:id/presence/rejections/:rejectionId/reconsider` | Undo — clears the tombstone's effect and keeps the row |
+| `GET` | `/api/portal/projects/:id/presence` | `@ClientPortal()` — plain-English, client-safe projection |
+
+**Applicability is what stops the module scoring a client for something that
+does not apply to them.** `status` is `relevant | optional | not-relevant`.
+Gaps count only `relevant` rows, coverage uses the same set, the Google sweep
+searches `relevant` + `optional` + needs-confirmation, and a `not-relevant`
+platform is never searched — hiding a platform's tab while still subtracting
+points for its absence is the bug §11.2 exists to prevent. Overrides are
+versioned (rule `applicability-v1`) and survive rediscovery, so a decision
+made once is not re-litigated by the next crawl.
+
+**Rejecting a candidate requires a reason, because the reason is what the
+next reviewer reads:**
+
+```
+400  A reason is required to reject a candidate — it is shown on the
+     tombstone and to future reviewers.
+400  Only a search candidate can be rejected as "Not ours".
+```
+
+Tombstones match by normalized URL (scheme/host case, trailing slash, `www`,
+tracking parameters), so the same account found again by a later sweep is
+still "not ours". The portal projection replaces internal vocabulary with
+plain-English labels and carries no confidence, run id, query text or spend.
+Client-portal routes go through the global `@ClientPortal()` guard and
+`ScopeValidationService.assertProjectAccess` — another client's project is a
+**403 `This project does not belong to your client account`** (delivery-plan's
+portal routes answer 404 instead; both disclose nothing, and the difference is
+in the code, not an oversight in this table).
+
+### Competitors Module — market discovery + frozen snapshots (P06)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/projects/:id/competitors/discover/market` | Body `{ collectNew?: boolean, provider?: 'dataforseo' \| 'fixture' }` — propose candidates from confirmed services + target markets |
+| `GET` | `/api/projects/:id/competitors/comparison-snapshots` | Frozen comparisons, newest first, summaries only |
+| `GET` | `/api/projects/:id/competitors/comparison-snapshots/:snapshotId` | The stored `GapResult` verbatim; 404 for an unknown or another project's snapshot |
+
+**Two cost classes, and the free one is the default.** The default pass mines
+the newest completed `AeoAudit.verdict` and up to 300 stored `SerpResult` rows
+and reports `queriesRun: 0, costUsd: 0`. Only `collectNew: true` runs live
+discovery searches — at most six `"<service> in <market>"` queries
+(`MAX_SERVICES_CONSIDERED = 5`, `MAX_MARKETS_CONSIDERED = 3`,
+`MAX_MARKET_QUERIES = 6`), through `serpForDiscovery()` and the SERP module's
+existing gates.
+
+Every candidate is a **proposal**: excluded from counts, unable to close a
+gap, promoted only by an explicit `POST …/candidates/:competitorId/confirm`.
+A rejected candidate is tombstoned first and removed second, so a later sweep
+does not re-propose it.
+
+**A comparison snapshot is immutable and carries its own provenance** —
+`competitorSetVersion`, `extractionVersion`, the source observation ids and
+the SERP sample size — so a comparison made in August can still be explained
+in December. Nothing overwrites a snapshot; a new comparison appends a new
+one.
+
+### Opportunities Module (P07)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/projects/:projectId/opportunities/analyze` | Body `{ keywordSetId?, marginThreshold? }` (1–50, default 5) — compute gaps inside the already-captured corpus |
+| `GET` | `/api/projects/:projectId/opportunities` | `?status= &origin= &search= &page= &pageSize=` (≤100), relevance-desc |
+| `GET` | `/api/projects/:projectId/opportunities/:opportunityId` | one opportunity |
+| `PATCH` | `/api/projects/:projectId/opportunities/:opportunityId/dismiss` | Body `{ reason }` **required**, min 3 chars |
+| `PATCH` | `/api/projects/:projectId/opportunities/:opportunityId/reopen` | Body `{ reason }` **required**, min 3 chars |
+| `POST` | `/api/projects/:projectId/opportunities/:opportunityId/convert` | Body `{ idempotencyKey (min 8), assetType? }` — create a content brief, idempotently |
+| `POST` | `/api/projects/:projectId/opportunities/research-term` | passthrough of keyword research — the only route here that can reach a paid vendor call |
+
+Every route is operator-only; there is no client-portal surface.
+
+**Analysis is read-only.** `analyze` issues Prisma reads plus writes to
+`Opportunity` itself. It never triggers a SERP, AEO or vendor call, and it
+claims nothing beyond what the project has already captured — each row keeps
+the exact query, location, language, device, checked depth and capture date
+it came from.
+
+**Three-valued position status, and no coerced zeros.** A rank not observed
+within the checked depth is `not-observed`; a capture that *failed* is
+`unknown` — its own row family (`serp-keyword-gap-unknown`), saying the
+project's position is unknown and should be re-checked, never "not ranking".
+Missing volume/CPC stays `null` (exposed as `unavailable`), never `0`.
+
+**One row per idea, forever.** Dedup identity is `(projectId, topic, market,
+language, intent, evidenceSourceFamily)` over a normalized topic (trimmed,
+lowercased, whitespace collapsed — no stemming, no punctuation stripping).
+Re-running `analyze` appends evidence to the same row and **cannot** write
+`status`/`dismissedReason`/`dismissedAt`, so a dismissed idea stays dismissed
+until someone explicitly reopens it with a new reason.
+
+**Conversion is idempotent twice over:** a replayed `idempotencyKey` returns
+the existing asset with `created: false`, and a *different* key against an
+opportunity that already has a linked asset returns that same draft rather
+than creating a duplicate. The source opportunity is never deleted — it is
+marked converted and linked.
+
+### Delivery Plan Module — commitments + the client-safe plan (P01/P11)
+
+| Method | Path | Roles | Description |
+|---|---|---|---|
+| `GET` | `/api/clients/:clientId/engagements` | operator | `{ engagements }` |
+| `POST` | `/api/clients/:clientId/engagements` | admin, delivery-lead | create |
+| `GET` | `/api/clients/:clientId/engagements/:id` | operator | one engagement (404 if another client's) |
+| `PATCH` | `/api/clients/:clientId/engagements/:id` | admin, delivery-lead | update |
+| `PATCH` | `/api/clients/:clientId/engagements/:id/status` | admin, delivery-lead | pause / resume; 409 on an illegal transition |
+| `GET` | `/api/projects/:projectId/cycles` | operator | `{ cycles }` |
+| `GET` | `/api/projects/:projectId/cycles/:id` | operator | one cycle |
+| `GET` | `/api/projects/:projectId/cycles/:id/detail` | operator | cycle + work items, **including** `internalNotes` |
+| `POST` | `/api/projects/:projectId/cycles` | admin, delivery-lead | create |
+| `PATCH` | `/api/projects/:projectId/cycles/:id` | admin, delivery-lead | update (409 on a closed cycle) |
+| `PATCH` | `/api/projects/:projectId/cycles/:id/status` | admin, delivery-lead | transition; 409 for `committed` — use `/commit` |
+| `POST` | `/api/projects/:projectId/cycles/:id/commit` | admin, delivery-lead | commit the cycle and freeze the denominator |
+| `GET` | `/api/projects/:projectId/commitments` | operator | `?cycleId= &status=` |
+| `GET` | `/api/projects/:projectId/commitments/:id` | operator | one commitment with derived progress |
+| `POST` | `/api/projects/:projectId/commitments` | admin, delivery-lead | create |
+| `PATCH` | `/api/projects/:projectId/commitments/:id` | admin, delivery-lead | edit — 409 unless still editable (supersede instead) |
+| `PATCH` | `/api/projects/:projectId/commitments/:id/status` | admin, delivery-lead | forward transition; 409 for `agreed` / `completed` |
+| `POST` | `/api/projects/:projectId/commitments/:id/agree` | admin, delivery-lead | the one path to `agreed`; requires `confirm: true` |
+| `POST` | `/api/projects/:projectId/commitments/:id/scope-change` | admin, delivery-lead | may move `agreed` → `needs-attention` |
+| `POST` | `/api/projects/:projectId/commitments/:id/outcome-metric` | admin, delivery-lead | record an observed metric value |
+| `POST` | `/api/projects/:projectId/commitments/:id/complete` | admin, delivery-lead | 409 without verified ≥ target (or an outcome metric) |
+| `POST` | `/api/projects/:projectId/commitments/:id/cancel` | admin, delivery-lead | cancel |
+| `GET` | `/api/projects/:projectId/actions` | operator | the caller's own needs-your-action queue |
+| `GET` | `/api/projects/:projectId/work-items` | operator | `?status= &cycleId= &assigneeId=` |
+| `GET` | `/api/projects/:projectId/work-items/:id` | operator | item + acceptance checks + verifications |
+| `POST` | `/api/projects/:projectId/work-items` | admin, delivery-lead | create; 409 on a dependency cycle |
+| `PATCH` | `/api/projects/:projectId/work-items/:id` | assignee | update; 403 for anyone else |
+| `DELETE` | `/api/projects/:projectId/work-items/:id` | admin, delivery-lead | 409 once the cycle is committed |
+| `POST` | `/api/projects/:projectId/work-items/:id/submit` | assignee | `active → review` |
+| `POST` | `/api/projects/:projectId/work-items/:id/verify` | assignee | records a `Verification` — the only route to `verified` |
+| `POST` | `/api/projects/:projectId/work-items/:id/block` | assignee | records the reason **and** who it waits on |
+| `POST` | `/api/projects/:projectId/work-items/:id/unblock` | assignee | back to `active`, clears both fields |
+| `POST` | `/api/projects/:projectId/work-items/:id/checks` | admin, delivery-lead | add an acceptance check |
+| `PATCH` | `/api/projects/:projectId/work-items/:id/checks/:checkId` | assignee | update a check |
+| `GET` | `/api/projects/:projectId/milestones` | operator | `{ milestones }`, client-visible or not |
+| `POST` | `/api/projects/:projectId/milestones` | admin, delivery-lead | create (`clientVisible` defaults true) |
+| `PATCH` | `/api/projects/:projectId/milestones/:id` | admin, delivery-lead | update; stamps `metAt` on `met` |
+| `DELETE` | `/api/projects/:projectId/milestones/:id` | admin, delivery-lead | delete |
+| `GET` | `/api/team/capacity` | operator | `?userId= &from= &to=` → allocations + available/allocated/remaining hours |
+| `GET` | `/api/team/capacity/projects/:projectId` | operator | the same shape for one project (`?cycleId=`) |
+| `POST` | `/api/team/capacity/projects/:projectId` | admin, delivery-lead | create an allocation |
+| `POST` | `/api/team/capacity/org` | admin, delivery-lead | allocation with no project — leave, holiday, overhead |
+| `PATCH` | `/api/team/capacity/:id` | admin, delivery-lead | update |
+| `DELETE` | `/api/team/capacity/:id` | admin, delivery-lead | delete |
+
+Client portal (`@ClientPortal()`; every path is under
+`/api/portal/projects/:projectId`, `clientId` taken from the JWT, never the
+request):
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/plan` | `{ engagement, cycles, milestones, workItems }` — deliberately without a `commitments` key, so this shape never changes under a shipped client contract |
+| `GET` | `/plan/commitments` | `{ commitments }` — everything not `draft`/`proposed`, completed ones included |
+| `GET` | `/work` | client-visible work items |
+| `POST` | `/work/:workItemId/evidence` | append evidence as the client; returns the portal work DTO |
+| `GET` | `/actions` | the client's own needs-your-action queue |
+| `GET` | `/actions/overview` | the same, capped (`?limit=`, default 3) with the true `total` |
+
+**"Agreed" cannot be written by a status edit.** Two states are reachable
+only through their dedicated actions:
+
+```
+409  Use POST .../commitments/:id/agree — "agreed" requires a recorded
+     confirmation, not a status PATCH.
+409  Use POST .../commitments/:id/complete — completion requires verified
+     progress or an outcome metric.
+409  Agreement requires confirm: true — an operator save alone is not
+     client agreement.
+409  This is an outcome commitment — completing it requires its own outcome
+     metric (outcomeMetricCurrent), never just because linked tasks closed.
+```
+
+**Progress is derived at read time and never stored.** A countable commitment
+counts linked work items in status `verified` — the same concept the cycle's
+`deliveredCount` uses — and reports "3 of 10", never a percentage. An outcome
+commitment reports its own recorded metric. Completing early takes `force`
+**and** a `forceReason`, and the override is appended to the commitment's
+scope history rather than being silent.
+
+**The denominator is frozen; scope changes append.** Committing a cycle
+snapshots `committedCount`; every later addition, removal or cancellation is
+an append to `Cycle.scopeChanges` with a reason, and `committedCount` is never
+rewritten — so "delivered 8 of 10 committed" stays true afterwards. Attaching
+work to a committed cycle without a reason is a 409.
+
+**Pausing an engagement never stops in-flight work** — only future committed
+work (cycle commit and the transitions into `active`) is gated. **Due dates
+resolve in the project's own timezone**: a bare `YYYY-MM-DD` becomes 23:59:59
+local to the engagement's (else the project's) zone, and an unparseable date
+is a 400 rather than a guess.
+
+**Client responses are built by allowlists, not by filtering a staff row.**
+No internal notes, hours, user ids, provenance or dependency ids reach the
+portal; `blockedReason` is normalized to `client-action | approval |
+dependency | other`; `[Submitted <ts> by <actorId>]` stamps are stripped at
+the portal boundary only; the client sees the frozen `committedCount` next to
+aggregate counts that include internal work. `portal-plan.smoke.sh` asserts
+this with a recursive key allowlist.
+
+**The needs-your-action queue has no table of its own** — every row is
+derived live from an approval request, an onboarding request, a work item in
+review or a blocked work item, and disappears when its source is resolved.
+Audit findings are never client actions. Ordering is `overdue` → `blocking` →
+`ordinary`, then soonest deadline.
+
+**Web screens (§16.2 S02).** The project Overview shows at most three cards
+(§5.1) and links "View all" to the full queue at `P/actions` — staff
+`/projects/:projectId/actions`, client
+`/client/projects/:projectId/actions`. Neither is a primary navigation item
+(§3.2 keeps "Needs your action" in Overview rather than adding an overlapping
+label); both render through the shared `ActionQueueList` component and offer a
+link to the source record only — never a completion control, because opening an
+item must not resolve it.
+
+See `delivery-plan/README.md`, `backend/smoke/portal-plan.smoke.sh`,
+`backend/smoke/thirty-day-plan.smoke.sh` and `backend/smoke/nav-rollout.smoke.sh`
+(the last asserts that both "View all" links still land on the full queue).
 
 ---
 

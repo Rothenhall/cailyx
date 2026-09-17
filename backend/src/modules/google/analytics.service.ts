@@ -12,7 +12,7 @@
 
 import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
 import { GoogleConnectionService } from './google-connection.service';
-import type { AnalyticsSummary, DateWindow, GoogleResourceOption } from './google.types';
+import type { AnalyticsSummary, DateWindow, GaLandingSessionPage, GaLandingSessionRow, GoogleResourceOption } from './google.types';
 
 const ADMIN_API = 'https://analyticsadmin.googleapis.com/v1beta';
 const DATA_API = 'https://analyticsdata.googleapis.com/v1beta';
@@ -131,6 +131,73 @@ export class AnalyticsService {
         screenPageViews: n(r.metricValues?.[0]?.value),
         sessions: n(r.metricValues?.[1]?.value),
       })),
+    };
+  }
+
+  /** The GA4 property's configured reporting timezone — disclosed, not assumed to match GSC's Pacific clock. */
+  async propertyTimezone(userId: string, property: string): Promise<string | null> {
+    try {
+      const d = await this.call<{ timeZone?: string }>(userId, `${ADMIN_API}/${property}`);
+      return d.timeZone ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * P12 (§7.3) data extension: landing-page + session-source/channel facts —
+   * a real landing-session report, not the `pagePath`/`screenPageViews`
+   * summary above (`pagePath` is an ordinary page-view dimension; it does
+   * not tell you which sessions *entered* on that page, which is what a
+   * page-level "visitors landing on this page" figure requires).
+   *
+   * `landingPage` + `sessionDefaultChannelGroup` + `sessionSource` + `date`
+   * are documented GA4 Data API dimensions and are mutually compatible with
+   * `sessions` / `totalUsers` / `engagedSessions` — validated against the
+   * GA4 Data API schema before this report was built (see google.types.ts).
+   */
+  async landingSessionFacts(
+    userId: string,
+    property: string,
+    opts: { days?: number; limit?: number } = {},
+  ): Promise<GaLandingSessionPage> {
+    const range = window(opts.days ?? 28);
+    const limit = Math.min(opts.limit ?? 1000, 100_000); // GA4 Data API's own documented per-report cap
+    const tz = await this.propertyTimezone(userId, property);
+
+    const res = await this.call<GaReport>(userId, `${DATA_API}/${property}:runReport`, {
+      method: 'POST',
+      body: JSON.stringify({
+        dateRanges: [{ startDate: range.startDate, endDate: range.endDate }],
+        dimensions: [{ name: 'landingPage' }, { name: 'sessionDefaultChannelGroup' }, { name: 'sessionSource' }, { name: 'date' }],
+        metrics: [{ name: 'sessions' }, { name: 'totalUsers' }, { name: 'engagedSessions' }],
+        limit,
+      }),
+    });
+
+    const n = (v: string | undefined) => {
+      const x = Number(v);
+      return Number.isFinite(x) ? x : 0;
+    };
+    const rows: GaLandingSessionRow[] = (res.rows ?? []).map((r) => ({
+      landingPage: r.dimensionValues?.[0]?.value ?? null,
+      channelGroup: r.dimensionValues?.[1]?.value ?? null,
+      sessionSource: r.dimensionValues?.[2]?.value ?? null,
+      date: r.dimensionValues?.[3]?.value ?? null,
+      sessions: n(r.metricValues?.[0]?.value),
+      totalUsers: n(r.metricValues?.[1]?.value),
+      engagedSessions: n(r.metricValues?.[2]?.value),
+    }));
+
+    return {
+      range,
+      timezoneNote: tz
+        ? `GA4 property timezone: ${tz} (may not align with GSC's Pacific-time day boundaries)`
+        : 'GA4 property timezone unavailable — treat day boundaries as approximate versus GSC (Pacific)',
+      property,
+      rows,
+      rowCount: rows.length,
+      complete: rows.length < limit,
     };
   }
 }

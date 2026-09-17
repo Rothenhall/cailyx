@@ -23,17 +23,19 @@ import { DatabaseModule } from '../database/database.module';
 import { FetcherModule } from '../fetcher/fetcher.module';
 import { MeasurementModule } from '../measurement/measurement.module';
 import { JobsModule } from '../jobs/jobs.module';
+import { BusinessProfileModule } from '../business-profile/business-profile.module';
 import { AeoAuditController } from './aeo-audit.controller';
 import { AeoAuditService } from './aeo-audit.service';
 import { AeoContextService } from './aeo-context.service';
 import { AeoLlmService } from './aeo-llm.service';
 import { AeoMatrixService } from './aeo-matrix.service';
 import { AeoStanceService } from './aeo-stance.service';
+import { AeoVisibilityService } from './aeo-visibility.service';
 
 @Module({
-  imports: [DatabaseModule, FetcherModule, MeasurementModule, JobsModule],
+  imports: [DatabaseModule, FetcherModule, MeasurementModule, JobsModule, BusinessProfileModule],
   controllers: [AeoAuditController],
-  providers: [AeoAuditService, AeoContextService, AeoMatrixService, AeoStanceService, AeoLlmService],
-  exports: [AeoAuditService, AeoContextService, AeoMatrixService, AeoStanceService, AeoLlmService],
+  providers: [AeoAuditService, AeoContextService, AeoMatrixService, AeoStanceService, AeoLlmService, AeoVisibilityService],
+  exports: [AeoAuditService, AeoContextService, AeoMatrixService, AeoStanceService, AeoLlmService, AeoVisibilityService],
 })
 export class AeoAuditModule {}

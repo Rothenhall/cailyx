@@ -128,16 +128,49 @@ export async function cancelApproval(projectId: string, id: string, reason?: str
 // ── Client surface ──────────────────────────────────────────────────────
 
 /**
- * Pending and decided requests for the signed-in client. No id arguments.
- * Same `{ requests: [...] }` wire shape as the operator list — see the note
- * on `listApprovals` above.
+ * What a client receives for one of their own approval requests.
+ *
+ * A different type from {@link ApprovalRequest} because the server sends a
+ * different body: the portal projection is an explicit allowlist that omits
+ * `requestedBy` and `requiredReviewerId` — both raw `User.id` values, which
+ * §4.6 keeps off the client surface. Modelling it as its own interface (rather
+ * than reusing the staff type and hoping a screen ignores the extra fields)
+ * means reading `request.requestedBy` in a client component **does not
+ * compile**.
+ */
+export interface PortalApprovalRequest {
+  id: string;
+  projectId: string;
+  artifactType: ApprovalArtifactType;
+  /** Same id the client already uses to open the artifact in their own URLs. */
+  artifactId: string;
+  artifactRevision: number | null;
+  revisionId: string | null;
+  title: string;
+  detail: string | null;
+  dueAt: string | null;
+  status: ApprovalStatus;
+  invalidatedAt: string | null;
+  invalidatedReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PortalApprovalRequestDetail extends PortalApprovalRequest {
+  /** Newest first. Only the head row is the current decision. */
+  decisions: ApprovalDecision[];
+}
+
+/**
+ * Pending and decided requests for the signed-in client. No id arguments —
+ * the server derives the client from the session.
  */
 export async function listPortalApprovals(options?: { signal?: AbortSignal }) {
-  return api.get<{ requests: ApprovalRequest[] }>('/portal/approvals', options);
+  return api.get<{ requests: PortalApprovalRequest[] }>('/portal/approvals', options);
 }
 
 export async function getPortalApproval(id: string, options?: { signal?: AbortSignal }) {
-  return api.get<ApprovalRequestDetail>(`/portal/approvals/${id}`, options);
+  return api.get<PortalApprovalRequestDetail>(`/portal/approvals/${id}`, options);
 }
 
 /**
@@ -162,5 +195,5 @@ export async function decidePortalApproval(
     comment?: string;
   },
 ) {
-  return api.post<ApprovalRequestDetail>(`/portal/approvals/${id}/decision`, input);
+  return api.post<PortalApprovalRequestDetail>(`/portal/approvals/${id}/decision`, input);
 }

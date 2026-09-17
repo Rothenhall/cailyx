@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ConfirmDialog } from '@/components/patterns/ConfirmDialog';
 import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
 import { PageHeader } from '@/components/patterns/PageHeader';
 import { RunConfigurator } from '@/components/patterns/RunConfigurator';
@@ -174,6 +175,43 @@ export default function NewAeoRunPage() {
   const runInFlight = useMemo(
     () => (audits ?? []).some((audit) => AEO_ACTIVE_STATUSES.includes(audit.status)),
     [audits],
+  );
+
+  /**
+   * §8.2: "The main Run button should be 'Update AI results,' with a
+   * confirmation showing what will be checked and its allowed cost."
+   *
+   * The dialog sits between the click and the spend, so the numbers it states
+   * are the ones the run will actually use — the same `estimate` the pre-flight
+   * card above is showing, asked of `GET /aeo/budget` for this configuration.
+   */
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const confirmDecision = useRef<((proceed: boolean) => void) | null>(null);
+
+  const settleConfirm = useCallback((proceed: boolean) => {
+    const resolve = confirmDecision.current;
+    confirmDecision.current = null;
+    setConfirmOpen(false);
+    resolve?.(proceed);
+  }, []);
+
+  const beforeStart = useCallback(
+    () =>
+      new Promise<boolean>((resolve) => {
+        confirmDecision.current = resolve;
+        setConfirmOpen(true);
+      }),
+    [],
+  );
+
+  // A start click that navigates away with the dialog still open must not leave
+  // the start button held by an unanswered promise.
+  useEffect(
+    () => () => {
+      confirmDecision.current?.(false);
+      confirmDecision.current = null;
+    },
+    [],
   );
 
   const invalidMarkets = markets.filter((code) => !MARKET_PATTERN.test(code));
@@ -562,7 +600,7 @@ export default function NewAeoRunPage() {
       </Card>
 
       <RunConfigurator
-        startLabel="Start full AI visibility run"
+        startLabel="Update AI results"
         prerequisites={[
           {
             label: 'At least one answer engine is selected',
@@ -637,8 +675,69 @@ export default function NewAeoRunPage() {
           // §10.3: save the id before navigating — the run is not tied to this page.
           router.push(`/projects/${projectId}/research/ai/runs/${started.auditId}`);
         }}
+        beforeStart={beforeStart}
         onReconcile={() => router.push(`/projects/${projectId}/research/ai`)}
         reconcileHref={`/projects/${projectId}/research/ai`}
+      />
+
+      {/* What will be checked, and what it is allowed to cost — shown before
+          the run is issued, not after (§8.2). */}
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={(next) => {
+          if (!next) settleConfirm(false);
+        }}
+        title="Update AI results"
+        confirmLabel="Update AI results"
+        cancelLabel="Not now"
+        targetLabel="Project"
+        target={`${project.name} (${project.domain})`}
+        effect={
+          <p>
+            Checks{' '}
+            {prompts === null
+              ? 'the questions in this tier'
+              : `${formatNumber(prompts)} question${prompts === 1 ? '' : 's'}`}{' '}
+            on {formatNumber(surfaces.length)} engine{surfaces.length === 1 ? '' : 's'} in{' '}
+            {markets.length > 0 ? markets.join(', ') : 'the market derived from the site context'},{' '}
+            {formatNumber(runCount)} times each, then judges how the business was positioned and stores a
+            new dated verdict. Nothing is overwritten — the previous measurement keeps its own date and
+            question-set version in History.
+          </p>
+        }
+        scope={
+          <div className="space-y-1">
+            <p>
+              Engines: {surfaces.length > 0 ? surfaces.map((s) => AEO_SURFACE_LABELS[s] ?? s).join(', ') : 'none selected'}
+            </p>
+            <p>
+              Scheduled answer calls: {prompts === null || surfaces.length === 0
+                ? notMeasuredLabel()
+                : formatNumber(prompts * surfaces.length * marketCount * runCount)}
+            </p>
+            {estimate ? (
+              <p>
+                Allowance: {formatCredits(estimate.required)} credits needed against{' '}
+                {estimate.remaining === null
+                  ? 'a balance that could not be read'
+                  : `${formatCredits(estimate.remaining)} remaining`}{' '}
+                —{' '}
+                {estimate.fits === null
+                  ? 'the run-time guard is the authority, not this estimate'
+                  : estimate.fits
+                    ? 'within the allowance'
+                    : 'over the allowance, so the run will be refused'}
+                .
+              </p>
+            ) : (
+              <p>The cost estimate is still being requested.</p>
+            )}
+          </div>
+        }
+        cost={runEstimate}
+        onConfirm={() => {
+          settleConfirm(true);
+        }}
       />
 
       {/* ── The other half of "start or draft": no spend at all. ─────────── */}

@@ -33,15 +33,18 @@ import type { ApiError } from '@/lib/api';
 import {
   confirmCompetitorCandidate,
   discoverCompetitors,
+  discoverCompetitorsByMarket,
   getCompetitorGap,
   getNamedCompetitors,
   getResearchScope,
   listCompetitorCandidates,
   listCompetitorProfiles,
+  reclassifyCompetitorCandidate,
   rejectCompetitorCandidate,
   setNamedCompetitors,
   type CompetitorRecord,
   type CompetitorWithProfile,
+  type DiscoverByMarketResult,
   type GapResult,
   type NamedCompetitor,
   type NamedCompetitorList,
@@ -79,7 +82,16 @@ import {
  * only names on it, so an empty list means no benchmark is produced at all.
  * That is why the editor confirms with a typed phrase rather than a button.
  */
-const TAB_DEFAULTS = { tab: 'benchmark' };
+/**
+ * §12.1 unifies this screen into three views: Tracked competitors, Suggested
+ * competitors, Comparison. "Tracked" merges the named benchmark list with its
+ * built profiles (one row is one competitor, whether or not it has been
+ * profiled yet). "Suggested" merges AI-answer candidates, SERP-discovered
+ * domains, and §12.2 service/market-discovery candidates into one review
+ * queue, since all three are the same kind of thing: an unconfirmed proposal
+ * needing a human decision, never a difference in navigation destination.
+ */
+const TAB_DEFAULTS = { tab: 'tracked' };
 
 export default function CompetitorsPage() {
   const params = useParams<{ projectId: string }>();
@@ -101,6 +113,7 @@ export default function CompetitorsPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [pendingAdd, setPendingAdd] = useState<SerpDiscoveredDomain | null>(null);
   const [pendingReject, setPendingReject] = useState<CompetitorRecord | null>(null);
+  const [marketResult, setMarketResult] = useState<DiscoverByMarketResult | null>(null);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -162,11 +175,43 @@ export default function CompetitorsPage() {
   async function handleReject(profile: CompetitorRecord) {
     setActionError(null);
     try {
-      await rejectCompetitorCandidate(projectId, profile.id);
+      await rejectCompetitorCandidate(projectId, profile.id, 'Rejected by operator');
       setPendingReject(null);
       await load();
     } catch (caught) {
       setActionError(toApiError(caught));
+    }
+  }
+
+  async function handleReclassify(candidate: CompetitorRecord, relevance: 'direct-competitor' | 'adjacent-alternative' | 'not-relevant') {
+    setActionError(null);
+    try {
+      await reclassifyCompetitorCandidate(projectId, candidate.id, relevance);
+      await load();
+    } catch (caught) {
+      setActionError(toApiError(caught));
+    }
+  }
+
+  /**
+   * §12.2/§12.3 — two distinct actions, never conflated: `collectNew: false`
+   * (the default "Find suggestions") only mines already-stored AEO/SERP
+   * evidence, free, no vendor call. `collectNew: true` ("Collect new
+   * results") additionally runs a small bounded set of Google searches
+   * through the gated, budgeted SERP provider — explicit, never automatic.
+   */
+  async function handleMarketDiscover(collectNew: boolean) {
+    setBusy(collectNew ? 'collect' : 'suggest');
+    setActionError(null);
+    setMarketResult(null);
+    try {
+      const result = await discoverCompetitorsByMarket(projectId, { collectNew });
+      setMarketResult(result);
+      await load();
+    } catch (caught) {
+      setActionError(toApiError(caught));
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -274,14 +319,14 @@ export default function CompetitorsPage() {
 
       <Tabs value={tab} onValueChange={(value) => setTabState({ tab: value }, { push: true })}>
         <TabsList>
-          <TabsTrigger value="benchmark">Benchmark list ({named.tracked.length})</TabsTrigger>
-          <TabsTrigger value="profiles">Profiles ({profiles.length})</TabsTrigger>
-          <TabsTrigger value="candidates">Candidates ({candidates.length})</TabsTrigger>
-          <TabsTrigger value="serp">SERP discoveries ({named.discovered.length})</TabsTrigger>
-          <TabsTrigger value="gap">Gaps</TabsTrigger>
+          <TabsTrigger value="tracked">Tracked competitors ({named.tracked.length})</TabsTrigger>
+          <TabsTrigger value="suggested">
+            Suggested competitors ({candidates.length + named.discovered.length})
+          </TabsTrigger>
+          <TabsTrigger value="comparison">Comparison</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="benchmark" className="space-y-4">
+        <TabsContent value="tracked" className="space-y-4">
           <Card>
             <CardHeader className="flex-row items-center justify-between space-y-0">
               <CardTitle className="text-subsection">Named benchmark list</CardTitle>
@@ -387,7 +432,7 @@ export default function CompetitorsPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="profiles" className="space-y-4">
+        <TabsContent value="tracked" className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle className="text-subsection">Profiled competitors</CardTitle>
@@ -404,30 +449,87 @@ export default function CompetitorsPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="candidates" className="space-y-4">
+        <TabsContent value="suggested" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-subsection">Find more competitors</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 pt-2">
+              <p className="text-meta text-muted-foreground">
+                Composed from confirmed services and target markets, combined with rival
+                names/domains already seen in stored AI-visibility and SERP evidence.
+                Partners/directories/publishing platforms and the client&rsquo;s own domain are
+                excluded before a row is ever created, and the existing tracked list is never
+                replaced — this only proposes additions.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void handleMarketDiscover(false)}
+                  disabled={busy !== null}
+                >
+                  {busy === 'suggest' ? 'Finding suggestions…' : 'Find suggestions (free)'}
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => void handleMarketDiscover(true)}
+                  disabled={busy !== null}
+                >
+                  {busy === 'collect' ? 'Collecting…' : 'Collect new results (bounded search, budgeted)'}
+                </Button>
+              </div>
+              <p className="text-meta text-muted-foreground">
+                &ldquo;Find suggestions&rdquo; only reads what is already stored — no vendor call, safe
+                to run any time. &ldquo;Collect new results&rdquo; additionally runs a small bounded set
+                of Google searches through the gated SERP provider — an explicit, budgeted action,
+                never triggered automatically.
+              </p>
+              {marketResult ? (
+                <Alert>
+                  <AlertTitle>
+                    {marketResult.candidatesProposed} new candidate{marketResult.candidatesProposed === 1 ? '' : 's'}{' '}
+                    proposed
+                    {marketResult.collectNew ? ` (${marketResult.queriesRun} bounded search(es) run, $${marketResult.costUsd.toFixed(4)})` : ' (from stored evidence only)'}
+                  </AlertTitle>
+                  <AlertDescription>
+                    {marketResult.candidatesExcluded} candidate{marketResult.candidatesExcluded === 1 ? '' : 's'} excluded
+                    (own domain, directories/platforms, or previously rejected).
+                    {marketResult.exclusionSample.length > 0 ? (
+                      <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                        {marketResult.exclusionSample.map((reason) => (
+                          <li key={reason}>{reason}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle className="text-subsection">
-                Unconfirmed candidates from AI answers
+                Candidates awaiting review
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 pt-2">
               <p className="text-meta text-muted-foreground">
-                Names an AI surface mentioned that were not already recorded. They are never
-                profiled, never appear in the gap comparison, and never enter the benchmark list
-                until a person confirms one — an answer naming a company is a hypothesis, not a
-                competitive claim.
+                Names an AI surface mentioned, or names/domains proposed by service/market
+                discovery above, that are not already recorded. They are never profiled, never
+                appear in the comparison, and never enter the tracked list until a person confirms
+                one — a proposal is a hypothesis, not a competitive claim.
               </p>
               <CandidateTable
                 candidates={candidates}
                 onConfirm={handleConfirm}
                 onReject={setPendingReject}
+                onReclassify={handleReclassify}
               />
             </CardContent>
           </Card>
-        </TabsContent>
 
-        <TabsContent value="serp" className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle className="text-subsection">
@@ -446,7 +548,7 @@ export default function CompetitorsPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="gap" className="space-y-4">
+        <TabsContent value="comparison" className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle className="text-subsection">Presence diff</CardTitle>
@@ -838,10 +940,12 @@ function CandidateTable({
   candidates,
   onConfirm,
   onReject,
+  onReclassify,
 }: {
   candidates: CompetitorRecord[];
   onConfirm: (candidate: CompetitorRecord) => void;
   onReject: (candidate: CompetitorRecord) => void;
+  onReclassify: (candidate: CompetitorRecord, relevance: 'direct-competitor' | 'adjacent-alternative' | 'not-relevant') => void;
 }) {
   const columns: ReadonlyArray<ColumnDef<CompetitorRecord>> = [
     {
@@ -856,8 +960,27 @@ function CandidateTable({
       header: 'Provenance',
       accessor: (row) => row.source,
       width: 220,
-      render: () => (
-        <ProvenanceBadge kind="discovered-candidate" label="Named by an AI surface" />
+      render: (row) => (
+        <ProvenanceBadge kind="discovered-candidate" label={candidateSourceLabel(row.source)} />
+      ),
+    },
+    {
+      key: 'relevance',
+      header: 'Relevance',
+      accessor: (row) => row.relevance ?? 'direct-competitor',
+      width: 200,
+      render: (row) => (
+        <select
+          className="rounded-md border border-border bg-background px-2 py-1 text-meta"
+          value={row.relevance ?? 'direct-competitor'}
+          onChange={(event) =>
+            onReclassify(row, event.target.value as 'direct-competitor' | 'adjacent-alternative' | 'not-relevant')
+          }
+        >
+          <option value="direct-competitor">Direct competitor</option>
+          <option value="adjacent-alternative">Adjacent alternative</option>
+          <option value="not-relevant">Not relevant</option>
+        </select>
       ),
     },
     {
@@ -1277,6 +1400,19 @@ function NamedListDialog({
 /** Plural suffix: `1 competitor` / `2 competitors`. */
 function pluralS(count: number): string {
   return count === 1 ? '' : 's';
+}
+
+function candidateSourceLabel(source: string): string {
+  switch (source) {
+    case 'aeo-answer':
+      return 'Named by an AI surface';
+    case 'market-discovery':
+      return 'Service/market discovery';
+    case 'manual':
+      return 'Entered by an operator';
+    default:
+      return source;
+  }
 }
 
 function namedSourceLabel(source: string | undefined): string {

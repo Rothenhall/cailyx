@@ -28,9 +28,23 @@ if ! curl -sf -o /dev/null "$API/health"; then
   exit 1
 fi
 
+# `POST /auth/login` is rate-limited, and every script here signs in at least
+# once — often twice (a throwaway client alongside the shared operator). Run 32
+# of them back to back and the later ones start every suite with a 429, which
+# reads as "client login" failing when nothing about that module was tested.
+# `smoke_auth` retries, but suites that create their own accounts log in
+# directly, so the harness gives the window room to recover instead.
+#
+# Set SMOKE_SUITE_GAP=0 to disable when iterating on a single suite.
+GAP="${SMOKE_SUITE_GAP:-12}"
+
 total=0; failed=0
+first=1
 for s in *.smoke.sh; do
   [ -e "$s" ] || continue
+  # No wait before the very first suite.
+  if [ "$first" = "0" ] && [ "$GAP" -gt 0 ]; then sleep "$GAP"; fi
+  first=0
   echo "────────────────────────────────────────────────────────"
   echo "▶ $s"
   echo "────────────────────────────────────────────────────────"

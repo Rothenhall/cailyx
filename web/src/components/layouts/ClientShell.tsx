@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { CLIENT_NAV, CLIENT_PROJECT_NAV, clientProjectNavHref } from '@/lib/navigation';
+import { CLIENT_NAV, CLIENT_PROJECT_NAV, clientProjectNavHref, resolveNavHref } from '@/lib/navigation';
 import { useSession } from '@/hooks/useSession';
 import { AppShell } from './AppShell';
 import { AccountMenu } from './OpsShell';
@@ -46,7 +46,7 @@ export function ClientShell({ badges, detailPanel, contentWidth, children }: Cli
         ...section,
         items: section.items.map((item) => ({
           ...item,
-          href: clientProjectNavHref(projectId, item.href),
+          href: resolveNavHref(item, (href) => clientProjectNavHref(projectId, href)),
         })),
       }))
     : CLIENT_NAV;
@@ -58,6 +58,7 @@ export function ClientShell({ badges, detailPanel, contentWidth, children }: Cli
       badges={badges}
       detailPanel={detailPanel}
       contentWidth={contentWidth}
+      navScope={user?.id ? `client:${user.id}` : undefined}
       topbarStart={
         <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-table">
           <Link

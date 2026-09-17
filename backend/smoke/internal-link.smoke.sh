@@ -69,7 +69,9 @@ RID=$(echo "$RECS" | jget 0.id)
 # --- guards ---------------------------------------------------------
 # fixture root requires the flag: we can't unset it here, so assert the happy path only,
 # and assert useLlm without key → 503
-[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/link-graph" "${AUTH[@]}" -H 'content-type: application/json' -d '{"rootUrl":"fixture://demo","useLlm":true}')" = "503" ] && ok "useLlm without ANTHROPIC_API_KEY → 503" || bad "useLlm not 503"
+llm_gate_check "useLlm without a provider" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/link-graph" "${AUTH[@]}" -H 'content-type: application/json' -d '{"rootUrl":"fixture://demo","useLlm":true}')"
+
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/link-graph" "${AUTH[@]}" -H 'content-type: application/json' -d '{"maxPages":9999}')" = "400" ] && ok "maxPages out of range → 400" || bad "maxPages not validated"
 
 # --- determinism: re-run → identical graph shape --------------------

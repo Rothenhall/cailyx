@@ -37,6 +37,37 @@ export class BuildContextDto {
   @IsBoolean()
   @IsOptional()
   refine?: boolean;
+
+  @ApiPropertyOptional({ description: 'Fetch/request budget for the whole run (sitemap reads count too)', default: 40, minimum: 1, maximum: 200 })
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  @IsOptional()
+  maxRequests?: number;
+
+  @ApiPropertyOptional({ description: 'Character budget across all LLM extraction batches', default: 24000, minimum: 1000, maximum: 200000 })
+  @IsInt()
+  @Min(1000)
+  @Max(200000)
+  @IsOptional()
+  maxChars?: number;
+
+  @ApiPropertyOptional({ description: 'Elapsed wall-time budget in ms before the run pauses (resumable)', default: 300000, minimum: 5000, maximum: 900000 })
+  @IsInt()
+  @Min(5000)
+  @Max(900000)
+  @IsOptional()
+  maxElapsedMs?: number;
+}
+
+/** Resume a paused/failed staged context run. */
+export class ResumeContextRunDto {
+  @ApiPropertyOptional({ description: 'Raise the elapsed-time budget before continuing (additive headroom, not a reset)', minimum: 5000, maximum: 900000 })
+  @IsInt()
+  @Min(5000)
+  @Max(900000)
+  @IsOptional()
+  maxElapsedMs?: number;
 }
 
 /** Generate a prompt matrix from the project's latest (or a named) context. */
@@ -210,6 +241,35 @@ export class MatrixQueryDto {
   @IsIn(PROMPT_DIMENSIONS as unknown as string[])
   @IsOptional()
   dimension?: string;
+}
+
+/** Query params for the merged AI-visibility read composition (summary/questions/history). */
+export class VisibilityQueryDto {
+  @ApiPropertyOptional({ description: 'Which audit to read. Defaults to the most recent completed audit.' })
+  @IsString()
+  @IsOptional()
+  auditId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Return only questions in this business topic.',
+    enum: PROMPT_DIMENSIONS as unknown as string[],
+  })
+  @IsIn(PROMPT_DIMENSIONS as unknown as string[])
+  @IsOptional()
+  topic?: string;
+
+  @ApiPropertyOptional({ description: 'Stable pagination cursor — the last question id from the previous page.' })
+  @IsString()
+  @IsOptional()
+  cursor?: string;
+
+  @ApiPropertyOptional({ description: 'Page size (1-100).', default: 25 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @IsOptional()
+  limit?: number;
 }
 
 /** Response shape for the stance pass — documented for Swagger consumers. */

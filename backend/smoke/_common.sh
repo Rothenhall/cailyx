@@ -57,13 +57,108 @@ poll_until() {
   done
 }
 
+# Log in as the shared smoke operator, retrying through a throttle.
+#
+# `POST /auth/login` is rate-limited, and a full `run-all.sh` pass makes dozens
+# of logins in quick succession. Without a retry the first 429 returns an empty
+# token, the caller's `die` fires, and the suite reports as a whole-script
+# failure having tested nothing — which is exactly what made a 32-suite run read
+# as 16/32 with a wall of unrelated failures. Retrying here costs a few seconds
+# and makes the harness's own results mean something.
 smoke_auth() {
-  local tok
-  tok=$(curl -s -X POST "$API/auth/login" -H 'content-type: application/json' \
-    -d "{\"email\":\"$SMOKE_EMAIL\",\"password\":\"$SMOKE_PW\"}" | jget accessToken)
-  if [ -z "$tok" ] || [ "$tok" = "__ERR__" ]; then
+  local tok attempt wait
+  wait=3
+  for attempt in 1 2 3 4 5 6; do
+    tok=$(curl -s -X POST "$API/auth/login" -H 'content-type: application/json' \
+      -d "{\"email\":\"$SMOKE_EMAIL\",\"password\":\"$SMOKE_PW\"}" | jget accessToken)
+    if [ -n "$tok" ] && [ "$tok" != "__ERR__" ]; then
+      printf '%s' "$tok"
+      return 0
+    fi
+    sleep "$wait"
+    wait=$((wait * 2))
+  done
+
+  # No account yet (fresh DB): the first registration becomes the bootstrap
+  # admin. Also throttled, so it gets the same treatment.
+  wait=3
+  for attempt in 1 2 3 4 5 6; do
     tok=$(curl -s -X POST "$API/auth/register" -H 'content-type: application/json' \
       -d "{\"email\":\"$SMOKE_EMAIL\",\"password\":\"$SMOKE_PW\",\"name\":\"$SMOKE_NAME\"}" | jget accessToken)
+    if [ -n "$tok" ] && [ "$tok" != "__ERR__" ]; then
+      printf '%s' "$tok"
+      return 0
+    fi
+    sleep "$wait"
+    wait=$((wait * 2))
+  done
+
+  printf ''
+}
+
+# Log in as an arbitrary account, retrying through a throttle.
+#
+# `smoke_auth` covers the shared operator, but a dozen suites create their own
+# throwaway client/operator accounts and log in directly. Those logins are just
+# as exposed to the `/auth/login` rate limit, and a 429 there reads as
+# "client login" failing — a whole-suite false alarm. Use this instead of a
+# bare curl whenever a suite signs in a second account:
+#
+#   CAUTH_JSON=$(smoke_login "$EMAIL" "$PW")
+#   CAUTH=(-H "authorization: Bearer $(echo "$CAUTH_JSON" | jget accessToken)")
+smoke_login() {
+  local email="$1" password="$2" body attempt wait
+  wait=3
+  for attempt in 1 2 3 4 5 6; do
+    body=$(curl -s -X POST "$API/auth/login" -H 'content-type: application/json' \
+      -d "{\"email\":\"$email\",\"password\":\"$password\"}")
+    if [ -n "$(printf '%s' "$body" | jget accessToken)" ]; then
+      printf '%s' "$body"
+      return 0
+    fi
+    sleep "$wait"
+    wait=$((wait * 2))
+  done
+  printf '%s' "$body"
+}
+
+# ── Is an LLM provider configured on the backend? ───────────────────────────
+# Several suites assert the *no-provider* path: an endpoint that takes
+# `useLlm: true` must answer 503 rather than pretend to work. That assertion
+# can only hold when no key is set. When one IS set, those endpoints do real
+# work — and spend real money — so the honest thing is to skip the check and
+# say so, never to call them and grade the result.
+#
+# The path is resolved from THIS file's location, not the working directory:
+# `run-all.sh` cds into `smoke/`, so a bare `.env` check silently looked at
+# `smoke/.env`, decided no provider was configured, and then failed the
+# assertion against a server that had one. This mirrors `_common.sh`'s
+# existing position that the feature gates live on the BACKEND process.
+llm_provider_configured() {
+  local env_file
+  env_file="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env"
+  [ -f "$env_file" ] || return 1
+  grep -qE '^(ANTHROPIC_API_KEY|OPENROUTER_API_KEY|LLM_API_KEY)=.+' "$env_file"
+}
+
+# Emits the standard branch for a no-provider assertion, and counts it itself:
+#   llm_gate_check "useLlm without a provider" "$HTTP_CODE"
+# Prints PASS when the gate answered 503, SKIP when a provider is configured
+# (so the branch is not exercisable), and FAIL for anything else. It does not
+# call back into the caller's ok/bad/skip helpers, because not every suite
+# defines a skip counter.
+llm_gate_check() {
+  local label="$1" code="$2"
+  # `${VAR:-0}` on the right-hand side because most callers run under `set -u`
+  # and several of these suites have no SKIP counter declared at all.
+  if llm_provider_configured; then
+    echo "  SKIP  $label — a provider IS configured on this server, so the no-provider 503 branch cannot be exercised (and calling it would spend real money)"
+    SKIP=$((${SKIP:-0}+1))
+  elif [ "$code" = "503" ]; then
+    echo "  PASS  $label → 503 (honest gate)"
+    PASS=$((${PASS:-0}+1))
+  else
+    echo "  FAIL  $label → $code, expected 503 with no provider configured"
+    FAIL=$((${FAIL:-0}+1))
   fi
-  printf '%s' "$tok"
 }

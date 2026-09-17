@@ -16,11 +16,24 @@ import { EvidenceDrawer } from '@/components/patterns/EvidenceDrawer';
 import { FilterBar, FILTER_ALL } from '@/components/patterns/FilterBar';
 import { MetricTile } from '@/components/patterns/MetricTile';
 import { PageHeader } from '@/components/patterns/PageHeader';
+import { ScoreSummary } from '@/components/patterns/ScoreSummary';
 import { ScopeBanner } from '@/components/patterns/ScopeBanner';
 import { Timestamp } from '@/components/patterns/Timestamp';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useUrlState } from '@/hooks/useUrlState';
 import { formatNumber, formatPercent } from '@/lib/format';
 import { listPortalProjectSummaries, type PortalProjectSummary } from '@/services/portal';
+import {
+  getPortalOverview,
+  getPortalResultsTab,
+  isPortalResultsTab,
+  RESULTS_TABS,
+  type OverviewSection,
+  type PortalOverviewView,
+  type PortalResultsTab,
+  type PortalTabData,
+} from '@/services/overview';
+import { ResultsTabPanel } from './tab-panels';
 import {
   coverageSummaryFromEvidence,
   EVIDENCE_SOURCE_LABEL,
@@ -69,6 +82,20 @@ const FILTER_DEFAULTS = {
   trend: FILTER_ALL,
 };
 
+/**
+ * View state (§3.2: a copied link reproduces the same view).
+ *
+ * `view` is §3.3's tab. `from`/`to` are the measurement window, and they exist
+ * because §5.5's drilldown opens a tab **on the period the score bucket was
+ * measured over** — the same link must then show the same window rather than
+ * today's default.
+ */
+const VIEW_DEFAULTS = {
+  view: 'website',
+  from: '',
+  to: '',
+};
+
 const TREND_OPTIONS = [
   { value: 'measured', label: 'Measured only' },
   { value: 'not-measured', label: 'Not measured only' },
@@ -104,21 +131,53 @@ function ResultsScreen() {
 
   const [project, setProject] = useState<PortalProjectSummary | null>(null);
   const [results, setResults] = useState<PortalResultsView | null>(null);
+  const [overview, setOverview] = useState<PortalOverviewView | null>(null);
+  const [overviewFailed, setOverviewFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
   const [filters, setFilters] = useUrlState(FILTER_DEFAULTS);
+  const [viewState, setViewState] = useUrlState(VIEW_DEFAULTS);
+
+  /**
+   * The four tabs, loaded when their tab is opened rather than all at once.
+   *
+   * `undefined` means "not read yet" and renders the tab's skeleton; a section
+   * that answers `unavailable` is cached like any other, because re-reading it
+   * on every tab switch would hammer a source that is already failing.
+   */
+  const [tabSections, setTabSections] = useState<
+    Partial<Record<PortalResultsTab, OverviewSection<PortalTabData[PortalResultsTab]>>>
+  >({});
+  const activeTab: PortalResultsTab = isPortalResultsTab(viewState.view) ? viewState.view : 'website';
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
       setLoading(true);
       try {
         setError(null);
-        const [projects, view] = await Promise.all([
+        // The measurement read honours the window in the URL (§5.5's drilldown
+        // arrives with one); with no window it keeps the server's default.
+        const [projects, measured] = await Promise.all([
           listPortalProjectSummaries({ signal }),
-          getPortalResults(projectId, {}, { signal }),
+          getPortalResults(
+            projectId,
+            { from: viewState.from || undefined, to: viewState.to || undefined },
+            { signal },
+          ),
         ]);
         setProject(projects.find((entry) => entry.id === projectId) ?? null);
-        setResults(view);
+        setResults(measured);
+
+        // The score block is its own read: if it fails, the measurement
+        // results above still render, and the score panel says so (§4.5).
+        try {
+          setOverview(await getPortalOverview(projectId, { signal }));
+          setOverviewFailed(false);
+        } catch (caught) {
+          if (caught instanceof DOMException && caught.name === 'AbortError') return;
+          setOverview(null);
+          setOverviewFailed(true);
+        }
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === 'AbortError') return;
         setError(toApiError(caught));
@@ -126,7 +185,8 @@ function ResultsScreen() {
         setLoading(false);
       }
     },
-    [projectId],
+    // The window is part of the read, so changing it re-reads.
+    [projectId, viewState.from, viewState.to],
   );
 
   useEffect(() => {
@@ -134,6 +194,31 @@ function ResultsScreen() {
     void load(controller.signal);
     return () => controller.abort();
   }, [load]);
+
+  useEffect(() => {
+    if (tabSections[activeTab] !== undefined) return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const section = await getPortalResultsTab(projectId, activeTab, { signal: controller.signal });
+        setTabSections((current) => ({ ...current, [activeTab]: section }));
+      } catch (caught) {
+        if (caught instanceof DOMException && caught.name === 'AbortError') return;
+        // A tab whose read failed is reported in the tab itself, and the tab
+        // stays switchable: one broken domain read must not lock the page.
+        setTabSections((current) => ({
+          ...current,
+          [activeTab]: {
+            status: 'unavailable',
+            data: null,
+            reason: 'We could not load this part of your results just now.',
+            reasonCode: 'read-failed',
+          },
+        }));
+      }
+    })();
+    return () => controller.abort();
+  }, [activeTab, projectId, tabSections]);
 
   const coverage = useMemo(
     () => (results ? coverageSummaryFromEvidence(results.evidence) : null),
@@ -182,7 +267,7 @@ function ResultsScreen() {
     return (
       <div className="space-y-6">
         <PageHeader title="Results" />
-        <ErrorState error={error} onRetry={() => void load()} notFoundReason="missing-or-private" />
+        <ErrorState error={error} onRetry={() => void load()} notFoundReason="missing-or-private" showServerMessage={false} />
       </div>
     );
   }
@@ -229,7 +314,49 @@ function ResultsScreen() {
         }
       />
 
-      {/* ── What this read covers ──────────────────────────────────────── */}
+      {/* ── §5.1/§5.5: the live score, above the four domain tabs ────────── */}
+      <ScoreSummary section={overview?.sections.score} projectId={projectId} audience="client" />
+
+      {overviewFailed ? (
+        <Alert>
+          <Info aria-hidden="true" className="h-4 w-4" />
+          <AlertTitle>We could not load your score just now</AlertTitle>
+          <AlertDescription>
+            The results below are unaffected — they come from a different read. Reload the page to try the
+            score again.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {/* ── §3.3's four tabs ─────────────────────────────────────────────── */}
+      <Tabs
+        value={activeTab}
+        onValueChange={(next) => {
+          if (isPortalResultsTab(next)) setViewState({ view: next });
+        }}
+        className="space-y-4"
+      >
+        <TabsList className="flex-wrap">
+          {RESULTS_TABS.map((tab) => (
+            <TabsTrigger key={tab.key} value={tab.key}>
+              {tab.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+
+        <p className="text-meta text-muted-foreground">
+          {RESULTS_TABS.find((tab) => tab.key === activeTab)?.question}
+        </p>
+
+        <TabsContent value="website" className="space-y-6">
+          {/* `null` means "not read yet" — the panel renders its own skeleton. */}
+          <ResultsTabPanel tab="website" section={tabSections.website ?? null} />
+        </TabsContent>
+
+        <TabsContent value="ai" className="space-y-6">
+          <ResultsTabPanel tab="ai" section={tabSections.ai ?? null} />
+
+          {/* ── What this read covers ──────────────────────────────────────── */}
       <Card>
         <CardHeader>
           <CardTitle className="text-subsection">What this read covers</CardTitle>
@@ -251,7 +378,8 @@ function ResultsScreen() {
                 results.cohort.engines.join(', ')
               ) : (
                 <span className="text-unmeasured-foreground">
-                  Not pinned — comparisons are reported as a methodology break until a cohort is created.
+                  Not recorded yet — until we know which AI tools were checked, changes here are
+                  reported as not directly comparable rather than as a real difference.
                 </span>
               )}
             </Fact>
@@ -283,8 +411,8 @@ function ResultsScreen() {
           </p>
           <p className="text-meta text-muted-foreground">
             {results.evidence.pinned
-              ? `This read is reproducible: it is pinned to stored source rows (manifest ${results.evidence.manifestId}).`
-              : 'This read is not pinned to a stored manifest, so it is a live read rather than a reproducible snapshot.'}
+              ? 'These figures were recorded when they were measured, so the same results will come back the next time you look at this period.'
+              : 'These figures are read live rather than recorded at measurement time, so they may change as new results arrive.'}
           </p>
         </CardContent>
       </Card>
@@ -406,9 +534,9 @@ function ResultsScreen() {
 
         <p className="text-meta text-muted-foreground">
           Every card is labelled with the data window and gate behind it. An
-          engine or market filter narrows the cards to the metrics measured over
-          that scope — it never splits a number, because each value is computed
-          once over the cohort named above.
+          AI-tool or location filter narrows the cards to the metrics measured
+          over that scope — it never splits a number, because each value is
+          computed once over the questions and locations described above.
         </p>
       </section>
 
@@ -435,7 +563,7 @@ function ResultsScreen() {
                 linkage yet, and §6.4 forbids implying a causal business result. */}
             <EmptyState
               variant="not-measured"
-              subject="revenue, pipeline or conversion outcomes"
+              subject="revenue, sales or conversion outcomes"
               prerequisite={results.businessOutcomes.prerequisite}
             />
             <p className="text-table text-muted-foreground">{results.businessOutcomes.reason}</p>
@@ -538,6 +666,17 @@ function ResultsScreen() {
           </CardContent>
         </Card>
       </section>
+
+        </TabsContent>
+
+        <TabsContent value="presence" className="space-y-6">
+          <ResultsTabPanel tab="presence" section={tabSections.presence ?? null} />
+        </TabsContent>
+
+        <TabsContent value="competitors" className="space-y-6">
+          <ResultsTabPanel tab="competitors" section={tabSections.competitors ?? null} />
+        </TabsContent>
+      </Tabs>
 
       {loading ? <p className="sr-only">Refreshing results…</p> : null}
 
@@ -806,9 +945,9 @@ function ComparisonSection({
             </ul>
             {differingChecks.length === 0 ? (
               <p className="text-table text-muted-foreground">
-                Every check differs on a key the system does not treat as
-                individually comparable, so the two runs are not measuring the
-                same thing even though no single difference was recorded as a break.
+                Every difference is of a kind we don&apos;t compare on its own, so these two
+                periods aren&apos;t measuring the same thing — even though no single difference
+                stood out as the reason.
               </p>
             ) : null}
             {comparability.breaks.length > 0 ? (
@@ -837,7 +976,7 @@ function ComparisonSection({
             Compared against <span className="font-medium">{baseline.label}</span> (
             <Timestamp value={baseline.startsOn} dateOnly /> –{' '}
             <Timestamp value={baseline.endsOn} dateOnly />), measured over the same
-            query set and engines.
+            customer questions and AI tools.
           </p>
           <p className="text-meta text-muted-foreground">{comparability.note}</p>
         </CardContent>

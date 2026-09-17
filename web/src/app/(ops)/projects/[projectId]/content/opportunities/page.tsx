@@ -3,275 +3,327 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { RefreshCw, Search } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Switch } from '@/components/ui/switch';
+import { Textarea } from '@/components/ui/textarea';
 import { DataTable, type ColumnDef } from '@/components/patterns/DataTable';
-import { ConfirmDialog } from '@/components/patterns/ConfirmDialog';
 import { EmptyState } from '@/components/patterns/EmptyState';
 import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
 import { FilterBar } from '@/components/patterns/FilterBar';
 import { PageHeader } from '@/components/patterns/PageHeader';
 import { useUrlState } from '@/hooks/useUrlState';
 import { formatNumber, notMeasuredLabel } from '@/lib/format';
+import type { ContentAssetType } from '@/services/content';
 import {
-  ASSET_TYPE_LABELS,
-  RECOMMENDATION_CATEGORY_LABELS,
-  createRecommendedAssets,
-  listContentBriefs,
-  listGaps,
-  listTopicSuggestions,
-  type ContentBrief,
-  type GapRow,
-  type GrowthAsset,
-  type TopicSuggestion,
-} from '@/services/content';
+  OPPORTUNITY_ORIGIN_LABELS,
+  OPPORTUNITY_ORIGINS,
+  analyzeOpportunities,
+  convertOpportunityToContent,
+  dismissOpportunity,
+  listOpportunities,
+  newIdempotencyKey,
+  reopenOpportunity,
+  researchSearchTerm,
+  type Opportunity,
+  type OpportunityOrigin,
+  type OpportunityStatus,
+} from '@/services/opportunities';
 
 /**
  * CT01 — Content opportunities.
  *
- * design_plan.md §4.4: *"Priority keyword topics/ad angles plus gap-derived
- * asset recommendations; generate briefs."* §5.8 Stage A adds the two
- * disclosures this screen must carry: keyword priority is *"a disclosed
- * formula, not proof of conversion potential"*, and the recommendations are
- * **gap-derived** — which means the screen has to be honest about the case
- * where no gap analysis has ever run.
+ * platform_improvement_plan.md §12.5: "The canonical list lives in Content ->
+ * Ideas. Website, AI visibility, Competitors, and reports link to a filtered
+ * view or a specific idea." This screen now reads the canonical `Opportunity`
+ * model directly (server-side filter + pagination), rather than synthesizing
+ * a list from priority-keyword topics and gap-analysis rows on every load —
+ * those two feeds remain available from the asset library / gap-analysis
+ * screens, but they are no longer this screen's source of truth.
  *
- * That last point is the reason this page has two distinct `not-measured`
- * states instead of one empty table:
- *
- *  - **No keyword topics** — the topics endpoint answers `[]` when no
- *    keyword-research set has completed. An empty list here is "nothing has
- *    been measured", not "there are no opportunities".
- *  - **No gaps** — `gap-analysis` returns an empty set with an empty id when it
- *    has never run. Rendering that as "no recommendations" would tell an
- *    operator their project has no problems, which is the opposite of true.
- *
- * §10.4: the brief-creating write is an explicit, confirmed action with its
- * scope, effect and cost stated first. Nothing here runs on page load.
+ * §12.6: gaps are computed strictly within the OBSERVED keyword corpus — a
+ * null/failed rank is `unknown`, never "not ranking"; missing demand data is
+ * `unavailable`, never zero. §12.7: "Create content" is idempotent — a
+ * retried click, or a second click once a draft already exists, opens the
+ * existing draft rather than creating a duplicate.
  */
 
 const FILTER_DEFAULTS = {
-  category: 'all',
   status: 'all',
+  origin: 'all',
+  q: '',
 };
 
-const GAP_CATEGORY_OPTIONS = [
-  { value: 'issue', label: 'Issue' },
-  { value: 'gap', label: 'Gap' },
-  { value: 'opportunity', label: 'Opportunity' },
-  { value: 'risk', label: 'Risk' },
-  { value: 'strength', label: 'Strength' },
+const STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: 'new', label: 'New' },
+  { value: 'in-progress', label: 'In progress' },
+  { value: 'dismissed', label: 'Dismissed' },
+  { value: 'converted', label: 'Converted' },
 ];
 
-const GAP_STATUS_OPTIONS = [
-  { value: 'open', label: 'Open' },
-  { value: 'in-progress', label: 'In progress' },
-  { value: 'resolved', label: 'Resolved' },
-];
+const ORIGIN_OPTIONS: { value: string; label: string }[] = OPPORTUNITY_ORIGINS.map((o) => ({
+  value: o,
+  label: OPPORTUNITY_ORIGIN_LABELS[o],
+}));
+
+function positionLabel(status: string, position: number | null): string {
+  if (status === 'ranked' && position != null) return `#${position}`;
+  if (status === 'not-observed') return 'Not found (checked)';
+  return notMeasuredLabel();
+}
 
 export default function ContentOpportunitiesPage() {
   const params = useParams<{ projectId: string }>();
   const projectId = params.projectId;
 
-  const [topics, setTopics] = useState<TopicSuggestion[] | null>(null);
-  const [gaps, setGaps] = useState<{ analysisId: string; gaps: GapRow[] } | null>(null);
-  const [briefs, setBriefs] = useState<ContentBrief[] | null>(null);
-  const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
-  const [gapsError, setGapsError] = useState<ReturnType<typeof toApiError> | null>(null);
-  const [actionError, setActionError] = useState<ReturnType<typeof toApiError> | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [useLlm, setUseLlm] = useState(false);
-  const [createdBriefs, setCreatedBriefs] = useState<GrowthAsset[] | null>(null);
   const [filters, setFilters] = useUrlState(FILTER_DEFAULTS);
+  const [page, setPage] = useState(1);
+  const [result, setResult] = useState<{ total: number; page: number; pageSize: number; opportunities: Opportunity[] } | null>(null);
+  const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
+
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<ReturnType<typeof toApiError> | null>(null);
+  const [analyzeSummary, setAnalyzeSummary] = useState<string | null>(null);
+
+  const [dismissTarget, setDismissTarget] = useState<Opportunity | null>(null);
+  const [dismissReason, setDismissReason] = useState('');
+  const [dismissError, setDismissError] = useState<ReturnType<typeof toApiError> | null>(null);
+  const [dismissing, setDismissing] = useState(false);
+
+  const [reopenTarget, setReopenTarget] = useState<Opportunity | null>(null);
+  const [reopenReason, setReopenReason] = useState('');
+  const [reopenError, setReopenError] = useState<ReturnType<typeof toApiError> | null>(null);
+  const [reopening, setReopening] = useState(false);
+
+  const [convertTarget, setConvertTarget] = useState<Opportunity | null>(null);
+  const [converting, setConverting] = useState(false);
+  const [convertError, setConvertError] = useState<ReturnType<typeof toApiError> | null>(null);
+
+  const [researchOpen, setResearchOpen] = useState(false);
+  const [researchKeyword, setResearchKeyword] = useState('');
+  const [researching, setResearching] = useState(false);
+  const [researchError, setResearchError] = useState<ReturnType<typeof toApiError> | null>(null);
+  const [researchDone, setResearchDone] = useState<string | null>(null);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
       try {
         setError(null);
-        const [topicRows, briefRows] = await Promise.all([
-          listTopicSuggestions(projectId, { signal }),
-          listContentBriefs(projectId, { latestOnly: true }, { signal }),
-        ]);
-        setTopics(topicRows);
-        setBriefs(briefRows.briefs);
+        const res = await listOpportunities(
+          projectId,
+          {
+            status: filters.status === 'all' ? undefined : (filters.status as OpportunityStatus),
+            origin: filters.origin === 'all' ? undefined : (filters.origin as OpportunityOrigin),
+            search: filters.q || undefined,
+            page,
+            pageSize: 25,
+          },
+          { signal },
+        );
+        setResult(res);
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === 'AbortError') return;
         setError(toApiError(caught));
       }
     },
-    [projectId],
-  );
-
-  const loadGaps = useCallback(
-    async (signal?: AbortSignal) => {
-      try {
-        setGapsError(null);
-        setGaps(await listGaps(projectId, {}, { signal }));
-      } catch (caught) {
-        if (caught instanceof DOMException && caught.name === 'AbortError') return;
-        setGapsError(toApiError(caught));
-      }
-    },
-    [projectId],
+    [projectId, filters, page],
   );
 
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);
-    void loadGaps(controller.signal);
     return () => controller.abort();
-  }, [load, loadGaps]);
+  }, [load]);
 
-  /**
-   * The gaps that can actually become a brief: an open row with a
-   * recommendation category and something to act on. A strength is not work,
-   * and this mirrors the server's own actionability filter rather than
-   * offering a count the create call would not honor.
-   */
-  const actionableGaps = useMemo(() => {
-    if (!gaps) return [];
-    return gaps.gaps.filter(
-      (gap) =>
-        gap.status === 'open' && gap.recommendationCategory !== null && gap.category !== 'strength',
-    );
-  }, [gaps]);
+  useEffect(() => {
+    setPage(1);
+  }, [filters]);
 
-  const filteredGaps = useMemo(() => {
-    return actionableGaps.filter((gap) => {
-      if (filters.category !== 'all' && gap.category !== filters.category) return false;
-      if (filters.status !== 'all' && gap.status !== filters.status) return false;
-      return true;
-    });
-  }, [actionableGaps, filters]);
-
-  const approvedBriefs = (briefs ?? []).filter((brief) => brief.status === 'approved');
-  const gapsMeasured = gaps !== null && gaps.analysisId !== '';
-  const topicsMeasured = topics !== null && topics.length > 0;
-
-  async function onCreateBriefs() {
-    setCreating(true);
-    setActionError(null);
+  async function onAnalyze() {
+    setAnalyzing(true);
+    setAnalyzeError(null);
     try {
-      const result = await createRecommendedAssets(projectId, {
-        perCategoryLimit: 2,
-        useLlm,
-      });
-      setCreatedBriefs(result.assets);
-      setConfirmOpen(false);
+      const res = await analyzeOpportunities(projectId, {});
+      setAnalyzeSummary(
+        `${res.serpQueriesConsidered} tracked quer${res.serpQueriesConsidered === 1 ? 'y' : 'ies'} and ${res.confirmedCompetitorsConsidered} confirmed competitor${res.confirmedCompetitorsConsidered === 1 ? '' : 's'} considered — ${res.created} created, ${res.updated} updated, ${res.unchanged} unchanged.`,
+      );
+      await load();
     } catch (caught) {
-      setActionError(toApiError(caught));
+      setAnalyzeError(toApiError(caught));
     } finally {
-      setCreating(false);
+      setAnalyzing(false);
     }
   }
 
-  const gapColumns: ReadonlyArray<ColumnDef<GapRow>> = [
-    {
-      key: 'title',
-      header: 'Gap',
-      accessor: (row) => row.title,
-      sortable: true,
-      width: 300,
-      render: (row) => (
-        <div className="min-w-0">
-          <p className="font-medium text-foreground">{row.title}</p>
-          <p className="text-meta text-muted-foreground">{row.description}</p>
-        </div>
-      ),
-    },
-    {
-      key: 'category',
-      header: 'Read',
-      accessor: (row) => row.category,
-      sortable: true,
-      width: 120,
-    },
-    {
-      key: 'recommendationCategory',
-      header: 'Recommendation',
-      accessor: (row) =>
-        row.recommendationCategory
-          ? (RECOMMENDATION_CATEGORY_LABELS[row.recommendationCategory] ?? row.recommendationCategory)
-          : null,
-      width: 190,
-      emptyLabel: 'Nothing to act on',
-    },
-    {
-      key: 'priorityScore',
-      header: 'Priority',
-      accessor: (row) => row.priorityScore,
-      sortable: true,
-      align: 'right',
-      width: 100,
-      emptyLabel: 'Not scored',
-    },
-    {
-      key: 'impactEffort',
-      header: 'Impact / effort',
-      accessor: (row) => row.impactScore,
-      width: 140,
-      render: (row) => (
-        <span className="tabular-nums">
-          {row.impactScore ?? notMeasuredLabel()} / {row.effortScore ?? notMeasuredLabel()}
-        </span>
-      ),
-    },
-  ];
+  async function onConfirmDismiss() {
+    if (!dismissTarget) return;
+    setDismissing(true);
+    setDismissError(null);
+    try {
+      await dismissOpportunity(projectId, dismissTarget.id, dismissReason);
+      setDismissTarget(null);
+      setDismissReason('');
+      await load();
+    } catch (caught) {
+      setDismissError(toApiError(caught));
+    } finally {
+      setDismissing(false);
+    }
+  }
 
-  const topicColumns: ReadonlyArray<ColumnDef<TopicSuggestion>> = [
-    {
-      key: 'targetKeyword',
-      header: 'Target query',
-      accessor: (row) => row.targetKeyword,
-      sortable: true,
-      width: 220,
-      render: (row) => <span className="font-medium text-foreground">{row.targetKeyword}</span>,
-    },
-    {
-      key: 'priorityScore',
-      header: 'Priority',
-      accessor: (row) => row.priorityScore,
-      sortable: true,
-      align: 'right',
-      width: 100,
-    },
-    {
-      key: 'searchVolume',
-      header: 'Search volume',
-      accessor: (row) => row.searchVolume,
-      sortable: true,
-      align: 'right',
-      width: 140,
-      // §3.5 — a keyword with no volume data is unmeasured, never a
-      // zero-volume keyword. A `render` replaces the default cell entirely, so
-      // the explicit label has to be rendered here rather than left to
-      // `emptyLabel`.
-      render: (row) =>
-        row.searchVolume === null ? (
-          <span className="text-unmeasured-foreground">{notMeasuredLabel()}</span>
-        ) : (
-          <span className="tabular-nums">{formatNumber(row.searchVolume)}</span>
+  async function onConfirmReopen() {
+    if (!reopenTarget) return;
+    setReopening(true);
+    setReopenError(null);
+    try {
+      await reopenOpportunity(projectId, reopenTarget.id, reopenReason);
+      setReopenTarget(null);
+      setReopenReason('');
+      await load();
+    } catch (caught) {
+      setReopenError(toApiError(caught));
+    } finally {
+      setReopening(false);
+    }
+  }
+
+  async function onConfirmConvert() {
+    if (!convertTarget) return;
+    setConverting(true);
+    setConvertError(null);
+    try {
+      await convertOpportunityToContent(projectId, convertTarget.id, {
+        idempotencyKey: newIdempotencyKey(),
+        assetType: (convertTarget.suggestedContentType as ContentAssetType | null) ?? 'article',
+      });
+      setConvertTarget(null);
+      await load();
+    } catch (caught) {
+      setConvertError(toApiError(caught));
+    } finally {
+      setConverting(false);
+    }
+  }
+
+  async function onResearch() {
+    setResearching(true);
+    setResearchError(null);
+    setResearchDone(null);
+    try {
+      await researchSearchTerm(projectId, { keyword: researchKeyword });
+      setResearchDone(`Researched "${researchKeyword}". Run analysis again to fold it into opportunities.`);
+      setResearchKeyword('');
+    } catch (caught) {
+      setResearchError(toApiError(caught));
+    } finally {
+      setResearching(false);
+    }
+  }
+
+  const columns: ReadonlyArray<ColumnDef<Opportunity>> = useMemo(
+    () => [
+      {
+        key: 'topicDisplay',
+        header: 'Topic / search term',
+        accessor: (row) => row.topicDisplay,
+        sortable: true,
+        width: 240,
+        render: (row) => (
+          <div className="min-w-0">
+            <p className="font-medium text-foreground">{row.topicDisplay}</p>
+            <p className="text-meta text-muted-foreground">{OPPORTUNITY_ORIGIN_LABELS[row.origin]}</p>
+          </div>
         ),
-    },
-    {
-      key: 'blogTopic',
-      header: 'Article topic',
-      accessor: (row) => row.blogTopic,
-      width: 260,
-    },
-    {
-      key: 'adAngle',
-      header: 'Ad angle',
-      accessor: (row) => row.adAngle,
-      width: 320,
-    },
-  ];
+      },
+      {
+        key: 'reason',
+        header: 'Reason',
+        accessor: (row) => row.reason,
+        width: 320,
+      },
+      {
+        key: 'clientPosition',
+        header: 'Client',
+        accessor: (row) => row.clientPosition,
+        width: 110,
+        render: (row) => <span className="tabular-nums">{positionLabel(row.clientPositionStatus, row.clientPosition)}</span>,
+      },
+      {
+        key: 'rivalPosition',
+        header: 'Rival',
+        accessor: (row) => row.rivalPosition,
+        width: 150,
+        render: (row) => (
+          <span className="tabular-nums">
+            {row.rivalName ? `${row.rivalName} ` : ''}
+            {positionLabel(row.rivalPositionStatus, row.rivalPosition)}
+          </span>
+        ),
+      },
+      {
+        key: 'demandVolume',
+        header: 'Demand',
+        accessor: (row) => row.demandVolume,
+        sortable: true,
+        align: 'right',
+        width: 110,
+        render: (row) =>
+          row.demandVolume == null ? (
+            <span className="text-unmeasured-foreground">{notMeasuredLabel()}</span>
+          ) : (
+            <span className="tabular-nums">{formatNumber(row.demandVolume)}</span>
+          ),
+      },
+      {
+        key: 'relevance',
+        header: 'Relevance',
+        accessor: (row) => row.relevance,
+        sortable: true,
+        align: 'right',
+        width: 100,
+      },
+      {
+        key: 'status',
+        header: 'Status',
+        accessor: (row) => row.status,
+        width: 130,
+      },
+      {
+        key: 'actions',
+        header: 'Actions',
+        accessor: () => '',
+        width: 260,
+        render: (row) => (
+          <div className="flex flex-wrap items-center gap-2">
+            {row.status === 'converted' && row.linkedGrowthAssetId ? (
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/projects/${projectId}/content`}>Open existing draft</Link>
+              </Button>
+            ) : row.status !== 'dismissed' ? (
+              <Button variant="outline" size="sm" onClick={() => setConvertTarget(row)}>
+                Create content
+              </Button>
+            ) : null}
+            {row.status === 'dismissed' ? (
+              <Button variant="ghost" size="sm" onClick={() => setReopenTarget(row)}>
+                Reopen
+              </Button>
+            ) : row.status === 'new' || row.status === 'in-progress' ? (
+              <Button variant="ghost" size="sm" onClick={() => setDismissTarget(row)}>
+                Dismiss
+              </Button>
+            ) : null}
+          </div>
+        ),
+      },
+    ],
+    [projectId],
+  );
 
   if (error) {
     return (
@@ -282,7 +334,7 @@ export default function ContentOpportunitiesPage() {
     );
   }
 
-  if (!topics || !gaps || !briefs) {
+  if (!result) {
     return (
       <div className="space-y-6">
         <Skeleton className="h-9 w-64" />
@@ -296,28 +348,22 @@ export default function ContentOpportunitiesPage() {
     <div className="space-y-6">
       <PageHeader
         title="Content opportunities"
-        context="Where the editorial plan comes from: the project's priority keyword topics, and the content work its open gaps imply."
+        context="The canonical idea list (§12.5): observed-corpus keyword gaps against confirmed competitors, plus keyword-research topic suggestions. Website, Competitors and reports link into this same list rather than keeping their own copies."
         primaryAction={{
-          label: 'Create briefs from gaps',
-          onClick: () => setConfirmOpen(true),
-          disabled: actionableGaps.length === 0,
-          disabledReason: gapsMeasured
-            ? 'No open, actionable gap has a recommendation category to build a brief from.'
-            : 'Gap analysis has not run for this project, so there are no gap-derived recommendations yet.',
+          label: analyzing ? 'Analyzing…' : 'Run gap analysis',
+          onClick: () => void onAnalyze(),
+          disabled: analyzing,
         }}
         secondaryActions={
           <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setResearchOpen(true)}>
+              <Search aria-hidden="true" className="mr-2 h-4 w-4" />
+              Research a search term
+            </Button>
             <Button asChild variant="outline" size="sm">
               <Link href={`/projects/${projectId}/content`}>Asset library</Link>
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                void load();
-                void loadGaps();
-              }}
-            >
+            <Button variant="outline" size="sm" onClick={() => void load()}>
               <RefreshCw aria-hidden="true" className="mr-2 h-4 w-4" />
               Refresh
             </Button>
@@ -325,277 +371,180 @@ export default function ContentOpportunitiesPage() {
         }
       />
 
-      {actionError ? (
-        <ErrorState
-          error={actionError}
-          layout="inline"
-          preserveNotice="No brief was created by the failed attempt."
-        />
-      ) : null}
-
-      {createdBriefs ? (
+      {analyzeError ? <ErrorState error={analyzeError} layout="inline" /> : null}
+      {analyzeSummary ? (
         <Alert>
-          <AlertTitle>
-            {createdBriefs.length === 0
-              ? 'No brief was created'
-              : `${createdBriefs.length} brief${createdBriefs.length === 1 ? '' : 's'} created`}
-          </AlertTitle>
-          <AlertDescription>
-            {createdBriefs.length === 0 ? (
-              <>
-                Every open gap was already covered, or none had a recommendation category. Nothing
-                was written — this is not an error.
-              </>
-            ) : (
-              <>
-                Grouped by type:{' '}
-                {summarizeByType(createdBriefs)}.{' '}
-                <Link
-                  href={`/projects/${projectId}/content`}
-                  className="underline underline-offset-4"
-                >
-                  Open the asset library
-                </Link>{' '}
-                to review them. They are briefs, not finished copy.
-              </>
-            )}
-          </AlertDescription>
+          <AlertTitle>Analysis complete</AlertTitle>
+          <AlertDescription>{analyzeSummary}</AlertDescription>
         </Alert>
       ) : null}
 
-      {/* ── Generation prerequisites ─────────────────────────────────── */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-subsection">Prerequisites for generation</CardTitle>
+          <CardTitle className="text-subsection">Opportunities</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 pt-2">
-          <p className="text-table text-muted-foreground">
-            Generating a draft needs two things this screen can tell you the state of. It never
-            starts the run itself — that happens on the generate screen, deliberately.
+          <p className="text-meta text-muted-foreground">
+            Gaps are computed only within this project&rsquo;s observed keyword corpus (tracked SERP
+            queries + keyword research) — never a claim of a rival&rsquo;s full ranking universe. A
+            null/failed capture reads &ldquo;{notMeasuredLabel()}&rdquo;, never &ldquo;not
+            ranking&rdquo;.
           </p>
-          <ul className="space-y-2 text-table">
-            <li className="flex flex-wrap items-baseline gap-x-2">
-              <span className="font-medium text-foreground">Priority keyword topics</span>
-              <span className={topicsMeasured ? 'text-success' : 'text-unmeasured-foreground'}>
-                {topicsMeasured
-                  ? `met — ${topics?.length ?? 0} topic${(topics?.length ?? 0) === 1 ? '' : 's'} ranked`
-                  : 'not met'}
-              </span>
-              {!topicsMeasured ? (
-                <span className="text-muted-foreground">
-                  — a keyword-research set must complete for this project before any topic can be
-                  ranked. With no topics there is nothing to generate for.
-                </span>
-              ) : null}
-            </li>
-            <li className="flex flex-wrap items-baseline gap-x-2">
-              <span className="font-medium text-foreground">An approved content brief</span>
-              <span className={approvedBriefs.length > 0 ? 'text-success' : 'text-unmeasured-foreground'}>
-                {approvedBriefs.length > 0
-                  ? `met — ${approvedBriefs.length} approved version${approvedBriefs.length === 1 ? '' : 's'}`
-                  : 'not met'}
-              </span>
-              {approvedBriefs.length === 0 ? (
-                <span className="text-muted-foreground">
-                  — generation is bound to an approved brief and its exact version.{' '}
-                  <Link
-                    href={`/projects/${projectId}/content/generate`}
-                    className="underline underline-offset-4"
-                  >
-                    Create and approve one on the generate screen
-                  </Link>
-                  .
-                </span>
-              ) : null}
-            </li>
-          </ul>
-        </CardContent>
-      </Card>
-
-      {/* ── Keyword-derived topics ───────────────────────────────────── */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-subsection">Priority keyword topics and ad angles</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 pt-2">
-          {topicsMeasured ? (
-            <>
-              <p className="text-meta text-muted-foreground">
-                The priority score is a disclosed weighted formula over search volume, advertiser
-                competition and CPC. It ranks where to look first; it is not evidence of conversion
-                potential.
-              </p>
-              <DataTable
-                caption="Priority keyword topics"
-                columns={topicColumns}
-                rows={topics ?? []}
-                getRowId={(row) => row.targetKeyword}
-                defaultSort={{ key: 'priorityScore', direction: 'desc' }}
-                minTableWidth="60rem"
-                pageSize={25}
-              />
-            </>
-          ) : (
-            <EmptyState
-              variant="not-measured"
-              subject="priority keyword topics"
-              prerequisite="a completed keyword-research run for this project"
-            >
-              Topics and ad angles are derived from the project&rsquo;s ranked keyword set. No set
-              has been ranked yet, so this is an unmeasured state rather than an empty one.
-            </EmptyState>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* ── Gap-derived recommendations ──────────────────────────────── */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-subsection">Recommended assets from open gaps</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 pt-2">
-          {gapsError ? (
-            <ErrorState
-              error={gapsError}
-              layout="inline"
-              onRetry={() => void loadGaps()}
-              notFoundReason="prerequisite"
-            />
-          ) : null}
-
-          {!gapsError && !gapsMeasured ? (
-            <EmptyState
-              variant="not-measured"
-              subject="gap-derived content recommendations"
-              prerequisite="a gap analysis for this project, which classifies each audit finding into issue / gap / opportunity / strength / risk"
-            >
-              Recommendations are built by grouping open gaps by their recommendation category and
-              mapping each to an asset type. With no gap analysis there is nothing to group — this
-              is not an empty recommendation list.
-            </EmptyState>
-          ) : null}
-
-          {gapsMeasured ? (
-            <>
-              <p className="text-table text-muted-foreground">
-                {actionableGaps.length} of {gaps.gaps.length} classified finding
-                {gaps.gaps.length === 1 ? '' : 's'} can carry a brief. Creating briefs groups the
-                open ones by recommendation category and maps each category to its asset types — a
-                technology gap produces no content asset, because a CRM gap is not a blog post.
-              </p>
-
-              <FilterBar
-                defaults={FILTER_DEFAULTS}
-                value={filters}
-                onChange={setFilters}
-                hideSearch
-                controls={[
-                  { kind: 'select', key: 'category', label: 'Read', options: GAP_CATEGORY_OPTIONS },
-                  { kind: 'select', key: 'status', label: 'Status', options: GAP_STATUS_OPTIONS },
-                ]}
-                summary={`Showing ${filteredGaps.length} of ${actionableGaps.length} actionable`}
-              />
-
-              <DataTable
-                caption="Actionable gaps"
-                columns={gapColumns}
-                rows={filteredGaps}
-                getRowId={(row) => row.id}
-                defaultSort={{ key: 'priorityScore', direction: 'desc' }}
-                minTableWidth="56rem"
-                emptyState={
-                  actionableGaps.length === 0 ? (
-                    <EmptyState variant="not-measured" subject="actionable gaps">
-                      The gap analysis has run and found nothing open with a recommendation
-                      category. That is a measured result, not a missing one.
-                    </EmptyState>
-                  ) : (
-                    <EmptyState
-                      variant="no-results"
-                      onClearFilters={() => setFilters(FILTER_DEFAULTS)}
-                    />
-                  )
-                }
-              />
-            </>
-          ) : null}
-        </CardContent>
-      </Card>
-
-      {!gapsMeasured || actionableGaps.length === 0 ? (
-        <Alert>
-          <AlertTriangle aria-hidden="true" className="h-4 w-4" />
-          <AlertTitle>Always remember the ceiling on these recommendations</AlertTitle>
-          <AlertDescription>
-            A gap being open does not make the asset it implies the right next piece of work, and a
-            priority score is a formula&rsquo;s output rather than a promise. Whoever owns the
-            editorial plan decides what gets written.
-          </AlertDescription>
-        </Alert>
-      ) : null}
-
-      {/*
-        §10.4 name-the-mutation row: the exact effect, scope and cost are stated
-        before the write, and the confirm label names the action. Brief creation
-        is free unless the LLM refinement is switched on, and that is said
-        plainly rather than buried in a tooltip.
-      */}
-      <ConfirmDialog
-        open={confirmOpen}
-        onOpenChange={setConfirmOpen}
-        title="Create briefs from open gaps?"
-        confirmLabel="Create briefs"
-        targetLabel="Source"
-        target={`${actionableGaps.length} open, actionable gap${actionableGaps.length === 1 ? '' : 's'}`}
-        effect={
-          <>
-            One brief is created per gap × mapped asset type, up to two gaps per recommendation
-            category. A brief is a title and an angle — no finished copy is written, and nothing is
-            published. Briefs are added alongside any that already exist.
-          </>
-        }
-        scope="This project only."
-        onConfirm={onCreateBriefs}
-        onConfirmed={() => setConfirmOpen(false)}
-      >
-        <div className="mt-4 flex items-start justify-between gap-4 rounded-md border border-border bg-surface-sunken p-3">
-          <div className="min-w-0 space-y-1">
-            <Label htmlFor="refine-briefs">Refine each brief with a model call</Label>
-            <p className="text-meta text-muted-foreground">
-              One language-model call per brief, and it may cost money. This build returns no
-              pre-flight estimate for brief refinement, so the cost cannot be shown before you
-              confirm. Without a configured provider the whole request fails with a 503 before
-              anything is written.
-            </p>
-          </div>
-          <Switch
-            id="refine-briefs"
-            checked={useLlm}
-            onCheckedChange={setUseLlm}
-            disabled={creating}
+          <FilterBar
+            defaults={FILTER_DEFAULTS}
+            value={filters}
+            onChange={setFilters}
+            searchPlaceholder="Search topic…"
+            searchKey="q"
+            controls={[
+              { kind: 'select', key: 'status', label: 'Status', options: STATUS_OPTIONS },
+              { kind: 'select', key: 'origin', label: 'Origin', options: ORIGIN_OPTIONS },
+            ]}
+            summary={`Showing ${result.opportunities.length} of ${result.total}`}
           />
-        </div>
-        {creating ? (
-          <p className="mt-3 text-table text-muted-foreground" role="status">
-            Creating briefs. Do not submit this again.
-          </p>
-        ) : null}
-      </ConfirmDialog>
 
-      <p className="text-meta text-muted-foreground">
-        Keyword priority and gap priority are both ranking aids, not forecasts. Neither is measured
-        outcome data.
-      </p>
+          <DataTable
+            caption="Content opportunities"
+            columns={columns}
+            rows={result.opportunities}
+            getRowId={(row) => row.id}
+            minTableWidth="70rem"
+            emptyState={
+              result.total === 0 ? (
+                <EmptyState variant="not-measured" subject="content opportunities" prerequisite="a gap analysis run for this project">
+                  No opportunities exist yet. Run the gap analysis above, or add one via &ldquo;Research
+                  a search term&rdquo;.
+                </EmptyState>
+              ) : (
+                <EmptyState variant="no-results" onClearFilters={() => setFilters(FILTER_DEFAULTS)} />
+              )
+            }
+          />
+
+          {result.total > result.pageSize ? (
+            <div className="flex items-center justify-between pt-2">
+              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+                Previous
+              </Button>
+              <span className="text-meta text-muted-foreground">
+                Page {page} of {Math.ceil(result.total / result.pageSize)}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page >= Math.ceil(result.total / result.pageSize)}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </Button>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      {/* ── Dismiss ─────────────────────────────────────────────────── */}
+      <Dialog open={dismissTarget != null} onOpenChange={(open) => !open && setDismissTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Dismiss &ldquo;{dismissTarget?.topicDisplay}&rdquo;?</DialogTitle>
+            <DialogDescription>
+              A reason is required. Re-running the gap analysis will never silently reopen this —
+              only an explicit reopen with its own new reason can.
+            </DialogDescription>
+          </DialogHeader>
+          {dismissError ? <ErrorState error={dismissError} layout="inline" /> : null}
+          <div className="space-y-2">
+            <Label htmlFor="dismiss-reason">Reason</Label>
+            <Textarea id="dismiss-reason" value={dismissReason} onChange={(e) => setDismissReason(e.target.value)} rows={3} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDismissTarget(null)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void onConfirmDismiss()} disabled={dismissing || dismissReason.trim().length < 3}>
+              {dismissing ? 'Dismissing…' : 'Dismiss opportunity'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Reopen ──────────────────────────────────────────────────── */}
+      <Dialog open={reopenTarget != null} onOpenChange={(open) => !open && setReopenTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reopen &ldquo;{reopenTarget?.topicDisplay}&rdquo;?</DialogTitle>
+            <DialogDescription>Give a new reason — distinct from the original dismissal.</DialogDescription>
+          </DialogHeader>
+          {reopenError ? <ErrorState error={reopenError} layout="inline" /> : null}
+          <div className="space-y-2">
+            <Label htmlFor="reopen-reason">Reason</Label>
+            <Textarea id="reopen-reason" value={reopenReason} onChange={(e) => setReopenReason(e.target.value)} rows={3} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReopenTarget(null)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void onConfirmReopen()} disabled={reopening || reopenReason.trim().length < 3}>
+              {reopening ? 'Reopening…' : 'Reopen opportunity'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Create content (§12.7) ──────────────────────────────────── */}
+      <Dialog open={convertTarget != null} onOpenChange={(open) => !open && setConvertTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create content from &ldquo;{convertTarget?.topicDisplay}&rdquo;?</DialogTitle>
+            <DialogDescription>
+              Creates a brief-stage {convertTarget?.suggestedContentType ?? 'article'} asset linked to this
+              opportunity. Idempotent — retrying never creates a duplicate. The opportunity moves to
+              in-progress and is preserved, not deleted.
+            </DialogDescription>
+          </DialogHeader>
+          {convertError ? <ErrorState error={convertError} layout="inline" /> : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConvertTarget(null)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void onConfirmConvert()} disabled={converting}>
+              {converting ? 'Creating…' : 'Create content'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Research a search term (§12.6 R29 / §12.7) ─────────────────── */}
+      <Dialog open={researchOpen} onOpenChange={setResearchOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Research a search term</DialogTitle>
+            <DialogDescription>
+              Reuses keyword research&rsquo;s existing DataForSEO lookup and cost gates. Requires
+              SWARM_ALLOW_LIVE and DataForSEO credentials to be configured.
+            </DialogDescription>
+          </DialogHeader>
+          {researchError ? <ErrorState error={researchError} layout="inline" /> : null}
+          {researchDone ? (
+            <Alert>
+              <AlertTitle>Done</AlertTitle>
+              <AlertDescription>{researchDone}</AlertDescription>
+            </Alert>
+          ) : null}
+          <div className="space-y-2">
+            <Label htmlFor="research-keyword">Keyword</Label>
+            <Input id="research-keyword" value={researchKeyword} onChange={(e) => setResearchKeyword(e.target.value)} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setResearchOpen(false)}>
+              Close
+            </Button>
+            <Button onClick={() => void onResearch()} disabled={researching || researchKeyword.trim().length < 2}>
+              {researching ? 'Researching…' : 'Research'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
-}
-
-/** "3 Article / guide, 1 FAQ / knowledge" — a type roll-up of what was just created. */
-function summarizeByType(assets: GrowthAsset[]): string {
-  const counts = new Map<string, number>();
-  for (const asset of assets) {
-    const label = ASSET_TYPE_LABELS[asset.assetType] ?? asset.assetType;
-    counts.set(label, (counts.get(label) ?? 0) + 1);
-  }
-  return [...counts.entries()].map(([label, count]) => `${count} ${label}`).join(', ');
 }

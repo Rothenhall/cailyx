@@ -46,6 +46,7 @@ import {
   ConfirmBusinessProfileDto,
   GetBusinessProfileQueryDto,
   RebuildFromProfileDto,
+  RejectBusinessProfileSuggestionDto,
   SaveBusinessProfileDto,
 } from './dto/business-profile.dto';
 import { AttachProjectDto, CorrectDomainDto } from './dto/attach.dto';
@@ -141,6 +142,51 @@ export class BusinessProfileController {
   async candidates(@CurrentUser() user: AuthedRequestUser, @Param('projectId') projectId: string) {
     await this.scope.assertProjectAccess(user, projectId);
     return this.service.listCandidates(projectId);
+  }
+
+  @Get('overview')
+  @ApiOperation({
+    summary: 'Business information (P02) — Confirmed / Suggested / Needs information, by section',
+    description:
+      'The four §9.1 sections (About your business, Your customers, Target locations and languages, Brand details), each with its confirmed-or-drafted values, its still-open suggestions from the latest site context, and its gaps. A suggestion that exactly repeats a previously declined value is withheld — see POST candidates/reject.',
+  })
+  @ApiResponse({ status: 200, description: 'BusinessInfoOverview' })
+  async overview(@CurrentUser() user: AuthedRequestUser, @Param('projectId') projectId: string) {
+    await this.scope.assertProjectAccess(user, projectId);
+    return this.service.getBusinessInformation(projectId);
+  }
+
+  @Get('target-locations')
+  @ApiOperation({
+    summary: 'Target locations (P04) — structured targets, site-evidence suggestions, real provider-support preview',
+    description:
+      'Plan §10.2/§10.3/§10.4: the confirmed-or-drafted structured targets, countries `SiteContext.markets` still suggests that are not yet an active target, and a per-provider `{supported, effectiveGranularity, mode}` preview read from each adapter\'s actual request-building code — never a fabricated "supported: true".',
+  })
+  @ApiResponse({ status: 200, description: 'TargetLocationsOverview' })
+  async targetLocations(@CurrentUser() user: AuthedRequestUser, @Param('projectId') projectId: string) {
+    await this.scope.assertProjectAccess(user, projectId);
+    return this.service.getTargetLocations(projectId);
+  }
+
+  @Post('candidates/reject')
+  @Roles('admin', 'delivery-lead')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Decline a field suggestion ("keep current")',
+    description:
+      'Records that this exact suggested value was seen and declined, so a later recrawl producing the same value does not present it again. The value is read from the current site context, not the request body.',
+  })
+  @ApiBody({ type: RejectBusinessProfileSuggestionDto })
+  @ApiResponse({ status: 200, description: '{ field, rejected, detail }' })
+  @ApiResponse({ status: 404, description: 'Unknown field' })
+  @ApiResponse({ status: 409, description: 'No site context, no current suggestion, or it already matches the confirmed/drafted value' })
+  async rejectCandidate(
+    @CurrentUser() user: AuthedRequestUser,
+    @Param('projectId') projectId: string,
+    @Body() dto: RejectBusinessProfileSuggestionDto,
+  ) {
+    await this.scope.assertProjectAccess(user, projectId);
+    return this.service.rejectSuggestion(projectId, dto, { type: 'operator', id: user.userId });
   }
 
   @Post('rebuild')
@@ -408,6 +454,48 @@ export class BusinessProfilePortalController {
   ) {
     await this.scope.assertProjectAccess(user, projectId);
     return this.service.confirm(projectId, dto, user.userId);
+  }
+
+  @Get('business-profile/overview')
+  @ApiOperation({
+    summary: 'Business information (P02) — Confirmed / Suggested / Needs information, by section',
+    description:
+      'Same shape and same client-safe fields as the operator read: no run id, no model name, no cost — only source page and date, which §4.6 allows on a client screen. A suggestion that exactly repeats one this client (or staff) already declined is withheld.',
+  })
+  @ApiResponse({ status: 200, description: 'BusinessInfoOverview' })
+  async businessInfoOverview(@CurrentUser() user: AuthedRequestUser, @Param('projectId') projectId: string) {
+    await this.scope.assertProjectAccess(user, projectId);
+    return this.service.getBusinessInformation(projectId);
+  }
+
+  @Get('business-profile/target-locations')
+  @ApiOperation({
+    summary: 'Target locations (P04) — same shape as the operator read',
+    description: 'Structured targets, still-open site-evidence suggestions, and the real per-provider support preview.',
+  })
+  @ApiResponse({ status: 200, description: 'TargetLocationsOverview' })
+  async targetLocations(@CurrentUser() user: AuthedRequestUser, @Param('projectId') projectId: string) {
+    await this.scope.assertProjectAccess(user, projectId);
+    return this.service.getTargetLocations(projectId);
+  }
+
+  @Post('business-profile/candidates/reject')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Decline a field suggestion ("keep current")',
+    description:
+      'The client-facing "Keep current" action beside a suggestion. Records the decline so the same suggested value is not shown again on a later recrawl.',
+  })
+  @ApiBody({ type: RejectBusinessProfileSuggestionDto })
+  @ApiResponse({ status: 200, description: '{ field, rejected, detail }' })
+  @ApiResponse({ status: 409, description: 'No site context, no current suggestion, or it already matches the confirmed/drafted value' })
+  async rejectBusinessInfoSuggestion(
+    @CurrentUser() user: AuthedRequestUser,
+    @Param('projectId') projectId: string,
+    @Body() dto: RejectBusinessProfileSuggestionDto,
+  ) {
+    await this.scope.assertProjectAccess(user, projectId);
+    return this.service.rejectSuggestion(projectId, dto, { type: 'client', id: user.userId });
   }
 
   @Get('onboarding/checklist')

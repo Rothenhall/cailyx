@@ -25,7 +25,17 @@ C=$(curl -s -X POST "$API/users" "${AUTH[@]}" -H 'content-type: application/json
 OPID=$(echo "$C" | jget id)
 [ -n "$OPID" ] && [ "$OPID" != "__ERR__" ] && ok "created operator $OPID" || { bad "create"; echo "$C"; exit 1; }
 [ "$(echo "$C" | jget role)" = "content" ] && ok "role = content" || bad "role wrong"
-echo "$C" | grep -qiE 'passwordHash|password"' && bad "secret leaked in create response" || ok "no secret in create response"
+# Looking for an actual secret, not the word "password". The previous pattern
+# was `passwordHash|password"` under `grep -i`, and the legitimate response
+# field `"mustChangePassword":false` ends in `Password"` — so it matched and
+# reported a leak on every run, including runs where the response was clean.
+# A false alarm here is worse than no check: it trains the reader to ignore it.
+# What actually matters is the stored hash or the plaintext being echoed back.
+if echo "$C" | grep -qE 'passwordHash|"password"[[:space:]]*:|[$]2[aby][$]'; then
+  bad "secret leaked in create response"
+else
+  ok "no secret in create response"
+fi
 # Throwaway accounts this script creates, deleted on every exit path.
 EXTRA_IDS=""
 cleanup() {
@@ -48,7 +58,7 @@ cleanup() {
 trap cleanup EXIT
 
 # --- the new operator can log in --------------------------------
-NT=$(curl -s -X POST "$API/auth/login" -H 'content-type: application/json' -d "{\"email\":\"$EM\",\"password\":\"operator-pw-123456\"}" | jget accessToken)
+NT=$(smoke_login "$EM" "operator-pw-123456" | jget accessToken)
 [ -n "$NT" ] && [ "$NT" != "__ERR__" ] && ok "new operator can log in" || bad "new op login failed"
 # ...but is not admin — cannot list users
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$API/users" -H "authorization: Bearer $NT")" = "403" ] && ok "non-admin → 403 on /users" || bad "non-admin not 403"
@@ -61,7 +71,16 @@ U=$(curl -s -X PATCH "$API/users/$OPID" "${AUTH[@]}" -H 'content-type: applicati
 # --- password reset ---------------------------------------
 PR=$(curl -s -X POST "$API/users/$OPID/password" "${AUTH[@]}" -H 'content-type: application/json' -d '{"password":"a-new-operator-pw-9"}')
 echo "$PR" | grep -q '"sessionsRevoked"' && ok "password reset returns sessionsRevoked" || bad "reset shape: $PR"
-[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/auth/login" -H 'content-type: application/json' -d "{\"email\":\"$EM\",\"password\":\"a-new-operator-pw-9\"}")" = "200" ] && ok "login works with the new password" || bad "new password login failed"
+# Retries on 429 only. This is a status-code assertion rather than a token
+# read, so `smoke_login` isn't the right tool — but a throttle here would read
+# as "the new password doesn't work", which is the opposite of the truth.
+NEWPW_CODE=""
+for _ in 1 2 3 4 5 6; do
+  NEWPW_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/auth/login" -H 'content-type: application/json' -d "{\"email\":\"$EM\",\"password\":\"a-new-operator-pw-9\"}")
+  [ "$NEWPW_CODE" != "429" ] && break
+  sleep 4
+done
+[ "$NEWPW_CODE" = "200" ] && ok "login works with the new password" || bad "new password login failed ($NEWPW_CODE)"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/users/$OPID/password" "${AUTH[@]}" -H 'content-type: application/json' -d '{"password":"short"}')" = "400" ] && ok "short password → 400" || bad "short pw not 400"
 
 # --- guard rails ----------------------------------------

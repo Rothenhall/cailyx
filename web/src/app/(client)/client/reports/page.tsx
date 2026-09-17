@@ -53,7 +53,7 @@ export default function ClientReportsPage() {
     return (
       <div className="space-y-6">
         <PageHeader title="Reports" />
-        <ErrorState error={error} onRetry={() => void load()} />
+        <ErrorState error={error} onRetry={() => void load()} showServerMessage={false} />
       </div>
     );
   }

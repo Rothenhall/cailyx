@@ -1,5 +1,10 @@
 # Business Profile Module (G04 — confirmed intake, project attachment and access checklist)
 
+> **Phases:** G04 (`design_plan.md` Appendix A, §5.3) — plus **P02**
+> (§9.1–§9.2, business information: confirmed / suggested / needs
+> information) and **P04** (§10, target locations) from
+> `platform_improvement_plan.md`.
+
 Purpose: make "the client told us this" a checkable fact rather than a note
 somebody typed. A `BusinessProfile` version is either a **draft** (a proposal,
 nobody has stood behind it) or **confirmed** (a human's id and a timestamp are
@@ -18,6 +23,8 @@ business-profile/
   business-profile.service.ts      versioning, confirmation, explicit rebuild,
                                    attachment, domain correction, checklist
   business-profile.types.ts        status vocabularies, transition table, DTO shapes
+  market-provider-support.ts       P04 §10.3 — per-provider targeting support, read
+                                   from each adapter's own request-building code
   business-profile.module.ts       registers all 4 controllers, exports the service
   lib/domain.util.ts               domain normalization + validation
   dto/business-profile.dto.ts      profile read/save/confirm/rebuild
@@ -25,7 +32,7 @@ business-profile/
   dto/onboarding-request.dto.ts    requests, client-side update, list filters
 ```
 
-## Endpoints (18)
+## Endpoints (24)
 
 ### Operator — business profile (`/api/projects/:projectId/business-profile`)
 
@@ -36,6 +43,9 @@ business-profile/
 | GET | `/versions` | operator | `{ versions, latestConfirmedVersion }`, newest first |
 | POST | `/confirm` | admin, delivery-lead | `{ profile (the NEW confirmed version), confirmedFrom, warnings }` |
 | GET | `/candidates` | operator | `{ candidates, policy, latestConfirmedVersion }` — extracted `SiteContext` rows |
+| GET | `/overview` | operator | **(P02 §9.2)** `BusinessInfoOverview` — the four sections, each with `confirmed` / `suggestions` / `gaps` |
+| GET | `/target-locations` | operator | **(P04 §10.2/§10.4)** `TargetLocationsOverview` — structured targets, `suggestedCountries`, `providerSupport` preview |
+| POST | `/candidates/reject` | admin, delivery-lead | **(P02 §9.2)** `{ field, rejected, detail }` — decline a suggestion ("keep current"). 404 unknown/unsuggestible field; 409 no site context, no current suggestion, or it already matches |
 | POST | `/rebuild` | admin, delivery-lead | `RebuildResult` — per-target before/after + what was deliberately not touched |
 
 ### Operator — attachment (`/api/clients/:clientId/projects/:projectId`)
@@ -74,6 +84,9 @@ than worked around in `jobs/`, which is not this module's to edit.
 | GET | `/business-profile` | same envelope as the operator read |
 | PUT | `/business-profile` | `{ profile, warnings }` |
 | POST | `/business-profile/confirm` | the new confirmed version (the CP04 "confirm your details" action) |
+| GET | `/business-profile/overview` | **(P02)** the same `BusinessInfoOverview` the operator sees, client-safe by construction — source page + date, no run id, model name or cost |
+| GET | `/business-profile/target-locations` | **(P04)** the same `TargetLocationsOverview` the operator sees |
+| POST | `/business-profile/candidates/reject` | **(P02)** the client-facing "Keep current" beside a suggestion |
 | GET | `/onboarding/checklist` | `OnboardingChecklistDto`, including `blocking` |
 | PATCH | `/onboarding/requests/:requestId` | 200 updated request — status limited to `open`/`in-progress`/`done` |
 
@@ -188,6 +201,136 @@ dropped. On write, every id is checked to belong to the same `projectId` — a
 foreign or unknown id is a **404** (not a 403), so a caller who guesses another
 project's work-item id learns nothing from the error.
 
+## Business information (P02, §9.1–§9.2) — `GET .../overview`
+
+One screen's worth of the profile, grouped the way §9.1 asks: **About your
+business**, **Your customers**, **Target locations and languages**, **Brand
+details**. Each section carries three lists, and the three are deliberately
+never merged:
+
+| List | Meaning |
+|---|---|
+| `confirmed` | The value on the current draft/confirmed row — what the client or staff have stood behind (or drafted) |
+| `suggestions` | A still-open value the latest `SiteContext` extracted, **not** applied, with its `sourcePage` and `sourceDate` |
+| `gaps` | Empty, and nothing suggesting it — a question for a human, not an inferred answer |
+
+Eleven fields are tracked (`BUSINESS_INFO_FIELD_DEFS`): brand name, legal name,
+what you do, products/services, customer types, buyer roles, customer
+problems, target locations, languages, named competitors, commercial goals.
+Four of them — legal name, buyer roles, languages, goals — have **no
+extraction source at all**: nothing in `SiteContext` reads them, so the field
+is `confirmed`-or-`gap` only and no suggestion is ever fabricated for it.
+
+`hasSiteContext` + `sourceCheckedAt` say whether the module looked and when; a
+project with no context shows gaps and zero suggestions, which is the honest
+answer, not an empty profile.
+
+### Declining a suggestion is a recorded fact (P02)
+
+`POST .../candidates/reject` (operator, or the client's own "Keep current")
+writes a `BusinessProfileRejection` row keyed on
+`projectId + fieldPath + valueHash`, where `valueHash` is a **sha256 of a
+canonical form** of the suggested value: arrays trimmed, blanks dropped,
+sorted; strings trimmed. So reordering a service list or adding a space does
+not defeat a rejection, and a genuinely changed value is a different hash.
+
+Three refusals, each with its own fix, and each honest about which case it is:
+
+- **404** — `"{field}" has no suggested value to decline.` (an unknown field,
+  or one of the four with no extraction source);
+- **409** — no site context at all, or nothing currently suggested for that
+  field;
+- **409** — `"{field}" already matches the current confirmed/drafted value —
+  there is nothing to decline.` Declining a value you are already using would
+  be a lie about what happened, so it is refused rather than swallowed.
+
+The value rejected is read from the current `SiteContext`, **never from the
+request body** — a caller cannot record a rejection of a value that was never
+suggested. `overview` then withholds any suggestion whose
+`field + valueHash` is on that list, and counts them in
+`suppressedRejectedCount` so the withholding is visible rather than just
+absent. §9.2's rule is "a declined suggestion must not resurface"; this
+implementation is that rule plus the arithmetic that proves it fired.
+
+## Target locations (P04, §10) — `GET .../target-locations`
+
+The flat `markets: string[]` field is retained for existing readers, but the
+structured unit is now `MarketTarget`:
+
+```
+{ country, region, city, language, priority, active, productApplicability }
+```
+
+`country` (ISO-3166 alpha-2) is the one required, and the one unit every
+adapter understands; `active: false` keeps a target on file while excluding it
+from measurement scope and cost estimates; lower `priority` is higher
+priority, ties broken by array order.
+
+**Targets ride the same draft/confirm versioning as every other profile
+fact** — there is no per-target confirm gate, and there is no second write
+path. A target exists as a draft until the profile is confirmed, exactly like
+a description edit.
+
+`suggestedCountries` comes from `SiteContext.markets` (P03's ranked
+service-area evidence): ISO-2 codes the site names that are not already an
+active target — offered, never applied.
+
+### The provider-support preview is read from the adapters, not assumed
+
+`providerSupport` answers "if we measured this target, what would the provider
+actually do?" — per provider: `{ supported, effectiveGranularity, mode }`,
+computed in `market-provider-support.ts` from what each adapter's
+request-building code was **read to do**:
+
+| Provider | Reality, traced to the adapter |
+|---|---|
+| ChatGPT / Perplexity / Gemini / AI Overview / AI Mode (via Cloro) | `provider-targeted` at `country` grain — the payload really carries `country: <geo>` |
+| Google SERP (DataForSEO) | `provider-targeted` at `country` grain via `location_name`; **city only for a short whitelist** (New York, Los Angeles, Chicago, London, Mumbai, Bengaluru, Sydney mapped to their exact DataForSEO location strings) |
+| Claude (Anthropic API) | `unsupported` — `geo` is received and explicitly discarded (no proxy egress yet) |
+| Perplexity (Sonar API), ChatGPT/Perplexity/Gemini browser sessions | `unsupported` — `geo` is recorded on the observation and never enters the request or the prompt |
+
+A target asking for a city that is not whitelisted reports
+`supported: false` on **every** provider. That is the rule in the file's own
+words: *"Never silently widen to country and call it the city."* The preview
+makes no network call — it is a statement about the adapters as they exist
+today, and it says so.
+
+### `getConfirmedTargetCountries()` — the one method other modules call
+
+Returns the active target countries on the newest **confirmed** row, in
+priority order (§10.2 step 5). It returns `[]` when nothing is confirmed, and
+its own doc says callers must not read that as "no opinion, pick something".
+The consumer it was built for is `aeo-audit`'s `resolveDefaultMarket()`.
+
+## §10.2 — the silent ccTLD → default-US path is gone
+
+The measurement market used to fall back to a hardcoded `'US'`, which quietly
+measured a US market for a project whose own site said `IN`. That rung of the
+ladder has been removed. The precedence is now:
+
+1. an explicit `geo` passed with the run (a staff-approved provisional run);
+2. `BusinessProfileService.getConfirmedTargetCountries()`;
+3. a provisional value derived from the project's own site context
+   (`context.markets[0] ?? context.geo`) — the service logs a warning whenever
+   the resolved source is anything other than `confirmed-target`, so a
+   provisional market is visible in the log rather than indistinguishable from
+   a confirmed one;
+
+and then it **refuses**:
+
+> `Project <id> has no confirmed target market (Business information -> Target
+> locations) and no site-derived service-area signal to fall back to. Confirm
+> at least one target country before running this audit, or pass an explicit
+> "geo" for a staff-approved provisional run (results will be marked
+> provisional).`
+
+A conflict naming the fix, not a default — the fix is one screen away, and
+the message says which screen. `target-markets.smoke.sh` is the proof that
+this is a behaviour change and not just a comment: an India-ccTLD project with
+a confirmed US target measures **US**, a project with no signal at all gets a
+409, and the failed audit row is recorded `status=failed` rather than being
+left pending forever.
+
 ## The checklist
 
 `GET .../onboarding/checklist` is built from records, and every line names its
@@ -215,8 +358,19 @@ with the work items it is holding up.
   row. It is imported explicitly in `BusinessProfileModule` only for
   `ActivityModule`, below.
 - `ActivityService` (`ActivityModule`) — audit events for attach, domain
-  correction, draft writes, confirmations, explicit rebuilds, request changes.
-  An audit failure is logged and does not fail the business write.
+  correction, draft writes, confirmations, explicit rebuilds, request changes,
+  and (P02) declined suggestions. An audit failure is logged and does not fail
+  the business write.
+
+**Consumers of the P02/P04 additions** (this module's exports are read-only
+for them; nothing here calls back into them):
+
+- `aeo-audit` — `getConfirmedTargetCountries()` in `resolveDefaultMarket()`
+  (hence the §10.2 change documented above).
+- `competitors` — the confirmed services/segments and target countries
+  §12.2's market discovery composes its bounded searches from.
+- `digital-presence` — the confirmed profile + target-country count behind the
+  applicability policy's `hasMultipleMarkets` signal.
 
 ## Env vars
 
@@ -239,6 +393,14 @@ None. No LLM, no external provider, no queue.
 | Request: type, requested person, due, status, blocked work | ✅ plus `blockedWorkLinks`, `outstanding`, `overdue` |
 | Draft-project / setup launch separation | ⚠ **not implemented.** §5.3 asks for "save draft, finish setup, then launch" without creating a project prematurely. `POST /api/clients/:id/projects` still creates the project and starts the pipeline immediately, and G07 owns durable orchestration/resume. Nothing in this module simulates a draft project — creating a hidden project to fake one is exactly what the plan forbids. |
 | Interim: notes/messages and operator edits, labeled unstructured | ➖ not needed: the structured intake path exists, so no unstructured interim is served. |
+| §9.2 — one business-information screen: confirmed / suggested / needs information, by section | ✅ | `GET .../overview` (operator + portal); four sections, eleven fields |
+| §9.2 — a declined suggestion must not resurface | ✅ | `BusinessProfileRejection` on `field + sha256(canonical value)`; withheld on read, counted in `suppressedRejectedCount` |
+| §9.2 — never fabricate a suggestion for a field nothing extracts | ✅ | Four fields (legal name, buyer roles, languages, goals) have `getSuggested: null` — gap-only |
+| §10.2 — structured target locations (country/region/city/language/priority/active) | ✅ | `MarketTarget` + `GET .../target-locations`, riding the existing draft/confirm versioning |
+| §10.2 — the confirmed target is the measurement scope; no silent default | ✅ | `getConfirmedTargetCountries()` is the one accessor; the hardcoded `'US'` rung was removed (see above) |
+| §10.3 — provider targeting support is stated, never assumed | ✅ | `market-provider-support.ts`, traced per adapter; a non-whitelisted city is `unsupported` everywhere, never widened to country |
+| §10.4 — site evidence suggests targets, a human confirms | ✅ | `suggestedCountries` from `SiteContext.markets`; offered, never auto-applied |
+| §10.2 step 6 — remove the silent ccTLD → default-US measurement path | ✅ | `resolveDefaultMarket()` throws a conflict naming the fix; proven by `target-markets.smoke.sh` |
 
 ## What was verified, and what was not
 
@@ -273,3 +435,38 @@ None. No LLM, no external provider, no queue.
 - The 404 for a project id that does not exist is returned before the ownership
   check can distinguish it (both are 404 on the portal surface), which is
   intentional — see `ScopeValidationService.assertOwnedByProject`.
+
+### P02/P04 additions (2026-09-17) — two new suites, **not re-run during documentation**
+
+- `backend/smoke/business-info-portal.smoke.sh` — the P02 exit gate. Run with
+  `/opt/homebrew/bin/bash` and `API=http://localhost:3002/api`. It seeds a
+  confirmed profile (v1) plus a *disagreeing* `SiteContext`, and asserts:
+  the operator and client overviews both carry the sectioned
+  `confirmed`/`suggestions`/`gaps` shape; a **recursive allowlist** over the
+  client response finds no run id, model name, cost or confirmed-by actor, and
+  no forbidden internal JSON key / private model name / operator actor id;
+  rejecting a suggestion is acknowledged and the suggestion is withheld on the
+  very next read, with `suppressedRejectedCount` incremented; a **simulated
+  recrawl** carrying the *same* value still withholds it while a genuinely
+  *changed* description still surfaces; accepting a suggestion creates a
+  `draft`, not a fact; confirming writes a **new version 3** with version 1's
+  data untouched; rebuild stays a separate explicit act; and another client's
+  overview discloses nothing.
+- `backend/smoke/target-markets.smoke.sh` — the §10.2 exit gate. Builds a
+  site context for an India-ccTLD project, saves a structured draft target
+  `country=US`, confirms it, and asserts: `/target-locations` reports
+  `profileState=confirmed` with the one target; the `providerSupport` preview
+  covers 5+ rows with Cloro honestly `provider-targeted`/country, Claude and
+  the browser surfaces honestly `unsupported`; an unvalidated city target is
+  disclosed `unsupported` on **every** provider; a whitelisted city (New York
+  on DataForSEO) reads `provider-targeted`/`city`/supported; then the run
+  itself: with no explicit `geo` the audit's effective market is **US**, not
+  the ccTLD's IN, with exactly one market measured and `markets` persisted as
+  `["US"]`. For a project with no confirmed target and no site signal, the run
+  is a **409** whose message names the fix, and the audit row is recorded
+  `status=failed`. An explicit `geo` override still works and measures GB.
+- **Not re-run during documentation**: both suites were read, not executed, in
+  this pass — other agents were mid-flight on shared source and the dev
+  database, so a failure could not have been attributed to this module. The
+  assertions above are quoted from the scripts; treat them as claims about the
+  scripts, not as a fresh pass result.

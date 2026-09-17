@@ -55,6 +55,42 @@ export interface PublishingShape {
   styleNotes: string | null;
 }
 
+// ─── Target markets (P04 — plan §10.1) ─────────────────────────────────
+
+/**
+ * Where measurement happens is not the same fact as where a company is
+ * headquartered. §10.1: "A company headquartered in India and selling to the
+ * US must be measured for the US when that is its confirmed target."
+ *
+ * `country` is required and is the unit every provider adapter can actually
+ * target (§10.3 — Cloro sends country only; nothing here proves city-level
+ * support). `region`/`city` narrow it for provider-support preview and
+ * disclosure, never for silently substituting a different scope.
+ *
+ * A target's confirmation state is NOT stored per-row: it rides the same
+ * draft/confirm versioning as every other `BusinessProfileData` field (see
+ * `business-profile.service.ts` module doc, rule 1). A target inside a draft
+ * row is a proposal; a target inside a confirmed row is a fact. This is the
+ * "just another confirmable field group on the same profile" design chosen
+ * over a parallel per-target approval workflow.
+ */
+export interface MarketTarget {
+  /** ISO-3166 alpha-2, uppercase. Required — the one unit every adapter understands. */
+  country: string;
+  /** Optional state/province, free text as the client names it. */
+  region: string | null;
+  /** Optional city. Narrower than any provider adapter can currently prove it targets. */
+  city: string | null;
+  /** Optional BCP-47 language tag for this target, when it differs from the profile's general `languages`. */
+  language: string | null;
+  /** Lower is higher priority. Ties broken by array order. */
+  priority: number;
+  /** False = kept on file but excluded from measurement scope and cost estimates. */
+  active: boolean;
+  /** Optional — which services/products this target applies to. Empty = all of them. */
+  productApplicability: string[];
+}
+
 /** The confirmed-or-proposed business facts, with every JSON column parsed. */
 export interface BusinessProfileData {
   brandName: string | null;
@@ -62,8 +98,11 @@ export interface BusinessProfileData {
   description: string | null;
   services: string[];
   icp: IcpShape;
+  /** Legacy flat market list — kept for backward-compat readers. Superseded by `targets` for anything that needs real granularity/provider support (P04). */
   markets: string[];
   languages: string[];
+  /** Structured confirmed/drafted target markets (P04, plan §10.1). */
+  targets: MarketTarget[];
   facts: FactShape[];
   competitors: CompetitorShape[];
   goals: string[];
@@ -142,6 +181,95 @@ export interface SiteContextCandidateDto {
 export const BUSINESS_PROFILE_PROVENANCE_NOTE =
   'These are extracted candidates from the project site. They are not confirmed facts: nothing here has been seen or agreed to by a human, and no value here is served as confirmed anywhere in the API. To use one, type it into the business profile draft and confirm that version.';
 
+// ─── Business information (P02 — plan §9.1/§9.2) ──────────────────────
+
+/**
+ * Every field the "Business information" screens (staff and client) group
+ * into sections. A dot-path into {@link BusinessProfileData} — the same string
+ * is what `PUT .../business-profile` accepts on its matching top-level key
+ * (nested ones are patched via their parent object, see the merge patch DTO)
+ * and what {@link BusinessProfileRejectionRow}.fieldPath stores.
+ */
+export const BUSINESS_INFO_FIELDS = [
+  'brandName',
+  'legalName',
+  'description',
+  'services',
+  'icp.segments',
+  'icp.roles',
+  'icp.painPoints',
+  'markets',
+  'languages',
+  'competitors',
+  'goals',
+] as const;
+export type BusinessInfoField = (typeof BUSINESS_INFO_FIELDS)[number];
+
+/** Which of the four §9.1 sections a field is grouped under on the UI. */
+export type BusinessInfoSectionKey = 'about' | 'customers' | 'locations' | 'brand';
+
+/**
+ * One field's suggested value from the most recent `SiteContext`, next to the
+ * confirmed-or-drafted value it would replace. Deliberately carries only
+ * client-safe provenance (a source page and a date) — no run id, no model
+ * name, no cost. Staff and client screens read the identical shape; §4.6 only
+ * changes which vocabulary a screen wraps it in, not which fields exist.
+ */
+export interface BusinessInfoSuggestion {
+  field: BusinessInfoField;
+  section: BusinessInfoSectionKey;
+  label: string;
+  /** The value on file today (draft or confirmed — whichever is current). Null/empty when there is none. */
+  currentValue: string[] | string | null;
+  suggestedValue: string[] | string | null;
+  /** A page the suggestion can be checked against, when the crawl recorded one. */
+  sourcePage: string | null;
+  /** When the source SiteContext was built. */
+  sourceDate: string;
+}
+
+/** A field with nothing confirmed/drafted AND nothing suggested. */
+export interface BusinessInfoGap {
+  field: BusinessInfoField;
+  section: BusinessInfoSectionKey;
+  label: string;
+}
+
+export interface BusinessInfoSection {
+  key: BusinessInfoSectionKey;
+  label: string;
+  /** Fields in this section, by their current confirmed-or-drafted value. */
+  confirmed: Array<{ field: BusinessInfoField; label: string; value: string[] | string | null }>;
+  suggestions: BusinessInfoSuggestion[];
+  gaps: BusinessInfoGap[];
+}
+
+/**
+ * Identity of a confirmed version WITHOUT `confirmedBy` — a raw `User.id`.
+ * `overview` is served identically to staff and client, so this (not
+ * {@link ProfileVersionRef}) is what it carries: a client-safe fact ("version
+ * 3, confirmed on the 3rd") with no internal actor id riding along.
+ */
+export interface BusinessInfoVersionRef {
+  id: string;
+  version: number;
+  state: ProfileState;
+  confirmedAt: string | null;
+  createdAt: string;
+}
+
+export interface BusinessInfoOverview {
+  projectId: string;
+  /** Null when nothing has ever been drafted. */
+  profileState: ProfileState | null;
+  confirmedVersion: BusinessInfoVersionRef | null;
+  sections: BusinessInfoSection[];
+  /** How many suggestions were withheld because they exactly repeat a prior rejection — the resurfacing this exists to stop. */
+  suppressedRejectedCount: number;
+  hasSiteContext: boolean;
+  sourceCheckedAt: string | null;
+}
+
 // ─── Explicit propagation ────────────────────────────────────────────
 
 /**
@@ -167,6 +295,45 @@ export const DOWNSTREAM_NOT_TOUCHED: readonly DownstreamOwner[] = [
   { artifact: 'findings', endpoint: 'POST /api/projects/:projectId/findings/generate' },
   { artifact: 'report', endpoint: 'POST /api/projects/:projectId/reports' },
 ];
+
+// ─── Target markets — provider support preview (P04, plan §10.3) ──────
+
+/** A provider's real ability to target a location, read from its adapter's actual request-building code — never assumed. */
+export type ProviderTargetingMode = 'provider-targeted' | 'prompt-localized' | 'unsupported';
+
+/** The finest location unit a provider call can genuinely claim to have observed. */
+export type LocationGranularity = 'country' | 'region' | 'city' | 'none';
+
+/** One provider's support preview for one requested target — §10.3's adapter-boundary contract. */
+export interface ProviderTargetSupport {
+  provider: string;
+  /** Human label for display. */
+  providerLabel: string;
+  requestedCountry: string;
+  requestedCity: string | null;
+  /** What the provider call would actually be able to claim as observed. */
+  effectiveGranularity: LocationGranularity;
+  mode: ProviderTargetingMode;
+  /** How the requested location maps to the provider's own request field, when it maps at all. */
+  providerMapping: string | null;
+  supported: boolean;
+  /** Why, in one sentence — always present so "supported: false" is never silent. */
+  detail: string;
+}
+
+/** The confirmed-or-drafted structured targets, the site-evidence suggestions still open, and the real per-provider support preview. */
+export interface TargetLocationsOverview {
+  projectId: string;
+  profileState: ProfileState | null;
+  confirmedVersion: BusinessInfoVersionRef | null;
+  /** The targets on the current confirmed-or-drafted profile, in priority order. */
+  targets: MarketTarget[];
+  /** Countries `SiteContext.markets` (P03's ranked service-area evidence) names that are not yet an active confirmed/drafted target — offered, never auto-applied. */
+  suggestedCountries: string[];
+  providerSupport: ProviderTargetSupport[];
+  hasSiteContext: boolean;
+  sourceCheckedAt: string | null;
+}
 
 // ─── Onboarding requests and the access checklist ────────────────────
 

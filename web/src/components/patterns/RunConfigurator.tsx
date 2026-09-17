@@ -161,6 +161,15 @@ export interface RunConfiguratorProps {
   /** Issues the start request. Rejections are shown verbatim; a rejection does
    *  not re-enable the button into a retry loop. */
   onStart: () => void | Promise<void>;
+  /**
+   * Optional confirmation gate, run on the start click **before** any state
+   * changes. Resolve `true` to proceed; resolve `false` (or reject) to abort —
+   * nothing is sent, the control returns to idle, and no "accepted" claim is
+   * made. §8.2's "Update AI results" needs the operator to be shown what will
+   * be checked and what it is allowed to cost *between* the click and the
+   * spend; a screen can do that by opening its own dialog from here.
+   */
+  beforeStart?: () => Promise<boolean>;
   /** Called after the server accepted the start, so the screen can navigate to
    *  the run. */
   onStarted?: () => void;
@@ -214,6 +223,7 @@ export function RunConfigurator({
   configuration,
   estimate,
   onStart,
+  beforeStart,
   onStarted,
   startTimeoutMs = 60_000,
   onReconcile,
@@ -241,7 +251,25 @@ export function RunConfigurator({
 
   const handleStart = useCallback(async () => {
     if (inFlightRef.current || blocked || runInFlight) return;
+    // The guard is taken before the confirmation opens, so a second click while
+    // the dialog is up cannot open a second one or start twice.
     inFlightRef.current = true;
+
+    if (beforeStart) {
+      let proceed = false;
+      try {
+        proceed = await beforeStart();
+      } catch {
+        proceed = false;
+      }
+      // A declined confirmation leaves the control exactly as it was: idle, no
+      // request sent, and no "accepted" state that would claim otherwise.
+      if (!proceed) {
+        inFlightRef.current = false;
+        return;
+      }
+    }
+
     setStartError(null);
     setStartState('starting');
 
@@ -274,7 +302,7 @@ export function RunConfigurator({
     } finally {
       inFlightRef.current = false;
     }
-  }, [blocked, onStart, onStarted, runInFlight, startTimeoutMs]);
+  }, [beforeStart, blocked, onStart, onStarted, runInFlight, startTimeoutMs]);
 
   return (
     <div className={cn('space-y-5 rounded-lg border border-border bg-surface p-5', className)}>

@@ -27,6 +27,7 @@
  */
 
 import { Module } from '@nestjs/common';
+import { forwardRef } from '@nestjs/common';
 import { ScoringModule } from '../scoring/scoring.module';
 import { StrategyModule } from '../strategy/strategy.module';
 import { FindingsModule } from '../findings/findings.module';
@@ -40,6 +41,7 @@ import { ReportMigrationController, ReportingController, SharedReportController 
 import { ResultsModule } from '../results/results.module';
 import { ApprovalsModule } from '../approvals/approvals.module';
 import { DeliveryModule } from '../delivery/delivery.module';
+import { DeliveryPlanModule } from '../delivery-plan/delivery-plan.module';
 
 @Module({
   imports: [
@@ -51,8 +53,11 @@ import { DeliveryModule } from '../delivery/delivery.module';
     DigitalPresenceModule,
     CompetitorsModule,
     // G13 — provides PeriodService (exact/derived window) and EvidenceService
-    // (the frozen source manifest a report pins).
-    ResultsModule,
+    // (the frozen source manifest a report pins). `forwardRef` because P15's
+    // Overview lives in the results module and reads released reports through
+    // `ReportLifecycleService` — the cycle is real and documented on both sides
+    // rather than worked around with a second copy of the release gate.
+    forwardRef(() => ResultsModule),
     // G10 — the release gate. `assertReadyToPublish` is called by
     // ReportLifecycleService before every publication, which is what makes
     // G10's README claim about report release true.
@@ -62,6 +67,11 @@ import { DeliveryModule } from '../delivery/delivery.module';
     // `POST /projects/:id/delivery/send`, and records the outcome in its own
     // ledger (ReportDeliveryAttempt) instead of inferring anything from it.
     DeliveryModule,
+    // P15 — §14.5 item 8's frozen plan-progress section comes from the module
+    // that owns commitments, so the released figure and the live Overview
+    // footer are the same calculation. `DeliveryPlanModule` imports nothing, so
+    // this adds no cycle.
+    DeliveryPlanModule,
   ],
   controllers: [ReportingController, ReportMigrationController, SharedReportController],
   providers: [ReportingService, ReportLifecycleService],

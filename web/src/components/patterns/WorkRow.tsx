@@ -100,9 +100,11 @@ function EvidenceCell({ item }: { item: WorkItem }) {
     return <span className="text-muted-foreground">No evidence linked</span>;
   }
   if (!isSafeHref(item.evidenceHref)) {
+    // §4.5: an important limitation must not be hidden behind a tooltip. The
+    // reason is visible text, not a `title` only.
     return (
-      <span className="text-muted-foreground" title="This evidence link is not a usable URL">
-        Evidence link unavailable
+      <span className="text-muted-foreground">
+        Evidence link unavailable — the stored link is not a usable address
       </span>
     );
   }
@@ -242,7 +244,10 @@ export function WorkCard({ item, timeZone, onOpen, actions, className }: WorkCar
         <p className="flex items-start gap-1.5 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-table text-danger-foreground">
           <AlertOctagon aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>
-            <span className="font-medium">Blocked: </span>
+            {/* §4.5: "use text/icon plus color for every status", and a raw
+                state word is not client vocabulary. "Waiting on" says which
+                state it is without naming the internal one. */}
+            <span className="font-medium">Waiting on: </span>
             {item.blocker}
           </span>
         </p>

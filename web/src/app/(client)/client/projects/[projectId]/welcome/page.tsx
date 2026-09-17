@@ -27,7 +27,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyState } from '@/components/patterns/EmptyState';
-import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
+import { ErrorState, clientActionMessage, toApiError } from '@/components/patterns/ErrorState';
 import { PageHeader } from '@/components/patterns/PageHeader';
 import { ScopeBanner } from '@/components/patterns/ScopeBanner';
 import { StatusPill } from '@/components/patterns/StatusPill';
@@ -132,7 +132,7 @@ export default function ClientWelcomePage() {
     return (
       <div className="space-y-6">
         <PageHeader title="Welcome" />
-        <ErrorState error={error} onRetry={() => void load()} notFoundReason="missing-or-private" />
+        <ErrorState error={error} onRetry={() => void load()} notFoundReason="missing-or-private" showServerMessage={false} />
       </div>
     );
   }
@@ -387,7 +387,7 @@ function ChecklistGroup({
       await onMarked();
     } catch (caught) {
       setRowError(
-        caught instanceof Error ? caught.message : 'That could not be recorded. Try again.',
+        clientActionMessage(caught, 'That could not be recorded. Try again.'),
       );
     } finally {
       setBusyKey(null);
@@ -413,7 +413,7 @@ function ChecklistGroup({
               </div>
               <p className="mt-1 text-meta text-muted-foreground">{item.detail}</p>
               <p className="text-meta text-muted-foreground">
-                Read from: <span className="font-mono">{item.source}</span>
+                Where this came from: {provenanceLabel(item.source)}
                 {item.dueAt ? (
                   <>
                     {' '}
@@ -469,6 +469,38 @@ function StateIcon({ state }: { state: PortalChecklistItem['state'] }) {
   return <CircleDashed aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />;
 }
 
+/**
+ * §4.3: "Provenance → Where this came from. Website, your confirmation,
+ * connected account, or measured result." The stored `source` is the name of
+ * an internal record (`business-profile`), so it is mapped to the place the
+ * client knows. An unmapped record is described by what it is rather than
+ * printed as a slug.
+ */
+const PROVENANCE_LABEL: Record<string, string> = {
+  'business-profile': 'the business information you confirmed',
+  'business-profile-confirmation': 'the business information you confirmed',
+  'connected-accounts': 'a connected account',
+  integrations: 'a connected account',
+  google: 'a connected account',
+  'google-analytics': 'your connected Google Analytics account',
+  'google-search-console': 'your connected Google Search Console account',
+  content: 'the content you have been sent',
+  'content-asset': 'the content you have been sent',
+  approvals: 'a request we sent you',
+  messages: 'your messages thread',
+  subscription: 'your account records',
+  billing: 'your account records',
+  measurement: 'a measurement we ran',
+  welcome: 'your answers during set-up',
+  profile: 'the profile you confirmed',
+};
+
+function provenanceLabel(source: string | null | undefined): string {
+  if (!source) return 'your account records';
+  const key = source.trim().toLowerCase();
+  return PROVENANCE_LABEL[key] ?? 'your account records';
+}
+
 function stateLabel(state: PortalChecklistItem['state']): string {
   switch (state) {
     case 'done':
@@ -478,7 +510,8 @@ function stateLabel(state: PortalChecklistItem['state']): string {
     case 'not-requested':
       return 'Not requested yet';
     case 'unavailable':
-      return 'Unavailable';
+      // §4.3: "Capability unavailable → Not available for this account yet."
+      return 'Not available for this account yet';
   }
 }
 
@@ -577,7 +610,7 @@ function BusinessFactsCard({
       setMessage('Saved as a draft. It becomes agreed facts once it is confirmed.');
       await onChanged();
     } catch (caught) {
-      setProblem(caught instanceof Error ? caught.message : 'That could not be saved.');
+      setProblem(clientActionMessage(caught, 'That could not be saved.'));
     } finally {
       setBusy(null);
     }
@@ -593,9 +626,7 @@ function BusinessFactsCard({
       await onChanged();
     } catch (caught) {
       setProblem(
-        caught instanceof Error
-          ? caught.message
-          : 'That could not be confirmed. Reload and check the current version.',
+        clientActionMessage(caught, 'That could not be confirmed. Reload and check the current version.'),
       );
     } finally {
       setBusy(null);
@@ -811,9 +842,7 @@ function InviteCard({
       await onChanged();
     } catch (caught) {
       setProblem(
-        caught instanceof Error
-          ? caught.message
-          : 'The invitation could not be created. Only an account administrator can invite people.',
+        clientActionMessage(caught, 'The invitation could not be created. Only an account administrator can invite people.'),
       );
     } finally {
       setBusy(false);
@@ -890,9 +919,9 @@ function InviteCard({
               <p className="font-mono text-meta break-all">{created.acceptUrl}</p>
               <CopyLinkButton value={created.acceptUrl} />
               <p className="text-meta">
-                Shown once. It carries the invitation credential, so it is never
-                retrievable from here again — and this page deliberately does not
-                navigate to it.
+                Shown once. This is the only place the invitation link is
+                readable, so it is never retrievable from here again — and this
+                page deliberately does not navigate to it.
               </p>
             </AlertDescription>
           </Alert>

@@ -53,6 +53,44 @@ export interface ApprovalRequestDetailDto extends ApprovalRequestDto {
   decisions: ApprovalDecisionDto[];
 }
 
+/**
+ * What a client sees for one of their own approval requests.
+ *
+ * An explicit allowlist, not the staff DTO with fields dropped at the response
+ * layer (§3.5/§4.6, and the same discipline `business-profile`'s and
+ * `delivery-plan`'s portal DTOs already follow). Two fields are absent and
+ * must stay absent:
+ *
+ *  - `requiredReviewerId` / `requestedBy` are raw `User.id` values. A client
+ *    has no use for either, and an internal operator id is exactly the sort of
+ *    thing §4.6 keeps off the client surface.
+ *
+ * Everything the client genuinely needs is here: what is being reviewed, which
+ * revision, its state, and when it is due.
+ */
+export interface PortalApprovalRequestDto {
+  id: string;
+  projectId: string;
+  artifactType: ApprovalArtifactType;
+  /** Same id the client already uses to open the artifact in their own URLs. */
+  artifactId: string;
+  /** The exact revision under review — the version the decision binds to. */
+  artifactRevision: number | null;
+  revisionId: string | null;
+  title: string;
+  detail: string | null;
+  dueAt: string | null;
+  status: ApprovalStatus;
+  invalidatedAt: string | null;
+  invalidatedReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PortalApprovalRequestDetailDto extends PortalApprovalRequestDto {
+  decisions: ApprovalDecisionDto[];
+}
+
 export interface CheckResultDto {
   id: string;
   subjectType: string;

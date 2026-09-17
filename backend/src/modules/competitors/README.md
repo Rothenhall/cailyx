@@ -2,6 +2,9 @@
 
 > **Status:** ✅ Built
 > **Wave:** 6, step 6 (`docs/analysis/wave-6-audit-pipeline.md` §D4/§4)
+> **Phase:** P06 — `platform_improvement_plan.md` §12.1–§12.4 (market discovery,
+> the exclusion list, relevance classification, rejection memory, frozen
+> comparison snapshots)
 > **Spec:** [SPEC.md](SPEC.md), [REQUIREMENTS.md](REQUIREMENTS.md), [LEFT-OUT.md](LEFT-OUT.md)
 
 ## Purpose
@@ -82,6 +85,92 @@ competitors/
    vendor, single-fetch operations — the same cost class as the tech-stack
    module's own scan.
 
+## Market discovery (§12.2) — `POST /discover/market`
+
+Proposes *new* candidates from the services/segments and target markets the
+project has already confirmed. It writes `status: "candidate"` rows only —
+the tracked list is never replaced, and nothing here profiles anything.
+
+**Two cost classes, and the page load only ever gets the free one.**
+
+| Mode | What it reads | Cost |
+|---|---|---|
+| default (`collectNew` false/omitted) | the project's newest **completed** `AeoAudit.verdict` for rival names, plus up to 300 existing `SerpResult` rows across the project's `SerpTracker`s for rival domains | **zero** — no vendor call, nothing fetched |
+| `collectNew: true` | the above, **plus** up to `MAX_MARKET_QUERIES` (6) composed `"<service> in <market>"` searches through the gated SERP provider | paid/explicit — must be asked for, and reports `costUsd` |
+
+§12.3 says a page load makes no paid calls; this split is how that is kept
+true. The result carries the mode back (`collectNew`, `queriesRun`,
+`costUsd`), so a caller can tell a free pass from a paid one without
+guessing. A free pass legitimately reports `queriesRun: 0, costUsd: 0` — that
+is a pass that mined stored evidence, not a pass that failed.
+
+Bound to `MAX_SERVICES_CONSIDERED = 5` services and
+`MAX_MARKETS_CONSIDERED = 3` target countries; a paid run stops at
+`MAX_MARKET_QUERIES` searches — "a budget, not a suggestion".
+
+**The exclusion list is the point.** `EXCLUDED_DOMAINS` is a fixed set of
+registrable domains that are never a competitor even when they legitimately
+rank for the client's queries: directories/marketplaces/review platforms
+(`yelp.com`, `clutch.co`, `g2.com`, `capterra.com`, `trustpilot.com`,
+`indeed.com`, `crunchbase.com`, `bbb.org`, `yellowpages.com`, …), social and
+publishing platforms (`facebook.com`, `linkedin.com`, `youtube.com`,
+`reddit.com`, `medium.com`, `wordpress.com`, …), reference sites
+(`wikipedia.org`, `wikidata.org`), and search/portal infrastructure that
+sometimes lands in a captured result as a "domain" (`google.com`, `bing.com`,
+`duckduckgo.com`). The client's own domain is excluded first, then these,
+then already-existing rows, then rejected candidates. Exclusions are counted
+and the first ten reasons are returned as `exclusionSample` — an exclusion
+you cannot see is an exclusion you cannot check. The set's own comment is
+the design rule: *"Extend cautiously; being too aggressive here silently
+drops real rivals, which is the opposite failure mode."*
+
+**Relevance is assigned from evidence, never from a guess** — and a
+candidate is **never** auto-classified `not-relevant`:
+
+```
+evidenceKinds.has('aeo-verdict')  → 'direct-competitor'
+evidenceKinds.size > 1            → 'direct-competitor'
+otherwise                         → 'adjacent-alternative'
+```
+
+A name an AI verdict mentioned (a market-aware source reasoning about this
+project's own competitive set) or one corroborated by two independent
+evidence kinds is treated as a likely direct competitor; a bare SERP
+co-occurrence is merely adjacent *until a human says otherwise*. `PATCH
+…/candidates/:competitorId/relevance` is that human saying so, and it
+reclassifies without confirming or rejecting.
+
+**Rejection memory (§12.2).** `DELETE …/candidates/:competitorId` records a
+`CompetitorRejection` tombstone (normalized name key + canonical domain key +
+reason) **first**, then deletes the candidate row. `listCandidates()` is
+self-healing: it deletes any candidate the tombstones say should not exist
+rather than filtering it out on read, so a rejection holds even for rows
+another producer writes later. The route only ever applies to an
+unconfirmed candidate — an already-tracked competitor answers 404 rather
+than being deleted, which is why the deletion has no undo but also no way to
+remove a rival the client is actually tracking.
+
+## Frozen comparison snapshots (§12.3)
+
+Every `GET …/competitors/gap` computation is persisted as a
+`CompetitorComparisonSnapshot` — immutable, never retroactively mutated.
+`GET …/comparison-snapshots` lists them newest first (summary only, so the
+list stays cheap however many accumulate); `GET
+…/comparison-snapshots/:snapshotId` returns the stored `result` **verbatim**,
+so a comparison read today says exactly what it said when it was computed,
+even after the competitor set has changed underneath it.
+
+Each snapshot carries its provenance: `competitorSetVersion` (a hash of the
+competitor set it was computed against), `extractionVersion` (`gap-v1` — the
+comparison logic's own version), and `sourceObservationIds` — the
+`techScanIds`, `profileIds` and `aeoAuditIds` actually read, plus
+`serpResultSampleCount`. A frozen number with no record of what produced it
+is not evidence, so the record is part of the snapshot, not a side note.
+
+Snapshot persistence is best-effort and honest about failure: if the row
+cannot be written, `GapResult.snapshotId` stays `''` and the gap is still
+returned. The comparison is the product; the snapshot is the receipt.
+
 ## Built Features
 
 | Feature | Status | Notes |
@@ -97,6 +186,13 @@ competitors/
 | Client-side SEO/review comparison in `/gap` | ✅ | The client's own SEO signals and `PresenceReview` rows are read live so the gap table compares against something, not nothing |
 | Gap comparison | ✅ | Presence diff on tech/schema/SEO/reviews + side-by-side AEO/SERP status; no composite score |
 | No-domain competitors | ✅ | `status: "skipped"` on the crawl half; AEO/SERP attachment still runs by name |
+| Market discovery, free pass (`collectNew` false) | ✅ | Mines stored AEO verdicts + SERP results; `queriesRun: 0`, `costUsd: 0` — no vendor call |
+| Market discovery, paid pass (`collectNew: true`) | ✅ | Bounded at 6 searches, `costUsd` reported; explicit, never implicit |
+| Domain exclusion list | ✅ | Directories, social/publishing, reference, search infra + the client's own domain; counted and sampled in `exclusionSample` |
+| Candidate relevance classification | ✅ | `direct-competitor` / `adjacent-alternative` / `not-relevant`; never auto-`not-relevant` |
+| Rejection memory (`CompetitorRejection`) | ✅ | Tombstone written before the row is deleted; `listCandidates()` self-heals, not just filters |
+| Frozen comparison snapshots | ✅ | Immutable, versioned by competitor set + extraction version + source observation ids |
+| Candidate confirm / reclassify / reject | ✅ | See "G19/D01" below for their contract |
 | Competitor Social (activity/followers/engagement) | ❌ Not built | No code path yet — the flowchart's one competitor leaf this module doesn't cover |
 | Full `technical-audit` per competitor | ❌ Explicitly out of scope (D4) | Project-scoped elsewhere; making it domain-scoped is a future decision |
 | High-signal pages beyond the homepage | ❌ Deferred | See LEFT-OUT.md |
@@ -106,8 +202,15 @@ competitors/
 | Method | Endpoint | Rate Limit | Description |
 |---|---|---|---|
 | `POST` | `/projects/:id/competitors/discover` | 5/60s | Promote + (re)profile every competitor. Body: optional `{ competitors: [{name, domain?}] }` |
-| `GET` | `/projects/:id/competitors/profiles` | default (100/60s) | `{ competitors }` — every `Competitor` row with its latest profile |
-| `GET` | `/projects/:id/competitors/gap` | default (100/60s) | Client-vs-competitor gap comparison |
+| `POST` | `/projects/:id/competitors/discover/market` | 5/60s | Propose candidates from confirmed services + target markets. Body: `{ collectNew?: boolean, provider?: 'dataforseo' \| 'fixture' }`. Free by default; `collectNew: true` is the paid, explicit pass |
+| `GET` | `/projects/:id/competitors/profiles` | default (100/60s) | `{ competitors }` — every `Competitor` row with its latest profile (tracked only) |
+| `GET` | `/projects/:id/competitors/gap` | default (100/60s) | Client-vs-competitor gap comparison; also persists a frozen snapshot |
+| `GET` | `/projects/:id/competitors/comparison-snapshots` | default (100/60s) | `{ snapshots }` — frozen comparisons, newest first, summaries only |
+| `GET` | `/projects/:id/competitors/comparison-snapshots/:snapshotId` | default (100/60s) | The stored `GapResult` verbatim; 404 for an unknown or another project's snapshot |
+| `GET` | `/projects/:id/competitors/candidates` | default (100/60s) | `{ candidates }` — `status="candidate"` rows awaiting review (possibly empty) |
+| `POST` | `/projects/:id/competitors/candidates/:competitorId/confirm` | default (100/60s) | Flip a candidate to `tracked` + append to `Project.competitors`; 404 if not a pending candidate |
+| `PATCH` | `/projects/:id/competitors/candidates/:competitorId/relevance` | default (100/60s) | Body: `{ relevance }` — `direct-competitor` \| `adjacent-alternative` \| `not-relevant`. Does not confirm or reject |
+| `DELETE` | `/projects/:id/competitors/candidates/:competitorId?reason=` | default (100/60s) | Tombstone + delete a candidate; `{ deleted: true }`. Tracked competitors are not removable here (404) |
 
 ### A note on the `/competitors` route
 
@@ -133,9 +236,18 @@ and `gap` are unaffected — neither path collides with anything on
 - `FetcherModule` — schema/JSON-LD read (`fetchSchema`, already existed).
 - `TechStackModule` — `TechStackService.scanDomain`, exported specifically
   for this module (wave-6 step 3).
+- `DigitalPresenceModule` — its discovery service, reused unchanged, to find
+  each rival's own external profiles.
+- `BusinessProfileModule` (P06/§12.2) — `BusinessProfileService` read-only for
+  the confirmed services/segments and confirmed target markets market
+  discovery composes its searches from. That module's own code is untouched.
+- `SerpIntelligenceModule` (P06/§12.2) — `SerpIntelligenceService.serpForDiscovery()`,
+  the same gated, budget-checked SERP provider `capture()` uses. Reached only
+  on `collectNew: true`.
 - `PrismaService` (global) — `Competitor`, `CompetitorProfile`,
   `TechStackScan`/`TechFinding` (read), `AeoAudit` (read), `SerpTracker` /
-  `SerpResult` (read).
+  `SerpResult` (read), and the P06 additions `CompetitorRejection` and
+  `CompetitorComparisonSnapshot` (read + write).
 - `parseCompetitors`, `hostOf` from `common/utils/subject-match.ts` — the
   same JSON-parsing and domain-normalization utilities `serp-intelligence`
   already uses, for consistency.
@@ -160,14 +272,53 @@ workspace (wave-6 step 8) is the other expected consumer.
 | D4 — full `technical-audit` per competitor is NOT in scope | ✅ | Not called; documented explicitly here and in LEFT-OUT.md |
 | §6 API surface — discover/list/gap | ✅ | All three endpoints implemented |
 | §5 data model — `Competitor`, `CompetitorProfile` | ✅ | Both added |
+| §12.1 — competitors derived from the client's services + markets, not a global list | ✅ | `discoverByMarket()` composes from `BusinessProfileService`'s confirmed services/markets |
+| §12.2 — exclusion list (directories/partners/publishing platforms) | ✅ | `EXCLUDED_DOMAINS`, plus the client's own domain; exclusions counted + sampled |
+| §12.2 — relevance classification (direct competitor / adjacent alternative) | ✅ | Assigned from evidence; `not-relevant` is only ever set by a human |
+| §12.2 — rejection memory prevents rediscovery loops | ✅ | `CompetitorRejection` tombstone written before delete; `listCandidates()` self-heals |
+| §12.3 — page load makes no paid calls | ✅ | Free pass reads stored rows only; the paid pass requires `collectNew: true` |
+| §12.3 — comparisons are versioned and never retroactively mutated | ✅ | `CompetitorComparisonSnapshot`, read verbatim, provenance attached |
+| §12.2 — candidates require human confirmation before joining the tracked set | ✅ | `status: "candidate"`; never profiled, never in `/gap`, never fed to the AEO prompt |
+| §12.3 — store source IDs, extraction version, competitor-set version | ✅ | `CompetitorComparisonSnapshot` provenance (see above) |
+| §12.4 — no combined "competitor score" from unrelated metrics | ✅ | `/gap` is a diff; AEO and SERP statuses are reported side by side with no composite score |
+| §12.4 — AI appearances/recommendations by topic and market | ⚠️ | Out of this module: the AEO/AI-visibility surface owns per-topic AI answers. `/gap` attaches the project's most recent completed `AeoAudit.verdict` for a rival, but does not break it down by topic against Google positions |
+| §12.4 — evidence-backed content gaps | ⚠️ | The profile diff (tech/schema/SEO/reviews) is here; the keyword/content gap list is the `opportunities` module's (§12.6/§12.7) |
+| §12.4 — "not checked / not found within checked results", not automatic zero | ✅ | `aeoStatus` reads `unknown` when no completed audit exists, `absent` only when one exists and does not name this rival |
 
 ## Testing notes
 
-See `backend/smoke/competitors.smoke.sh` for the automated end-to-end check:
-a throwaway project seeds `Project.competitors` (JSON) directly via Prisma
-(same pattern as `authority.smoke.sh`), then exercises
-discover → list → gap against real domains, asserting on promotion, profile
-shape, and the gap diff.
+- `backend/smoke/competitors.smoke.sh` — the original wave-6 end-to-end
+  check: a throwaway project seeds `Project.competitors` (JSON) directly via
+  Prisma (same pattern as `authority.smoke.sh`), then exercises
+  discover → list → gap against real domains, asserting on promotion, profile
+  shape, and the gap diff.
+- `backend/smoke/competitors-unified.smoke.sh` — the P06/§12.1–§12.4 exit-gate
+  proof. Run it with `/opt/homebrew/bin/bash` and `API=http://localhost:3002/api`
+  (the harness's default). What it asserts, in its own terms:
+
+  - the **free** pass (`collectNew` omitted) reports `queriesRun: 0` and
+    `costUsd: 0`, proposes a real rival, and excludes `clutch.co` with a
+    reason visible in `exclusionSample`;
+  - a rival named in a stored AEO verdict is classified `direct-competitor`;
+  - re-running proposes **0** new candidates (dedup + rejection memory);
+  - rejecting a candidate removes it from `/candidates` and it does not
+    resurface on a later discovery pass; confirming a candidate flips it to
+    `tracked`;
+  - `GET /gap` makes **no paid call**; a rival with a completed audit that
+    does not name it reads `aeoStatus: 'absent'`, a never-observed rival reads
+    `'unknown'` — never a silent zero;
+  - `collectNew: true` with `provider: fixture` runs the bounded searches at
+    `costUsd: 0` and excludes `wikipedia.org`;
+  - a frozen snapshot reads identically twice across a changed competitor set,
+    and the snapshots list accumulates rather than being overwritten;
+  - reclassifying to `not-relevant` leaves `status=candidate` (classification
+    is not confirmation);
+  - an unknown project / snapshot id is a 404.
+
+  **Not re-run during documentation.** This README was written while other
+  agents were mid-flight on shared source and the dev database, so running the
+  suite could have produced a false negative. The assertions above are read
+  from the script; none of them is a claim that the suite passes right now.
 
 ### A note on this worktree's `AeoAudit` model
 
@@ -176,6 +327,10 @@ module had landed... a minimal, non-relational mirror...~~ **Resolved:** the
 full relational `AeoAudit` model (with `SiteContext`/`AeoStance`/
 `AeoSurfaceRun` relations) is now in `schema.prisma`; this module reads
 `verdict` off that model directly. No mirror remains.
+
+⚠️ `SPEC.md` and `REQUIREMENTS.md`/`SETUP-STATUS.md` still describe that
+worktree-era arrangement and have not been rewritten — where they and this
+README disagree, the code and this README are current.
 
 ## G19/D01 — the three candidate operations are in the contract (2026-09-16)
 

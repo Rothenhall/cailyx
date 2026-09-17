@@ -31,22 +31,38 @@ import { Timestamp } from '@/components/patterns/Timestamp';
 import { useUrlState } from '@/hooks/useUrlState';
 import { formatNumber } from '@/lib/format';
 import type { ApiError } from '@/lib/api';
+import { Textarea } from '@/components/ui/textarea';
 import {
   addPresenceAccount,
   confirmPresenceCandidate,
   getPresenceInventory,
   getResearchScope,
   listPresenceDiscoveries,
+  pullBusinessProfile,
+  pullDirectoryRatings,
+  rejectPresenceCandidate,
   removePresenceAccount,
   runPresenceDiscovery,
+  setPresenceApplicability,
   updatePresenceAccount,
   type DiscoveryRun,
   type FootprintItem,
+  type PlatformApplicability,
   type PresenceAccount,
   type PresenceGap,
   type PresenceInventory,
   type ResearchScope,
 } from '@/services/research-library';
+
+/** §11.1 — the groups a card belongs to, from the account/gap's own `group`. */
+const SOCIAL_GROUPS = new Set(['social']);
+const LISTING_GROUPS = new Set(['directory', 'review', 'marketplace']);
+// Everything else (publishing, personal, other) reads as "Other relevant profiles".
+function presenceSectionOf(group: string): 'social' | 'listings' | 'other' {
+  if (SOCIAL_GROUPS.has(group)) return 'social';
+  if (LISTING_GROUPS.has(group)) return 'listings';
+  return 'other';
+}
 
 /**
  * DP01 — Digital footprint.
@@ -77,7 +93,7 @@ import {
  * percentage — §1.5 makes presence completeness its own measurement, and a
  * "74% present" would be a number no endpoint here produces.
  */
-const TAB_DEFAULTS = { tab: 'accounts' };
+const TAB_DEFAULTS = { tab: 'social' };
 
 export default function DigitalFootprintPage() {
   const params = useParams<{ projectId: string }>();
@@ -98,6 +114,8 @@ export default function DigitalFootprintPage() {
   const [correcting, setCorrecting] = useState<PresenceAccount | null>(null);
   const [pendingRemove, setPendingRemove] = useState<PresenceAccount | null>(null);
   const [pendingReject, setPendingReject] = useState<PresenceAccount | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [overriding, setOverriding] = useState<PlatformApplicability | null>(null);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -140,6 +158,25 @@ export default function DigitalFootprintPage() {
     [accounts],
   );
 
+  // §11.1 — one screen, contextual groups (Social accounts / Business listings
+  // & reviews / Other relevant profiles), not a tab per discovery state. Every
+  // held account, candidate and gap sorts into exactly one of the three.
+  const applicability = useMemo(() => inventory?.applicability ?? [], [inventory]);
+  const notRelevant = useMemo(
+    () => applicability.filter((a) => a.status === 'not-relevant'),
+    [applicability],
+  );
+  function forSection(section: 'social' | 'listings' | 'other') {
+    return {
+      held: held.filter((a) => presenceSectionOf(a.group) === section),
+      candidates: candidates.filter((a) => presenceSectionOf(a.group) === section),
+      gaps: (inventory?.gaps ?? []).filter((g) => presenceSectionOf(g.group) === section),
+    };
+  }
+  const socialSection = forSection('social');
+  const listingsSection = forSection('listings');
+  const otherSection = forSection('other');
+
   async function handleConfirm(account: PresenceAccount) {
     setActionError(null);
     try {
@@ -150,11 +187,27 @@ export default function DigitalFootprintPage() {
     }
   }
 
-  async function handleReject(account: PresenceAccount) {
+  async function handleReject(account: PresenceAccount, reason: string) {
     setActionError(null);
     try {
-      await removePresenceAccount(projectId, account.id);
+      // P05 §11.4 — "Not ours" stores a tombstone (normalized URL/platform/
+      // project scope + reason + actor), not a plain delete. Without this the
+      // next discovery/SERP sweep can recreate the identical rejected
+      // candidate on its next run.
+      await rejectPresenceCandidate(projectId, account.id, reason);
       setPendingReject(null);
+      setRejectReason('');
+      await load();
+    } catch (caught) {
+      setActionError(toApiError(caught));
+    }
+  }
+
+  async function handleOverride(platform: PlatformApplicability, status: PlatformApplicability['status'], reason: string) {
+    setActionError(null);
+    try {
+      await setPresenceApplicability(projectId, platform.platform, status, reason);
+      setOverriding(null);
       await load();
     } catch (caught) {
       setActionError(toApiError(caught));
@@ -213,30 +266,26 @@ export default function DigitalFootprintPage() {
         breadcrumbs={[
           { label: 'Projects', href: '/ops/projects' },
           ...(scope ? [{ label: scope.projectName, href: `/projects/${projectId}` }] : []),
-          { label: 'Digital footprint' },
+          { label: 'Online presence' },
         ]}
-        title="Digital footprint"
+        title="Online presence"
         context={
           <>
+            Your business profiles, customer reviews, and social activity in one place ·{' '}
             {inventory.counts.total} company account
             {inventory.counts.total === 1 ? '' : 's'} held ·{' '}
             {inventory.counts.candidates} candidate
             {inventory.counts.candidates === 1 ? '' : 's'} awaiting a decision ·{' '}
-            {inventory.gaps.length} expected platform
+            {inventory.gaps.length} relevant platform
             {inventory.gaps.length === 1 ? '' : 's'} with no account
           </>
         }
         primaryAction={{ label: 'Run discovery', onClick: () => setDiscoverOpen(true) }}
         secondaryActions={
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" asChild>
-              <a href={`/projects/${projectId}/research/presence/insights`}>Presence insights</a>
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => void load()}>
-              <RefreshCw aria-hidden="true" className="mr-2 h-4 w-4" />
-              Refresh
-            </Button>
-          </div>
+          <Button variant="outline" size="sm" onClick={() => void load()}>
+            <RefreshCw aria-hidden="true" className="mr-2 h-4 w-4" />
+            Refresh
+          </Button>
         }
       />
 
@@ -354,72 +403,206 @@ export default function DigitalFootprintPage() {
 
       <Tabs value={tab} onValueChange={(value) => setTabState({ tab: value }, { push: true })}>
         <TabsList>
-          <TabsTrigger value="accounts">
-            Accounts ({held.length})
+          <TabsTrigger value="social">
+            Social accounts ({socialSection.held.length + socialSection.candidates.length})
           </TabsTrigger>
-          <TabsTrigger value="candidates">
-            Candidates ({candidates.length})
+          <TabsTrigger value="listings">
+            Business listings &amp; reviews ({listingsSection.held.length + listingsSection.candidates.length})
           </TabsTrigger>
-          <TabsTrigger value="missing">
-            Expected, no account ({inventory.gaps.length})
+          <TabsTrigger value="other">
+            Other relevant profiles ({otherSection.held.length + otherSection.candidates.length})
           </TabsTrigger>
+          <TabsTrigger value="activity">Business profile &amp; activity</TabsTrigger>
           <TabsTrigger value="footprint">Rest of the footprint</TabsTrigger>
           <TabsTrigger value="runs">Discovery history</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="accounts" className="space-y-4">
+        {(
+          [
+            { key: 'social' as const, label: 'Social accounts', data: socialSection },
+            { key: 'listings' as const, label: 'Business listings & reviews', data: listingsSection },
+            { key: 'other' as const, label: 'Other relevant profiles', data: otherSection },
+          ]
+        ).map(({ key, label, data }) => (
+          <TabsContent key={key} value={key} className="space-y-4">
+            <Card>
+              <CardHeader className="flex-row items-center justify-between space-y-0">
+                <CardTitle className="text-subsection">{label}</CardTitle>
+                <Button size="sm" onClick={() => setAddOpen(true)}>
+                  Add account by URL
+                </Button>
+              </CardHeader>
+              <CardContent className="space-y-4 pt-2">
+                {data.held.length === 0 && data.candidates.length === 0 && data.gaps.length === 0 ? (
+                  <EmptyState
+                    variant="not-measured"
+                    subject={label}
+                    prerequisite="Nothing relevant in this group yet — no account found or supplied, and nothing is currently expected here."
+                    layout="inline"
+                  />
+                ) : (
+                  <>
+                    {data.held.length > 0 ? (
+                      <AccountTable accounts={data.held} onCorrect={setCorrecting} onRemove={setPendingRemove} />
+                    ) : null}
+                    {data.candidates.length > 0 ? (
+                      <div className="space-y-2">
+                        <p className="text-meta text-muted-foreground">
+                          Suggested by search, not by reading the client&rsquo;s own site. Never counted as an
+                          account until a person confirms it — see plain-English evidence below, not a raw score.
+                        </p>
+                        <CandidateTable
+                          candidates={data.candidates}
+                          onConfirm={handleConfirm}
+                          onReject={(account) => {
+                            setPendingReject(account);
+                            setRejectReason('');
+                          }}
+                        />
+                      </div>
+                    ) : null}
+                    {data.gaps.length > 0 ? (
+                      <div className="space-y-2">
+                        <p className="text-meta text-muted-foreground">
+                          Expected for this kind of business and not found yet — an{' '}
+                          <strong>observation</strong>, never a fault.
+                        </p>
+                        <GapTable gaps={data.gaps} />
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ))}
+
+        <TabsContent value="activity" className="space-y-4">
+          {/* §11.1's third strand, merged from the former "Presence insights" page rather than
+              kept as a second screen. §11.6 — this tab only ever says "Public profile found" from
+              discovery evidence; "Connected for publishing" is the publishing module's own claim. */}
           <Card>
             <CardHeader className="flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-subsection">Accounts</CardTitle>
-              <Button size="sm" onClick={() => setAddOpen(true)}>
-                Add account by URL
-              </Button>
+              <CardTitle className="text-subsection">Business profile &amp; reviews</CardTitle>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    setActionError(null);
+                    try {
+                      await pullBusinessProfile(projectId);
+                      await load();
+                    } catch (caught) {
+                      setActionError(toApiError(caught));
+                    }
+                  }}
+                >
+                  Pull business profile
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    setActionError(null);
+                    try {
+                      await pullDirectoryRatings(projectId);
+                      await load();
+                    } catch (caught) {
+                      setActionError(toApiError(caught));
+                    }
+                  }}
+                >
+                  Read directory ratings
+                </Button>
+              </div>
             </CardHeader>
-            <CardContent className="pt-2">
-              <AccountTable
-                accounts={held}
-                onCorrect={setCorrecting}
-                onRemove={setPendingRemove}
-              />
+            <CardContent className="space-y-3 pt-2">
+              {inventory.businessProfile ? (
+                <dl className="grid gap-2 text-table sm:grid-cols-2">
+                  <div>
+                    <dt className="text-meta text-muted-foreground">Name</dt>
+                    <dd>{inventory.businessProfile.name ?? '—'}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-meta text-muted-foreground">Rating</dt>
+                    <dd>
+                      {inventory.businessProfile.rating ?? 'No rating on file'}
+                      {inventory.businessProfile.reviewCount !== null
+                        ? ` (${formatNumber(inventory.businessProfile.reviewCount)} reviews)`
+                        : ''}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-meta text-muted-foreground">Fetched</dt>
+                    <dd><Timestamp value={inventory.businessProfile.fetchedAt} /></dd>
+                  </div>
+                </dl>
+              ) : (
+                <EmptyState
+                  variant="not-measured"
+                  subject="Business profile"
+                  prerequisite="Never pulled for this project — DataForSEO Business Data spends real credit per pull."
+                  layout="inline"
+                />
+              )}
+              {inventory.reviews.length > 0 ? (
+                <ul className="space-y-1 text-table">
+                  {inventory.reviews.map((review) => (
+                    <li key={`${review.platform}-${review.id}`}>
+                      <span className="font-medium">{review.platform}</span>: {review.rating ?? '—'} ·{' '}
+                      {review.reviewCount !== null ? `${formatNumber(review.reviewCount)} reviews` : 'count unknown'}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </CardContent>
           </Card>
-        </TabsContent>
 
-        <TabsContent value="candidates" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-subsection">Search-suggested candidates</CardTitle>
+              <CardTitle className="text-subsection">Social activity — performance, not style</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 pt-2">
               <p className="text-meta text-muted-foreground">
-                These were raised by searching, not by reading the client&rsquo;s own site. A search
-                for a brand name reliably returns a similarly named company alongside the real
-                account, and nothing in the result distinguishes them — so a candidate is never
-                counted as an account and never reaches a client report until a person confirms it.
+                §11.5 — posting cadence and reach only. Reply/response-rate is never calculated from
+                captions alone; where reply activity was not collected this omits the metric rather
+                than guessing. The confirmed writing style itself lives in Content → Writing style and
+                is never overwritten by this collection.
               </p>
-              <CandidateTable
-                candidates={candidates}
-                onConfirm={handleConfirm}
-                onReject={setPendingReject}
-              />
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="missing" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-subsection">
-                Expected platforms with no account on file
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 pt-2">
-              <p className="text-meta text-muted-foreground">
-                An entry here is an <strong>observation</strong>, not a failure: no account for this
-                platform was linked from the site and none was supplied by hand. It is the question
-                this screen is asking you, which is why it is never shown in a fault tone.
-              </p>
-              <GapTable gaps={inventory.gaps} />
+              {inventory.socialActivity.length === 0 ? (
+                <EmptyState
+                  variant="not-measured"
+                  subject="Social activity"
+                  prerequisite="No Apify social-activity pull has been run for this project yet — it spends real account credit and is opt-in only."
+                  layout="inline"
+                />
+              ) : (
+                <ul className="space-y-2 text-table">
+                  {inventory.socialActivity.map((row) => (
+                    <li key={row.platform} className="rounded-lg border border-border p-3">
+                      <p className="font-medium">{row.platform}</p>
+                      <p className="text-meta text-muted-foreground">
+                        {row.followerCount !== null ? `${formatNumber(row.followerCount)} followers · ` : ''}
+                        {row.postsSampled} post{row.postsSampled === 1 ? '' : 's'} in the observed sample
+                        {row.lastPostAt ? (
+                          <>
+                            {' · last post '}
+                            <Timestamp value={row.lastPostAt} />
+                          </>
+                        ) : (
+                          ' · no recent posts in the sample'
+                        )}
+                      </p>
+                      <p className="text-meta text-muted-foreground">
+                        {row.avgEngagement !== null
+                          ? `Average engagement: ${formatNumber(Math.round(row.avgEngagement))} per post`
+                          : 'Reply activity is not available.'}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -460,6 +643,35 @@ export default function DigitalFootprintPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {notRelevant.length > 0 ? (
+        <details className="rounded-lg border border-border p-4">
+          <summary className="cursor-pointer text-subsection text-foreground">
+            Not relevant for this business ({notRelevant.length})
+          </summary>
+          <p className="mt-2 text-meta text-muted-foreground">
+            §11.1 — shown here, in settings/details, not as an empty tab elsewhere on this page. A
+            platform reads &ldquo;not relevant&rdquo; from the applicability policy below, never
+            because nothing was found for it.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {notRelevant.map((platform) => (
+              <li key={platform.platform} className="flex flex-wrap items-center justify-between gap-2 text-table">
+                <span>
+                  <span className="font-medium">{platform.label}</span>{' '}
+                  <span className="text-muted-foreground">— {platform.reason}</span>
+                  {platform.overridden ? (
+                    <span className="ml-2 text-meta text-muted-foreground">(staff override)</span>
+                  ) : null}
+                </span>
+                <Button variant="ghost" size="sm" onClick={() => setOverriding(platform)}>
+                  Mark relevant instead
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
 
       {inventory.assessment.notMeasured.length > 0 ? (
         <Card>
@@ -539,28 +751,95 @@ export default function DigitalFootprintPage() {
         onReload={() => void load()}
       />
 
-      <ConfirmDialog
+      <Dialog
         open={pendingReject !== null}
         onOpenChange={(open) => {
-          if (!open) setPendingReject(null);
+          if (!open) {
+            setPendingReject(null);
+            setRejectReason('');
+          }
         }}
-        title="Reject candidate"
-        confirmLabel="Reject candidate"
-        destructive
-        targetLabel="Candidate"
-        target={pendingReject ? `${pendingReject.label} — ${pendingReject.url}` : ''}
-        effect={
-          <>
-            The candidate is deleted. This only discards an unconfirmed search suggestion — no
-            confirmed account is touched.
-          </>
-        }
-        scope={<>Only this project&rsquo;s footprint is affected.</>}
-        onConfirm={async () => {
-          if (pendingReject) await handleReject(pendingReject);
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Not ours</DialogTitle>
+            <DialogDescription>
+              {pendingReject ? `${pendingReject.label} — ${pendingReject.url}` : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="reject-reason">Why is this not the client&rsquo;s account?</Label>
+            <Textarea
+              id="reject-reason"
+              value={rejectReason}
+              onChange={(event) => setRejectReason(event.target.value)}
+              placeholder="e.g. different company, same name — wrong city in their bio"
+              rows={3}
+            />
+            <p className="text-meta text-muted-foreground">
+              Stored as a tombstone keyed to this exact URL — a later discovery or search run will not
+              suggest it again. This can be reconsidered later; nothing is permanently destroyed.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setPendingReject(null);
+                setRejectReason('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={!rejectReason.trim()}
+              onClick={async () => {
+                if (pendingReject) await handleReject(pendingReject, rejectReason);
+              }}
+            >
+              Not ours
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={overriding !== null}
+        onOpenChange={(open) => {
+          if (!open) setOverriding(null);
         }}
-        onReload={() => void load()}
-      />
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Mark as relevant</DialogTitle>
+            <DialogDescription>
+              {overriding ? `${overriding.label} — currently: ${overriding.reason}` : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="override-reason">Why is this relevant for this client?</Label>
+            <Textarea id="override-reason" placeholder="e.g. they do have a showroom customers visit" rows={3} />
+            <p className="text-meta text-muted-foreground">
+              Versioned and persisted — this survives the next rediscovery run rather than being
+              recomputed away.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOverriding(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={async () => {
+                const el = document.getElementById('override-reason') as HTMLTextAreaElement | null;
+                const reason = el?.value.trim() || 'Marked relevant by staff override.';
+                if (overriding) await handleOverride(overriding, 'relevant', reason);
+              }}
+            >
+              Mark relevant
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,122 +1,133 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { AlertTriangle, ClipboardCheck, Copy, Download, RefreshCw } from 'lucide-react';
+import {
+  AlertTriangle,
+  CalendarDays,
+  CheckCircle2,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  History,
+  Loader2,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+  Sparkles,
+} from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyState } from '@/components/patterns/EmptyState';
 import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
 import { PageHeader } from '@/components/patterns/PageHeader';
-import { ProvenanceBadge } from '@/components/patterns/ProvenanceBadge';
-import { StatusPill } from '@/components/patterns/StatusPill';
+import { StatusPill, type StatusTone } from '@/components/patterns/StatusPill';
 import { Timestamp } from '@/components/patterns/Timestamp';
-import { formatNumber, notMeasuredLabel } from '@/lib/format';
+import { GenerationDialog } from '@/components/content/GenerationDialog';
+import { formatNumber } from '@/lib/format';
+import { createApproval } from '@/services/approvals';
 import {
-  ASSET_TYPE_LABELS,
-  checkCopy,
-  getAssetContent,
-  isGeneratable,
+  generationImplementedFor,
+  getContentWorkspaceItem,
+  listContentCapabilities,
+  setContentAssignee,
+  shareRevision,
+  unshareRevision,
+  type ContentCapability,
+  type ContentWorkspaceDetail,
+  type ContentWorkspaceRevisionSummary,
+} from '@/services/content-workspace';
+import {
   listAssetRevisions,
-  recordAssetLifecycle,
   saveAssetContent,
   versionConflictOf,
-  type AssetContent,
   type ContentRevision,
-  type CopyCheckReport,
   type VersionConflict,
 } from '@/services/content';
+import { listTeamMembers, type TeamMember } from '@/services/delivery-plan';
+import { createSleeperPage, listSleeperPages, type SleeperPage } from '@/services/refreshes';
 
 /**
- * CT04 — Content detail and editor.
+ * P08 — the staff content detail, to §13.5's anatomy:
+ * **header / preview-editor / content plan / review / schedule / history.**
  *
- * design_plan.md §4.4: *"Article fields/Markdown/FAQ/JSON-LD or ad variants;
- * preview/export, QA, revisions, source facts."* §5.8 Stage D is the detail:
- * the article panel carries title, meta description, slug, Markdown body, word
- * count, FAQ pairs, JSON-LD and the generation model; the ad panel carries each
- * variant **and its character counts**, with the caveat that *"model
- * instructions do not guarantee ad-platform limits."*
+ * The organising constraint is §13.4: there is no single "status" on this page.
+ * The header shows the derived `primaryBadge` *and* all four axes, because the
+ * badge is a summary and the axes are the facts — a piece that is
+ * `published` with `updateState: revision-in-progress` must say both, or the
+ * reader will conclude the live page is a draft.
  *
- * Three rules shape the editor:
+ * Two further rules are load-bearing here:
  *
- *  1. **Every save is a new immutable revision, guarded by `expectedVersion`.**
- *     A save that quotes a stale version is a 409, and this screen shows the
- *     server's version beside the local draft and asks what to do — it never
- *     claims a save that did not happen, and it never silently overwrites a
- *     concurrent edit (§3.5 "Concurrent update").
- *  2. **Nothing outside this editor has a persistence story.** There is no
- *     rich-text backend and no autosave; the stored original is revision N, and
- *     the export path says so plainly so a copy edited in another tool is not
- *     mistaken for the stored draft.
- *  3. **A generated draft, an external edit and a published URL are three
- *     different facts.** The revision's origin and the asset's lifecycle status
- *     are labelled separately, and "Record as published" is named for what it
- *     does — it records a URL a human published, it does not publish anything.
+ *  - **§13.5/§14.4 — sharing is per revision and explicit.** The Share control
+ *    acts on one revision id and is the only thing on this page that changes
+ *    what a client can see. Unshare is offered beside it, because a share that
+ *    cannot be taken back is not consent.
+ *  - **§13.9 — no fake Generate.** "Create another version" only exists when
+ *    the capability matrix says a writer exists for this type. Otherwise the
+ *    page offers the manual path and says why, rather than a button that would
+ *    fail after the click.
+ *
+ * Editing is deliberately *not* reimplemented: the save path is the existing
+ * revision endpoint (`PATCH .../assets/:id/content`), guarded by
+ * `expectedVersion`, so a concurrent edit is a visible 409 rather than a silent
+ * overwrite (§3.5).
  */
 
-const HEADLINE_TARGET = 30;
-const DESCRIPTION_TARGET = 90;
-
-interface DraftState {
-  title: string;
-  body: string;
-  /** The whole `fields` object, so unknown keys survive a save. */
-  fields: Record<string, unknown>;
-}
-
-export default function ContentAssetPage() {
+export default function ContentDetailPage() {
   const params = useParams<{ projectId: string; assetId: string }>();
-  const projectId = params.projectId;
-  const assetId = params.assetId;
+  const { projectId, assetId } = params;
 
-  const [asset, setAsset] = useState<AssetContent | null>(null);
-  const [revisions, setRevisions] = useState<ContentRevision[] | null>(null);
+  const [detail, setDetail] = useState<ContentWorkspaceDetail | null>(null);
   const [loadError, setLoadError] = useState<ReturnType<typeof toApiError> | null>(null);
-  const [revisionError, setRevisionError] = useState<ReturnType<typeof toApiError> | null>(null);
-  const [draft, setDraft] = useState<DraftState | null>(null);
+  const [capabilities, setCapabilities] = useState<ContentCapability[] | undefined>(undefined);
+  const [team, setTeam] = useState<TeamMember[] | null>(null);
+  const [teamRefused, setTeamRefused] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  // §13.5 preview-editor: the current revision is the editable one; a history
+  // row can be opened read-only so staff can confirm what was actually sent.
+  const [draft, setDraft] = useState<{ title: string; body: string; fields: Record<string, unknown> } | null>(null);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<ReturnType<typeof toApiError> | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<VersionConflict | null>(null);
-  const [savedAt, setSavedAt] = useState<string | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [checkReport, setCheckReport] = useState<CopyCheckReport | null>(null);
-  const [checkError, setCheckError] = useState<ReturnType<typeof toApiError> | null>(null);
-  const [checkedRevision, setCheckedRevision] = useState<number | null>(null);
-  const [publishOpen, setPublishOpen] = useState(false);
-  const [publishUrl, setPublishUrl] = useState('');
-  const [publishError, setPublishError] = useState<ReturnType<typeof toApiError> | null>(null);
-  const [publishing, setPublishing] = useState(false);
-  const [copied, setCopied] = useState(false);
-  // §10.4 double-submit protection: a ref, so two clicks in one tick cannot
-  // both pass the guard before state updates.
-  const saveInFlight = useRef(false);
+  const [historyBodies, setHistoryBodies] = useState<ContentRevision[] | null>(null);
+  const [viewingRevisionId, setViewingRevisionId] = useState<string | null>(null);
+
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [refreshPages, setRefreshPages] = useState<SleeperPage[] | null>(null);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
       try {
         setLoadError(null);
-        const [assetContent, revisionList] = await Promise.all([
-          getAssetContent(projectId, assetId, { signal }),
-          listAssetRevisions(projectId, assetId, { signal }),
-        ]);
-        setAsset(assetContent);
-        setRevisions(revisionList.revisions);
-        setDraft(draftFrom(assetContent));
+        const result = await getContentWorkspaceItem(projectId, assetId, { signal });
+        setDetail(result);
+        setDraft(
+          result.currentRevision
+            ? {
+                title: result.currentRevision.title ?? result.title,
+                body: result.currentRevision.body ?? '',
+                fields: result.currentRevision.fields ?? {},
+              }
+            : { title: result.title, body: '', fields: {} },
+        );
+        setViewingRevisionId(null);
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === 'AbortError') return;
         setLoadError(toApiError(caught));
@@ -125,172 +136,198 @@ export default function ContentAssetPage() {
     [projectId, assetId],
   );
 
-  const loadRevisions = useCallback(
-    async (signal?: AbortSignal) => {
-      try {
-        setRevisionError(null);
-        const result = await listAssetRevisions(projectId, assetId, { signal });
-        setRevisions(result.revisions);
-      } catch (caught) {
-        if (caught instanceof DOMException && caught.name === 'AbortError') return;
-        setRevisionError(toApiError(caught));
-      }
-    },
-    [projectId, assetId],
-  );
-
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);
+    void listContentCapabilities(projectId, { signal: controller.signal })
+      .then(setCapabilities)
+      .catch(() => setCapabilities([]));
+    void listTeamMembers({ signal: controller.signal })
+      .then((members) => {
+        setTeam(members);
+        setTeamRefused(false);
+      })
+      .catch((caught) => {
+        if (caught instanceof DOMException && caught.name === 'AbortError') return;
+        setTeamRefused(true);
+      });
     return () => controller.abort();
-  }, [load]);
+  }, [load, projectId]);
 
-  const stored = asset?.current ?? null;
-  const isAdCopy = asset?.assetType === 'ad-copy';
+  // §13.11 — the refresh mechanism is read, not reimplemented: this only asks
+  // whether this piece's live URL is already tracked for refresh.
+  const liveUrl = detail?.publicationSummary.placements.find((p) => p.remoteUrl)?.remoteUrl ?? null;
+  useEffect(() => {
+    if (!liveUrl) return;
+    const controller = new AbortController();
+    void listSleeperPages(projectId, {}, { signal: controller.signal })
+      .then(setRefreshPages)
+      .catch(() => setRefreshPages([]));
+    return () => controller.abort();
+  }, [projectId, liveUrl]);
 
-  const dirty = useMemo(() => {
-    if (!asset || !draft) return false;
-    const sameTitle = draft.title === (stored?.title ?? asset.title);
-    const sameBody = isAdCopy ? true : draft.body === (stored?.body ?? '');
-    const sameFields = JSON.stringify(draft.fields) === JSON.stringify(stored?.fields ?? {});
-    return !sameTitle || !sameBody || !sameFields;
-  }, [asset, draft, stored, isAdCopy]);
+  const runAction = useCallback(
+    async (key: string, action: () => Promise<unknown>, notice?: string) => {
+      setBusy(key);
+      setActionError(null);
+      setActionNotice(null);
+      try {
+        await action();
+        if (notice) setActionNotice(notice);
+        await load();
+      } catch (caught) {
+        setActionError(
+          caught instanceof Error ? caught.message : 'That action could not be completed.',
+        );
+      } finally {
+        setBusy(null);
+      }
+    },
+    [load],
+  );
 
-  const draftWords = draft ? countWords(isAdCopy ? '' : draft.body) : 0;
-
-  async function onSave() {
-    if (!asset || !draft || saveInFlight.current) return;
-    saveInFlight.current = true;
+  const save = useCallback(async () => {
+    if (!detail || !draft) return;
     setSaving(true);
     setSaveError(null);
+    setConflict(null);
     try {
-      const saved = await saveAssetContent(projectId, assetId, {
-        title: draft.title.trim() || asset.title,
-        // Ad copy has no single prose body — its content lives in `fields`.
-        ...(isAdCopy ? {} : { body: draft.body }),
-        // Sent whole: the server falls back per key, so a partial object would
-        // silently drop the keys left out (including generated JSON-LD).
+      await saveAssetContent(projectId, assetId, {
+        title: draft.title,
+        body: draft.body,
         fields: draft.fields,
-        expectedVersion: asset.currentVersion,
+        // The version this edit was based on. A newer revision makes this a
+        // 409 — the save is refused and the server's state is shown, never
+        // overwritten.
+        expectedVersion: detail.currentVersion,
       });
-      setAsset(saved);
-      setDraft(draftFrom(saved));
-      setConflict(null);
-      setSavedAt(saved.current?.createdAt ?? null);
-      await loadRevisions();
+      await load();
+      setActionNotice('Saved as a new revision. The previous revision is unchanged.');
     } catch (caught) {
-      if (caught instanceof DOMException && caught.name === 'AbortError') return;
-      const stale = versionConflictOf(caught);
-      if (stale) {
-        // Preserve the local draft and surface the server's version — never a
-        // silent overwrite, and never a "Saved" claim.
-        setConflict(stale);
-        await load();
-      } else {
-        setSaveError(toApiError(caught));
-      }
+      const asConflict = versionConflictOf(caught);
+      if (asConflict) setConflict(asConflict);
+      else setSaveError(caught instanceof Error ? caught.message : 'The save failed.');
     } finally {
-      saveInFlight.current = false;
       setSaving(false);
     }
-  }
+  }, [detail, draft, projectId, assetId, load]);
 
-  async function onCheck() {
-    if (!draft) return;
-    setChecking(true);
-    setCheckError(null);
-    try {
-      const copy = isAdCopy ? adCopyAsText(draft) : `${draft.title}\n\n${draft.body}`;
-      const report = await checkCopy(projectId, copy.slice(0, 5000));
-      setCheckReport(report);
-      setCheckedRevision(asset?.currentVersion ?? null);
-    } catch (caught) {
-      setCheckError(toApiError(caught));
-    } finally {
-      setChecking(false);
-    }
-  }
+  const previewRevision = useCallback(
+    async (revisionId: string) => {
+      setBusy(`preview-${revisionId}`);
+      try {
+        if (!historyBodies) {
+          const result = await listAssetRevisions(projectId, assetId);
+          setHistoryBodies(result.revisions);
+        }
+        setViewingRevisionId(revisionId);
+      } catch (caught) {
+        setActionError(caught instanceof Error ? caught.message : 'That revision could not be read.');
+      } finally {
+        setBusy(null);
+      }
+    },
+    [historyBodies, projectId, assetId],
+  );
 
-  async function onRecordPublished() {
-    setPublishing(true);
-    setPublishError(null);
-    try {
-      await recordAssetLifecycle(projectId, assetId, {
-        status: 'published',
-        ...(publishUrl.trim() ? { assetUrl: publishUrl.trim() } : {}),
-      });
-      setPublishOpen(false);
-      await load();
-    } catch (caught) {
-      setPublishError(toApiError(caught));
-    } finally {
-      setPublishing(false);
-    }
-  }
+  const viewedRevision = useMemo(
+    () => (viewingRevisionId ? historyBodies?.find((r) => r.id === viewingRevisionId) ?? null : null),
+    [viewingRevisionId, historyBodies],
+  );
 
-  const exportText = draft && asset ? buildExport(asset, draft, isAdCopy) : '';
+  const capabilityRow = capabilities?.find((entry) => entry.assetType === detail?.assetType);
+  const generationImplemented = generationImplementedFor(capabilities, detail?.assetType ?? '');
+  const trackedRefresh = useMemo(
+    () => (liveUrl ? (refreshPages ?? []).find((page) => page.url === liveUrl) ?? null : null),
+    [liveUrl, refreshPages],
+  );
 
-  async function onCopy() {
-    try {
-      await navigator.clipboard.writeText(exportText);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-      setCopied(false);
-    }
-  }
+  const pendingApproval = useMemo(() => {
+    if (!detail) return null;
+    return (
+      detail.approvals.find(
+        (approval) =>
+          approval.status === 'pending' &&
+          approval.reviewerType === 'client' &&
+          approval.artifactRevision === detail.currentVersion,
+      ) ?? null
+    );
+  }, [detail]);
 
   if (loadError) {
     return (
       <div className="space-y-6">
-        <PageHeader title="Content asset" breadcrumbs={[{ label: 'Content', href: contentHref(projectId) }]} />
+        <PageHeader title="Content" breadcrumbs={[{ label: 'Content', href: `/projects/${projectId}/content` }]} />
         <ErrorState error={loadError} onRetry={() => void load()} />
       </div>
     );
   }
 
-  if (!asset || !draft) {
+  if (!detail) {
     return (
       <div className="space-y-6">
-        <Skeleton className="h-9 w-72" />
-        <Skeleton className="h-20 rounded-xl" />
+        <PageHeader title="Content" breadcrumbs={[{ label: 'Content', href: `/projects/${projectId}/content` }]} />
         <Skeleton className="h-96 rounded-xl" />
       </div>
     );
   }
 
-  const revisionLabel =
-    asset.currentVersion === 0
-      ? 'No revision saved yet'
-      : `Revision ${asset.currentVersion}`;
+  const currentRevision = detail.currentRevision;
+  const sharedCount = detail.revisions.filter((revision) => revision.clientVisible).length;
 
   return (
     <div className="space-y-6">
+      {/* ── §13.5 header ─────────────────────────────────────────────── */}
       <PageHeader
-        breadcrumbs={[{ label: 'Content', href: contentHref(projectId) }]}
-        title={draft.title || asset.title}
+        breadcrumbs={[
+          { label: 'Content', href: `/projects/${projectId}/content` },
+          { label: detail.title },
+        ]}
+        title={detail.title}
         context={
-          <span className="flex flex-wrap items-center gap-2">
-            <span>{ASSET_TYPE_LABELS[asset.assetType]}</span>
-            <StatusPill label={lifecycleLabel(asset.status)} tone={lifecycleTone(asset.status)} />
-            <span className="text-muted-foreground">{revisionLabel}</span>
-            {stored?.origin ? <ProvenanceBadge kind={originProvenance(stored.origin)} /> : null}
+          <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span>{capabilityRow?.label ?? detail.assetType}</span>
+            {detail.market ? <span>{detail.market}</span> : null}
+            {detail.language ? <span>{detail.language}</span> : null}
+            {detail.sourceOpportunityId ? (
+              <Link
+                href={`/projects/${projectId}/content/opportunities`}
+                className="text-primary underline-offset-4 hover:underline"
+              >
+                From an idea
+              </Link>
+            ) : null}
           </span>
         }
-        primaryAction={{
-          label: saving ? 'Saving…' : dirty ? `Save as revision ${asset.currentVersion + 1}` : 'Save revision',
-          onClick: () => void onSave(),
-          disabled: saving || conflict !== null,
-          disabledReason: conflict
-            ? 'The server has a newer revision. Resolve the conflict below before saving.'
-            : 'Nothing has changed since this revision was loaded.',
-        }}
+        status={<AxisStrip detail={detail} />}
+        primaryAction={
+          generationImplemented === true
+            ? {
+                label: 'Create another version',
+                icon: <Sparkles />,
+                onClick: () => setDialogOpen(true),
+                disabledReason: undefined,
+              }
+            : {
+                label: 'Create another version',
+                disabled: true,
+                disabledReason:
+                  generationImplemented === false
+                    ? `No tested writer exists for ${capabilityRow?.label ?? detail.assetType}. A new revision is still available by editing below — that records your text as revision ${detail.currentVersion + 1}.`
+                    : 'Checking whether a writer exists for this type.',
+              }
+        }
         secondaryActions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button asChild variant="outline" size="sm">
-              <Link href={contentHref(projectId)}>Asset library</Link>
+              <Link href={`/projects/${projectId}/content/writing-style`}>Writing style</Link>
             </Button>
-            <Button variant="outline" size="sm" onClick={() => void load()}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void load()}
+              disabled={busy === 'reload'}
+            >
               <RefreshCw aria-hidden="true" className="mr-2 h-4 w-4" />
               Reload
             </Button>
@@ -298,978 +335,633 @@ export default function ContentAssetPage() {
         }
       />
 
-      {/* §5.8 Stage D: pre-G09 content lives on the asset row, not in a revision. */}
-      {asset.legacyContentOnly ? (
-        <Alert>
+      {actionError ? (
+        <Alert variant="destructive">
           <AlertTriangle aria-hidden="true" className="h-4 w-4" />
-          <AlertTitle>This content was never saved as a revision</AlertTitle>
-          <AlertDescription>
-            No revision exists for this asset yet. What is shown is the text the generator wrote
-            directly onto the record before revisions existed — read-only context. Your first save
-            creates revision 1 and leaves this original where it is.
-          </AlertDescription>
+          <AlertTitle>That action did not complete</AlertTitle>
+          <AlertDescription>{actionError}</AlertDescription>
+        </Alert>
+      ) : null}
+      {actionNotice ? (
+        <Alert>
+          <CheckCircle2 aria-hidden="true" className="h-4 w-4" />
+          <AlertTitle>Done</AlertTitle>
+          <AlertDescription>{actionNotice}</AlertDescription>
         </Alert>
       ) : null}
 
-      {conflict ? (
-        <ConflictPanel
-          conflict={conflict}
-          draft={draft}
-          isAdCopy={isAdCopy}
-          onUseServer={() => {
-            setDraft(draftFrom(asset));
-            setConflict(null);
-          }}
-          onKeepMine={() => {
-            // The operator has seen both versions. Adopting the server's version
-            // number is what makes the next save a real write on top of it rather
-            // than a second 409.
-            setAsset({ ...asset, currentVersion: conflict.currentVersion });
-            setConflict(null);
-          }}
-        />
-      ) : null}
-
-      {saveError ? (
-        <ErrorState
-          error={saveError}
-          layout="inline"
-          preserveNotice="Your draft is still in this editor and has not been lost."
-        />
-      ) : null}
-
-      {/*
-        A save is only announced while the editor still matches what was saved.
-        The moment a field changes, the claim stops being true, so it is not
-        shown — the alternative is a stale "Saved" that hides unsaved work.
-      */}
-      {savedAt && !dirty ? (
-        <p className="text-table text-success-foreground" role="status">
-          Saved as revision {asset.currentVersion} · <Timestamp value={savedAt} />
-        </p>
-      ) : null}
-
-      <Tabs defaultValue="edit">
-        <TabsList>
-          <TabsTrigger value="edit">Editor</TabsTrigger>
-          <TabsTrigger value="preview">Preview &amp; export</TabsTrigger>
-          <TabsTrigger value="qa">Quality check</TabsTrigger>
-          <TabsTrigger value="revisions">
-            Revisions{revisions ? ` (${revisions.length})` : ''}
-          </TabsTrigger>
-        </TabsList>
-
-        {/* ── Editor ─────────────────────────────────────────────────── */}
-        <TabsContent value="edit" className="space-y-4">
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="space-y-6 lg:col-span-2">
+          {/* ── §13.5 preview-editor ─────────────────────────────────── */}
           <Card>
-            <CardHeader>
-              <CardTitle className="text-subsection">Fields</CardTitle>
+            <CardHeader className="flex-row items-center justify-between gap-2">
+              <CardTitle className="text-subsection">Preview and editor</CardTitle>
+              <div className="flex items-center gap-2">
+                {viewingRevisionId ? (
+                  <Button variant="ghost" size="sm" onClick={() => setViewingRevisionId(null)}>
+                    Back to the current revision
+                  </Button>
+                ) : null}
+                <Button
+                  size="sm"
+                  onClick={() => void save()}
+                  disabled={saving || viewingRevisionId !== null}
+                >
+                  {saving ? <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Save as revision {detail.currentVersion + 1}
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <p className="text-meta text-muted-foreground">
-                Editing here is plain text, not a rich-text document: a save stores the exact text
-                you see as a new revision. Earlier revisions are never modified.
-              </p>
-
-              <div className="space-y-2">
-                <Label htmlFor="asset-title">Title</Label>
-                <Input
-                  id="asset-title"
-                  value={draft.title}
-                  onChange={(event) => setDraft({ ...draft, title: event.target.value })}
-                />
-              </div>
-
-              {isAdCopy ? (
-                <AdCopyFields
-                  fields={draft.fields}
-                  onChange={(fields) => setDraft({ ...draft, fields })}
-                />
-              ) : (
-                <ArticleFields
-                  fields={draft.fields}
-                  onChange={(fields) => setDraft({ ...draft, fields })}
-                  body={draft.body}
-                  onBodyChange={(body) => setDraft({ ...draft, body })}
-                />
-              )}
-
-              <div className="flex flex-wrap items-center gap-4 border-t border-border pt-3 text-meta text-muted-foreground">
-                <span>
-                  {isAdCopy
-                    ? 'Ad copy has no prose body — all of its content is in the variants above.'
-                    : `${formatNumber(draftWords)} words in this draft (counted here; the server recounts on save)`}
-                </span>
-                {stored ? (
-                  <span>
-                    Stored at revision {stored.revision}: {formatNumber(stored.wordCount)} words
-                  </span>
-                ) : null}
-                {stored?.contentHash ? (
-                  <span title={stored.contentHash}>
-                    Content digest {stored.contentHash.slice(0, 12)}…
-                  </span>
-                ) : null}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-subsection">Source facts</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2 pt-2 text-table">
-              <dl className="grid gap-1 sm:grid-cols-2">
-                <div className="flex justify-between gap-4 sm:flex-col sm:gap-0">
-                  <dt className="text-muted-foreground">Generated from brief</dt>
-                  <dd className="font-medium text-foreground">
-                    {stored?.briefId
-                      ? `${stored.briefId.slice(0, 10)}… at v${stored.briefVersion ?? notMeasuredLabel()}`
-                      : 'No brief recorded on this revision'}
-                  </dd>
-                </div>
-                <div className="flex justify-between gap-4 sm:flex-col sm:gap-0">
-                  <dt className="text-muted-foreground">Revision origin</dt>
-                  <dd className="font-medium text-foreground">
-                    {stored ? originLabel(stored.origin) : notMeasuredLabel()}
-                  </dd>
-                </div>
-                <div className="flex justify-between gap-4 sm:flex-col sm:gap-0">
-                  <dt className="text-muted-foreground">Saved</dt>
-                  <dd className="font-medium text-foreground">
-                    {stored ? <Timestamp value={stored.createdAt} /> : notMeasuredLabel()}
-                  </dd>
-                </div>
-                <div className="flex justify-between gap-4 sm:flex-col sm:gap-0">
-                  <dt className="text-muted-foreground">Lifecycle</dt>
-                  <dd className="font-medium text-foreground">{lifecycleLabel(asset.status)}</dd>
-                </div>
-              </dl>
-              {!isGeneratable(asset.assetType) ? (
-                <p className="text-meta text-muted-foreground">
-                  This asset type is brief-only: it is never machine-generated, so any text here was
-                  written or pasted in by a person.
-                </p>
-              ) : null}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* ── Preview & export ───────────────────────────────────────── */}
-        <TabsContent value="preview" className="space-y-4">
-          <Card>
-            <CardHeader className="flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-subsection">Preview</CardTitle>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button variant="outline" size="sm" onClick={() => void onCopy()}>
-                  <Copy aria-hidden="true" className="mr-2 h-4 w-4" />
-                  {copied ? 'Copied' : 'Copy draft'}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => downloadText(exportFilename(asset, draft), exportText)}
-                >
-                  <Download aria-hidden="true" className="mr-2 h-4 w-4" />
-                  Download draft
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3 pt-2">
-              <p className="text-meta text-muted-foreground">
-                Shown as plain text on purpose: the stored source is the Markdown you see, and
-                rendered HTML from stored content is not treated as trusted markup.
-              </p>
-              <pre className="evidence max-h-[32rem] overflow-y-auto rounded-md border border-border bg-surface-sunken p-3">
-                {exportText}
-              </pre>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-subsection">Working outside Cailyx</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2 pt-2 text-table">
-              <p className="text-muted-foreground">
-                Until an editorial integration exists, the approved process is to copy or download
-                this draft into your own editorial tool. Two things follow from that:
-              </p>
-              <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
-                <li>
-                  Edits made outside Cailyx do not come back on their own. Paste the finished text
-                  back into the editor and save so the stored revision matches what shipped.
-                </li>
-                <li>
-                  Exported text is revision {asset.currentVersion}, not the live page. Nothing here
-                  publishes anything.
-                </li>
-              </ul>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* ── QA ─────────────────────────────────────────────────────── */}
-        <TabsContent value="qa" className="space-y-4">
-          <Card>
-            <CardHeader className="flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-subsection">Claims discipline check</CardTitle>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void onCheck()}
-                disabled={checking}
-                aria-busy={checking}
-              >
-                <ClipboardCheck aria-hidden="true" className="mr-2 h-4 w-4" />
-                {checking ? 'Checking…' : 'Check this draft'}
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-3 pt-2">
-              <p className="text-meta text-muted-foreground">
-                A deterministic check for banned phrases, numeric statements that need a graded
-                source, and rate claims without multi-run provenance. It reads the text in this
-                editor — it does not grade a live page, and the generator is not automatically
-                protected by the claim-approval workflow, so running this is a deliberate step.
-              </p>
-
-              {checkError ? (
-                <ErrorState
-                  error={checkError}
-                  layout="inline"
-                  onRetry={() => void onCheck()}
-                  preserveNotice="This is a read-only check; no draft was changed."
-                />
-              ) : null}
-
-              {!checkReport && !checkError ? (
-                <p className="text-table text-muted-foreground">
-                  No check has been run for this draft yet.
-                </p>
-              ) : null}
-
-              {checkReport ? (
+              {viewingRevisionId ? (
                 <div className="space-y-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <StatusPill
-                      label={
-                        checkReport.result === 'passed' ? 'Passed' : checkResultLabel(checkReport.result)
+                  <p className="text-meta text-muted-foreground">
+                    Revision {viewedRevision?.revision ?? '—'} — read-only, as saved. Editing always
+                    happens on the current revision.
+                  </p>
+                  <h3 className="text-subsection font-medium">{viewedRevision?.title ?? 'Untitled'}</h3>
+                  <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-surface-sunken p-3 text-table">
+                    {viewedRevision?.body ?? 'This revision has no stored body.'}
+                  </pre>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="revision-title">Title</Label>
+                    <Input
+                      id="revision-title"
+                      value={draft?.title ?? ''}
+                      onChange={(event) =>
+                        setDraft((current) => (current ? { ...current, title: event.target.value } : current))
                       }
-                      tone={checkReport.result === 'passed' ? 'success' : 'danger'}
                     />
-                    <span className="text-meta text-muted-foreground">
-                      Checked the text of revision {checkedRevision ?? asset.currentVersion}. This
-                      result is not stored against the revision by this screen.
-                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="revision-body">Body</Label>
+                    <Textarea
+                      id="revision-body"
+                      rows={18}
+                      className="font-mono text-table"
+                      value={draft?.body ?? ''}
+                      onChange={(event) =>
+                        setDraft((current) => (current ? { ...current, body: event.target.value } : current))
+                      }
+                    />
+                    <p className="text-meta text-muted-foreground">
+                      {formatNumber((draft?.body ?? '').trim().split(/\s+/).filter(Boolean).length)} words ·
+                      current revision {detail.currentVersion}
+                      {currentRevision ? ` · ${currentRevision.origin.replace('-', ' ')}` : ''}
+                      {currentRevision ? (
+                        <>
+                          {' · '}
+                          <Timestamp value={currentRevision.createdAt} />
+                        </>
+                      ) : null}
+                    </p>
                   </div>
 
-                  {checkReport.banned.length > 0 ? (
-                    <div>
-                      <h4 className="text-table font-medium text-foreground">Banned phrases</h4>
-                      <ul className="list-disc space-y-1 pl-5 text-table">
-                        {checkReport.banned.map((hit, index) => (
-                          <li key={`${hit.phrase}-${index}`}>
-                            <span className="font-medium">{hit.phrase}</span> — matched “
-                            {hit.match}”
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
+                  {conflict ? (
+                    <Alert variant="destructive">
+                      <AlertTriangle aria-hidden="true" className="h-4 w-4" />
+                      <AlertTitle>Someone saved a newer revision while you were editing</AlertTitle>
+                      <AlertDescription className="space-y-2">
+                        <p>
+                          The server is at revision {conflict.currentVersion}; your editor is based on
+                          revision {detail.currentVersion}. Nothing was overwritten.
+                        </p>
+                        <Button variant="outline" size="sm" onClick={() => void load()}>
+                          Load the server&apos;s revision and discard my unsaved text
+                        </Button>
+                      </AlertDescription>
+                    </Alert>
                   ) : null}
-
-                  {checkReport.numericClaims.length > 0 ? (
-                    <div>
-                      <h4 className="text-table font-medium text-foreground">
-                        Numbers needing a graded source
-                      </h4>
-                      <ul className="list-disc space-y-1 pl-5 text-table">
-                        {checkReport.numericClaims.map((claim, index) => (
-                          <li key={index}>{claim}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-
-                  {checkReport.singleRunRate ? (
-                    <p className="text-table text-warning-foreground">
-                      This copy states a rate without multi-run provenance. A single observation is
-                      not a rate.
-                    </p>
-                  ) : null}
-
-                  {checkReport.violations.length > 0 ? (
-                    <div>
-                      <h4 className="text-table font-medium text-foreground">Violations</h4>
-                      <ul className="list-disc space-y-1 pl-5 text-table">
-                        {checkReport.violations.map((violation, index) => (
-                          <li key={index}>{violation}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
+                  {saveError ? <p className="text-table text-warning-foreground">{saveError}</p> : null}
                 </div>
-              ) : null}
+              )}
             </CardContent>
           </Card>
-        </TabsContent>
 
-        {/* ── Revisions ──────────────────────────────────────────────── */}
-        <TabsContent value="revisions" className="space-y-4">
+          {/* ── §13.5 content plan ───────────────────────────────────── */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-subsection">Revision history</CardTitle>
+              <CardTitle className="text-subsection">Content plan</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3 pt-2">
-              <p className="text-meta text-muted-foreground">
-                Revisions are immutable. Loading an older one into the editor does not restore it —
-                saving writes a new revision on top of the current one.
-              </p>
-
-              {revisionError ? (
-                <ErrorState
-                  error={revisionError}
-                  layout="inline"
-                  onRetry={() => void loadRevisions()}
-                  preserveNotice="The editor above still holds your draft."
-                />
-              ) : null}
-
-              {revisions && revisions.length === 0 ? (
-                <EmptyState variant="not-measured" subject="saved revisions">
-                  No revision has been saved for this asset. Generate it from an approved brief or
-                  write a first draft and save.
+            <CardContent>
+              {detail.brief ? (
+                <dl className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Plan" value={`${detail.brief.title} · v${detail.brief.version}`} />
+                  <Field label="Approval" value={detail.brief.status} />
+                  <Field label="Audience" value={detail.brief.audience} />
+                  <Field label="Intent" value={detail.brief.intent} />
+                  <Field label="Angle" value={detail.brief.angle} />
+                  <Field
+                    label="Length target"
+                    value={detail.brief.wordTarget ? `${formatNumber(detail.brief.wordTarget)} words` : null}
+                  />
+                  <Field
+                    label="Must include"
+                    value={detail.brief.mustInclude.length > 0 ? detail.brief.mustInclude.join(' · ') : null}
+                    wide
+                  />
+                  <Field
+                    label="Source references"
+                    value={
+                      detail.brief.references.length > 0
+                        ? detail.brief.references.map((reference) => reference.note || reference.url).join(' · ')
+                        : null
+                    }
+                    wide
+                  />
+                </dl>
+              ) : (
+                <EmptyState
+                  variant="not-measured"
+                  subject="a content plan"
+                  prerequisite="attach an approved plan before generating, or promote an idea"
+                  action={{ label: 'Open content opportunities', href: `/projects/${projectId}/content/opportunities` }}
+                >
+                  This piece has no instruction set. Generation is refused without an approved plan
+                  rather than writing from a topic alone.
                 </EmptyState>
-              ) : null}
+              )}
+            </CardContent>
+          </Card>
 
-              {revisions && revisions.length > 0 ? (
+          {/* ── §13.5 schedule ───────────────────────────────────────── */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-subsection">Schedule and placements</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {detail.publications.length === 0 ? (
+                <p className="text-table text-muted-foreground">
+                  No destination is scheduled for this piece. A placement is what publishes a
+                  revision — until one exists, this content is not live anywhere.
+                </p>
+              ) : (
                 <ul className="divide-y divide-border">
-                  {revisions.map((revision) => (
+                  {detail.publications.map((placement) => (
                     <li
-                      key={revision.id}
-                      className="flex flex-wrap items-start justify-between gap-3 py-3"
+                      key={placement.id}
+                      className="flex flex-wrap items-center justify-between gap-2 py-2"
                     >
                       <div className="min-w-0">
-                        <p className="text-table font-medium text-foreground">
-                          Revision {revision.revision}
-                          <span className="ml-2 text-meta text-muted-foreground">
-                            {originLabel(revision.origin)}
-                          </span>
-                          {revision.revision === asset.currentVersion ? (
-                            <span className="ml-2 text-meta text-muted-foreground">
-                              (current)
-                            </span>
-                          ) : null}
+                        <p className="text-table text-foreground">
+                          {placement.provider || 'Destination'} · {placement.mode}
                         </p>
                         <p className="text-meta text-muted-foreground">
-                          <Timestamp value={revision.createdAt} /> ·{' '}
-                          {formatNumber(revision.wordCount)} words
-                          {revision.briefVersion !== null
-                            ? ` · brief v${revision.briefVersion}`
-                            : ' · no brief recorded'}
-                          {revision.authorId ? ` · ${revision.authorId}` : ''}
+                          {placement.scheduledFor ? (
+                            <>
+                              <CalendarDays aria-hidden="true" className="mr-1 inline h-3 w-3" />
+                              <Timestamp value={placement.scheduledFor} dateOnly />
+                            </>
+                          ) : (
+                            'No date set'
+                          )}
+                          {placement.revisionNumber !== null
+                            ? ` · publishes revision ${placement.revisionNumber}`
+                            : ''}
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => {
-                            setDraft({
-                              title: revision.title ?? draft.title,
-                              body: revision.body ?? '',
-                              fields: deepCopy(revision.fields),
-                            });
-                            setSavedAt(null);
-                          }}
-                        >
-                          Load into editor
-                        </Button>
+                        <StatusPill label={placement.status} tone={placementTone(placement.status)} />
+                        {placement.remoteUrl ? (
+                          <a
+                            href={placement.remoteUrl}
+                            className="inline-flex items-center gap-1 text-table text-primary underline-offset-4 hover:underline"
+                          >
+                            Live page
+                            <ExternalLink aria-hidden="true" className="h-3 w-3" />
+                          </a>
+                        ) : null}
                       </div>
                     </li>
                   ))}
                 </ul>
+              )}
+
+              {/* §13.11 — the refresh mechanism, reused rather than rebuilt. */}
+              <div className="rounded-lg border border-border bg-surface-sunken p-3">
+                <p className="text-table font-medium text-foreground">Update this page</p>
+                {!liveUrl ? (
+                  <p className="mt-1 text-meta text-muted-foreground">
+                    This piece has no live URL yet, so there is nothing to update. A refresh is
+                    tracked against the page that is actually published.
+                  </p>
+                ) : trackedRefresh ? (
+                  <p className="mt-1 text-meta text-muted-foreground">
+                    {trackedRefresh.url} is already tracked as{' '}
+                    <StatusPill label={trackedRefresh.status.replace(/-/g, ' ')} tone="neutral" />.{' '}
+                    <Link
+                      href={`/projects/${projectId}/content/refreshes`}
+                      className="text-primary underline-offset-4 hover:underline"
+                    >
+                      Open the refreshes screen
+                    </Link>{' '}
+                    to record the new date, or to mark it shipped.
+                  </p>
+                ) : (
+                  <>
+                    <p className="mt-1 text-meta text-muted-foreground">
+                      Tracking a refresh adds {liveUrl} to the refresh queue, where it is scheduled,
+                      approved and monitored. It does not rewrite this piece.
+                    </p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-2"
+                      disabled={busy === 'refresh'}
+                      onClick={() =>
+                        void runAction(
+                          'refresh',
+                          () =>
+                            createSleeperPage(projectId, {
+                              url: liveUrl,
+                              label: detail.title,
+                              notes: `Proposed from the content workspace (revision ${detail.currentVersion}).`,
+                            }),
+                          'The refresh is now tracked. Its schedule and result live on the refreshes screen.',
+                        )
+                      }
+                    >
+                      <History aria-hidden="true" className="mr-2 h-4 w-4" />
+                      {busy === 'refresh' ? 'Adding…' : 'Track a refresh for this page'}
+                    </Button>
+                  </>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="space-y-6">
+          {/* ── owner ────────────────────────────────────────────────── */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-subsection">Owner</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {teamRefused ? (
+                <p className="text-meta text-muted-foreground">
+                  The staff directory is not visible to your role, so ownership cannot be changed
+                  here. It is not the same as nobody owning this piece.
+                </p>
+              ) : (
+                <Select
+                  value={detail.assigneeId ?? 'unassigned'}
+                  onValueChange={(next) =>
+                    void runAction('assign', () =>
+                      setContentAssignee(projectId, assetId, next === 'unassigned' ? null : next),
+                    )
+                  }
+                  disabled={busy === 'assign'}
+                >
+                  <SelectTrigger aria-label="Owner">
+                    <SelectValue>
+                      {team?.find((member) => member.id === detail.assigneeId)?.name ?? 'Unassigned'}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="unassigned">Unassigned</SelectItem>
+                    {(team ?? []).map((member) => (
+                      <SelectItem key={member.id} value={member.id}>
+                        {member.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* ── §13.5 review ─────────────────────────────────────────── */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-subsection">Review</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-1 text-table">
+                <p className="text-muted-foreground">
+                  Client review: <strong>{CLIENT_LABEL[detail.clientReviewState]}</strong>
+                </p>
+                <p className="text-muted-foreground">
+                  Shared revisions: {sharedCount} of {detail.revisions.length}
+                </p>
+              </div>
+
+              {detail.approvals.length === 0 ? (
+                <p className="text-meta text-muted-foreground">
+                  No review has been requested yet. A request is pinned to one revision, so
+                  approving it can never approve a later draft by accident.
+                </p>
+              ) : (
+                <ul className="space-y-2">
+                  {detail.approvals.map((approval) => (
+                    <li key={approval.id} className="rounded-lg border border-border p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-table text-foreground">
+                          {approval.reviewerType === 'client' ? 'Client' : 'Internal'} review
+                          {approval.artifactRevision !== null ? ` · rev ${approval.artifactRevision}` : ''}
+                        </span>
+                        <StatusPill label={approval.status.replace('-', ' ')} tone={approvalTone(approval.status)} />
+                      </div>
+                      <p className="mt-1 text-meta text-muted-foreground">
+                        Requested <Timestamp value={approval.createdAt} />
+                        {approval.dueAt ? (
+                          <>
+                            {' · due '}
+                            <Timestamp value={approval.dueAt} dateOnly />
+                          </>
+                        ) : null}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {pendingApproval ? (
+                <p className="text-meta text-muted-foreground">
+                  A client review of revision {pendingApproval.artifactRevision} is open.{' '}
+                  <Link
+                    href={`/projects/${projectId}/content/reviews`}
+                    className="text-primary underline-offset-4 hover:underline"
+                  >
+                    Open reviews
+                  </Link>
+                </p>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy === 'request-review' || !currentRevision?.clientVisible}
+                  title={
+                    currentRevision?.clientVisible
+                      ? undefined
+                      : 'The current revision is not shared. Asking a client to review a revision they cannot read would be a broken promise.'
+                  }
+                  onClick={() =>
+                    void runAction(
+                      'request-review',
+                      () =>
+                        createApproval(projectId, {
+                          artifactType: 'content',
+                          artifactId: assetId,
+                          artifactRevision: detail.currentVersion,
+                          revisionId: currentRevision?.id,
+                          title: `${detail.title} — revision ${detail.currentVersion}`,
+                          reviewerType: 'client',
+                        }),
+                      'Client review requested for this exact revision.',
+                    )
+                  }
+                >
+                  <ShieldCheck aria-hidden="true" className="mr-2 h-4 w-4" />
+                  Request a client review of revision {detail.currentVersion}
+                </Button>
+              )}
+
+              {detail.checks.length > 0 ? (
+                <div className="space-y-1">
+                  <p className="text-meta text-muted-foreground">Checks</p>
+                  <ul className="space-y-1">
+                    {detail.checks.map((check) => (
+                      <li key={check.id} className="flex items-start justify-between gap-2 text-table">
+                        <span className="text-muted-foreground">
+                          {check.checkKind}
+                          {check.detail ? ` — ${check.detail}` : ''}
+                        </span>
+                        <StatusPill label={check.status} tone={checkTone(check.status)} />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ) : null}
             </CardContent>
           </Card>
-        </TabsContent>
-      </Tabs>
 
-      {/* ── Publication ────────────────────────────────────────────── */}
-      <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-subsection">Publication</CardTitle>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setPublishUrl('');
-              setPublishOpen(true);
-            }}
-          >
-            Record as published
-          </Button>
-        </CardHeader>
-        <CardContent className="space-y-2 pt-2 text-table">
-          <p className="text-muted-foreground">
-            Current lifecycle: <strong>{lifecycleLabel(asset.status)}</strong>. Cailyx does not
-            publish for you here — a person publishes in the CMS or ad tool, then records the live
-            URL against this asset. That keeps a stored draft and a live page from being confused
-            for one another.
-          </p>
-          <p className="text-muted-foreground">
-            This record is also not the same thing as pushing to a configured destination: that path
-            checks for an approval raised against the exact revision it is about to send. Recording a
-            URL records a fact; it does not authorise a publication.
-          </p>
-          {isAdCopy ? (
-            <p className="text-muted-foreground">
-              Generating ad text never starts a campaign. Ad activation needs its own destination,
-              budget choice and approval outside this screen.
-            </p>
-          ) : null}
-        </CardContent>
-      </Card>
+          {/* ── §13.5 history ────────────────────────────────────────── */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-subsection">History</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {detail.revisions.length === 0 ? (
+                <p className="text-meta text-muted-foreground">
+                  Nothing has been saved yet, so there is no revision history to show.
+                </p>
+              ) : (
+                <ul className="space-y-2">
+                  {detail.revisions.map((revision) => (
+                    <RevisionRow
+                      key={revision.id}
+                      revision={revision}
+                      isCurrent={revision.id === currentRevision?.id}
+                      busy={busy}
+                      onPreview={() => void previewRevision(revision.id)}
+                      onShare={() =>
+                        void runAction(
+                          `share-${revision.id}`,
+                          () => shareRevision(projectId, assetId, revision.id),
+                          `Revision ${revision.revision} is now visible to the client.`,
+                        )
+                      }
+                      onUnshare={() =>
+                        void runAction(
+                          `unshare-${revision.id}`,
+                          () => unshareRevision(projectId, assetId, revision.id),
+                          `Revision ${revision.revision} is no longer visible to the client.`,
+                        )
+                      }
+                    />
+                  ))}
+                </ul>
+              )}
+              <p className="text-meta text-muted-foreground">
+                Sharing is per revision and never inherited: a new revision starts private, so a
+                client keeps seeing the last revision you shared until you share a newer one.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
 
-      <Dialog open={publishOpen} onOpenChange={setPublishOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Record as published</DialogTitle>
-            <DialogDescription>
-              This records that a human published this asset and where it lives. It does not push
-              anything to a website, a CMS or an ad platform.
-            </DialogDescription>
-          </DialogHeader>
-
-          {publishError ? (
-            <ErrorState
-              error={publishError}
-              layout="inline"
-              preserveNotice="The asset's lifecycle was not changed."
-            />
-          ) : null}
-
-          <div className="space-y-2">
-            <Label htmlFor="publish-url">Live URL</Label>
-            <Input
-              id="publish-url"
-              value={publishUrl}
-              onChange={(event) => setPublishUrl(event.target.value)}
-              placeholder="https://example.com/guides/…"
-              aria-describedby="publish-url-help"
-            />
-            <p id="publish-url-help" className="text-meta text-muted-foreground">
-              The exact address a reader would open. Leave it empty only if you genuinely do not
-              have one yet — recording a status without a URL leaves no way to verify the page.
-            </p>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPublishOpen(false)} disabled={publishing}>
-              Cancel
-            </Button>
-            <Button onClick={() => void onRecordPublished()} disabled={publishing} aria-busy={publishing}>
-              {publishing ? 'Recording…' : 'Record as published'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
+      <GenerationDialog
+        projectId={projectId}
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        entry={{
+          kind: 'version',
+          assetId,
+          assetTitle: detail.title,
+          assetType: detail.assetType,
+          topic: detail.brief?.title ?? detail.title,
+        }}
+        capabilities={capabilities}
+        onAccepted={() => void load()}
+      />
     </div>
   );
 }
 
-// ── Article fields ──────────────────────────────────────────────────────
-
-function ArticleFields({
-  fields,
-  onChange,
-  body,
-  onBodyChange,
-}: {
-  fields: Record<string, unknown>;
-  onChange: (fields: Record<string, unknown>) => void;
-  body: string;
-  onBodyChange: (body: string) => void;
-}) {
-  const metaDescription = asString(fields.metaDescription);
-  const slug = asString(fields.slug);
-  const faq = asFaq(fields.faq);
-  const jsonLd = fields.jsonLd;
-
+/** §13.4 — the four axes, always rendered together, under the derived badge. */
+function AxisStrip({ detail }: { detail: ContentWorkspaceDetail }) {
   return (
-    <div className="space-y-4">
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor="meta-description">Meta description</Label>
-          <Input
-            id="meta-description"
-            value={metaDescription}
-            onChange={(event) => onChange({ ...fields, metaDescription: event.target.value })}
-          />
-          <p className="text-meta text-muted-foreground">
-            {formatNumber(metaDescription.length)} characters — search engines commonly display
-            about 150–160.
-          </p>
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="slug">Proposed slug</Label>
-          <Input
-            id="slug"
-            value={slug}
-            onChange={(event) => onChange({ ...fields, slug: event.target.value })}
-          />
-          <p className="text-meta text-muted-foreground">
-            A suggested path. It is not a live URL until someone publishes it.
-          </p>
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="body">Markdown body</Label>
-        <Textarea
-          id="body"
-          rows={18}
-          value={body}
-          onChange={(event) => onBodyChange(event.target.value)}
-          className="font-mono text-table"
-        />
-        <p className="text-meta text-muted-foreground">
-          “##” subheadings, plain Markdown. Saving stores exactly this text.
-        </p>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <Label>FAQ pairs</Label>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => onChange({ ...fields, faq: [...faq, { question: '', answer: '' }] })}
-          >
-            Add pair
-          </Button>
-        </div>
-        {faq.length === 0 ? (
-          <p className="text-table text-muted-foreground">
-            No FAQ pairs on this revision.
-          </p>
-        ) : (
-          <ul className="space-y-3">
-            {faq.map((pair, index) => (
-              <li key={index} className="space-y-2 rounded-md border border-border p-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-meta text-muted-foreground">Pair {index + 1}</span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      onChange({ ...fields, faq: faq.filter((_, position) => position !== index) })
-                    }
-                  >
-                    Remove
-                  </Button>
-                </div>
-                <Input
-                  aria-label={`Question ${index + 1}`}
-                  value={pair.question}
-                  onChange={(event) =>
-                    onChange({
-                      ...fields,
-                      faq: faq.map((entry, position) =>
-                        position === index ? { ...entry, question: event.target.value } : entry,
-                      ),
-                    })
-                  }
-                />
-                <Textarea
-                  aria-label={`Answer ${index + 1}`}
-                  rows={3}
-                  value={pair.answer}
-                  onChange={(event) =>
-                    onChange({
-                      ...fields,
-                      faq: faq.map((entry, position) =>
-                        position === index ? { ...entry, answer: event.target.value } : entry,
-                      ),
-                    })
-                  }
-                />
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      <div className="space-y-2">
-        <Label>JSON-LD</Label>
-        <p className="text-meta text-muted-foreground">
-          Built deterministically from the article&rsquo;s own fields, so it is shown read-only here
-          and saved back unchanged. A schema block must describe the visible facts, and it carries
-          no promise of a rich result.
-        </p>
-        {jsonLd ? (
-          <pre className="evidence max-h-72 overflow-y-auto rounded-md border border-border bg-surface-sunken p-3">
-            {JSON.stringify(jsonLd, null, 2)}
-          </pre>
-        ) : (
-          <p className="text-table text-muted-foreground">
-            No JSON-LD on this revision.
-          </p>
-        )}
-      </div>
-    </div>
+    <span className="flex flex-wrap items-center gap-2">
+      <StatusPill label={detail.primaryBadge} tone={badgeTone(detail)} />
+      <span className="text-meta text-muted-foreground">
+        Editorial: <strong className="font-medium text-foreground">{EDITORIAL_LABEL[detail.editorialState]}</strong>
+      </span>
+      <span className="text-meta text-muted-foreground">
+        Client: <strong className="font-medium text-foreground">{CLIENT_LABEL[detail.clientReviewState]}</strong>
+      </span>
+      <span className="text-meta text-muted-foreground">
+        Publication:{' '}
+        <strong className="font-medium text-foreground">{PUBLICATION_LABEL[detail.publicationSummary.status]}</strong>
+      </span>
+      <span className="text-meta text-muted-foreground">
+        Update: <strong className="font-medium text-foreground">{UPDATE_LABEL[detail.updateState]}</strong>
+      </span>
+    </span>
   );
 }
 
-// ── Ad copy variants ────────────────────────────────────────────────────
-
-function AdCopyFields({
-  fields,
-  onChange,
+function RevisionRow({
+  revision,
+  isCurrent,
+  busy,
+  onPreview,
+  onShare,
+  onUnshare,
 }: {
-  fields: Record<string, unknown>;
-  onChange: (fields: Record<string, unknown>) => void;
+  revision: ContentWorkspaceRevisionSummary;
+  isCurrent: boolean;
+  busy: string | null;
+  onPreview: () => void;
+  onShare: () => void;
+  onUnshare: () => void;
 }) {
-  const variants = asVariants(fields.variants);
-  const overLimit = variants.filter(
-    (variant) =>
-      variant.headline.length > HEADLINE_TARGET ||
-      variant.description.length > DESCRIPTION_TARGET,
-  ).length;
-
   return (
-    <div className="space-y-3">
-      {variants.length === 0 ? (
-        <p className="text-table text-muted-foreground">
-          No ad variants on this revision. Generating ad copy produces four.
+    <li className="rounded-lg border border-border p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-table text-foreground">
+            Revision {revision.revision}
+            {isCurrent ? ' · current' : ''}
+          </p>
+          <p className="text-meta text-muted-foreground">
+            {revision.origin.replace('-', ' ')} · {formatNumber(revision.wordCount)} words ·{' '}
+            <Timestamp value={revision.createdAt} />
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusPill
+            label={revision.clientVisible ? 'Shared with client' : 'Internal only'}
+            tone={revision.clientVisible ? 'success' : 'neutral'}
+          />
+          <Button variant="ghost" size="sm" onClick={onPreview} disabled={busy === `preview-${revision.id}`}>
+            <Eye aria-hidden="true" className="mr-1 h-3 w-3" />
+            Preview
+          </Button>
+          {revision.clientVisible ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onUnshare}
+              disabled={busy === `unshare-${revision.id}`}
+            >
+              <EyeOff aria-hidden="true" className="mr-1 h-3 w-3" />
+              Unshare
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onShare}
+              disabled={busy === `share-${revision.id}`}
+            >
+              <Plus aria-hidden="true" className="mr-1 h-3 w-3" />
+              Share with client
+            </Button>
+          )}
+        </div>
+      </div>
+      {revision.clientVisible && revision.clientVisibleAt ? (
+        <p className="mt-1 text-meta text-muted-foreground">
+          Shared <Timestamp value={revision.clientVisibleAt} />
         </p>
       ) : null}
+    </li>
+  );
+}
 
-      {overLimit > 0 ? (
-        <p className="rounded-md border border-warning/30 bg-warning-subtle px-3 py-2 text-table text-warning-foreground">
-          {overLimit} variant{overLimit === 1 ? '' : 's'} exceed the length the generator targets (
-          {HEADLINE_TARGET} / {DESCRIPTION_TARGET} characters). The model is instructed on these
-          limits but does not enforce them, and they are not a platform guarantee — check the ad
-          platform&rsquo;s own rules before running anything.
-        </p>
-      ) : null}
-
-      <ul className="space-y-3">
-        {variants.map((variant, index) => (
-          <li key={index} className="space-y-2 rounded-md border border-border p-3">
-            <span className="text-meta text-muted-foreground">Variant {index + 1}</span>
-            <div className="space-y-2">
-              <Label htmlFor={`headline-${index}`}>Headline</Label>
-              <Input
-                id={`headline-${index}`}
-                value={variant.headline}
-                onChange={(event) =>
-                  onChange({
-                    ...fields,
-                    variants: variants.map((entry, position) =>
-                      position === index ? { ...entry, headline: event.target.value } : entry,
-                    ),
-                  })
-                }
-              />
-              <p
-                className={
-                  variant.headline.length > HEADLINE_TARGET
-                    ? 'text-meta text-warning-foreground'
-                    : 'text-meta text-muted-foreground'
-                }
-              >
-                {formatNumber(variant.headline.length)} of {HEADLINE_TARGET} characters
-                {variant.headline.length > HEADLINE_TARGET ? ' — over' : ''}
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor={`description-${index}`}>Description</Label>
-              <Textarea
-                id={`description-${index}`}
-                rows={2}
-                value={variant.description}
-                onChange={(event) =>
-                  onChange({
-                    ...fields,
-                    variants: variants.map((entry, position) =>
-                      position === index ? { ...entry, description: event.target.value } : entry,
-                    ),
-                  })
-                }
-              />
-              <p
-                className={
-                  variant.description.length > DESCRIPTION_TARGET
-                    ? 'text-meta text-warning-foreground'
-                    : 'text-meta text-muted-foreground'
-                }
-              >
-                {formatNumber(variant.description.length)} of {DESCRIPTION_TARGET} characters
-                {variant.description.length > DESCRIPTION_TARGET ? ' — over' : ''}
-              </p>
-            </div>
-          </li>
-        ))}
-      </ul>
+function Field({ label, value, wide }: { label: string; value: string | null; wide?: boolean }) {
+  return (
+    <div className={wide ? 'sm:col-span-2' : undefined}>
+      <dt className="text-meta text-muted-foreground">{label}</dt>
+      <dd className="text-table text-foreground">{value ?? 'Not recorded'}</dd>
     </div>
   );
 }
 
-// ── Conflict ────────────────────────────────────────────────────────────
+const EDITORIAL_LABEL: Record<string, string> = {
+  planned: 'Planned',
+  drafting: 'Drafting',
+  draft: 'Draft',
+  'internal-review': 'Internal review',
+  'changes-requested': 'Changes requested',
+  'ready-for-client': 'Ready for client',
+  approved: 'Approved',
+};
 
-function ConflictPanel({
-  conflict,
-  draft,
-  isAdCopy,
-  onUseServer,
-  onKeepMine,
-}: {
-  conflict: VersionConflict;
-  draft: DraftState;
-  isAdCopy: boolean;
-  onUseServer: () => void;
-  onKeepMine: () => void;
-}) {
-  return (
-    <Card className="border-warning/40">
-      <CardHeader>
-        <CardTitle className="text-subsection">Your save was refused: a newer revision exists</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4 pt-2">
-        <p className="text-table text-foreground">
-          {conflict.message} Nothing was overwritten and nothing was saved. Your draft is still in
-          the editor.
-        </p>
+const CLIENT_LABEL: Record<string, string> = {
+  'not-shared': 'Not shared',
+  'awaiting-review': 'Awaiting client review',
+  'changes-requested': 'Client requested changes',
+  approved: 'Client approved',
+  'expired-superseded': 'Superseded',
+};
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="space-y-2">
-            <h4 className="text-table font-medium text-foreground">
-              Your draft (not saved)
-            </h4>
-            <pre className="evidence max-h-64 overflow-y-auto rounded-md border border-border bg-surface-sunken p-3">
-              {isAdCopy ? adCopyAsText(draft) : draft.body}
-            </pre>
-          </div>
-          <div className="space-y-2">
-            <h4 className="text-table font-medium text-foreground">
-              Server revision {conflict.currentVersion}
-            </h4>
-            <pre className="evidence max-h-64 overflow-y-auto rounded-md border border-border bg-surface-sunken p-3">
-              {isAdCopy
-                ? asVariants(conflict.current?.fields.variants)
-                    .map((variant) => `${variant.headline}\n${variant.description}`)
-                    .join('\n\n')
-                : (conflict.current?.body ?? '')}
-            </pre>
-          </div>
-        </div>
+const PUBLICATION_LABEL: Record<string, string> = {
+  unscheduled: 'Not scheduled',
+  planned: 'Planned placement',
+  scheduled: 'Scheduled',
+  publishing: 'Publishing',
+  published: 'Published',
+  failed: 'Publish failed',
+};
 
-        <div className="flex flex-wrap gap-3">
-          <Button variant="outline" size="sm" onClick={onUseServer}>
-            Discard my draft and load revision {conflict.currentVersion}
-          </Button>
-          <Button variant="outline" size="sm" onClick={onKeepMine}>
-            Keep my draft — save it on top of revision {conflict.currentVersion}
-          </Button>
-        </div>
-        <p className="text-meta text-muted-foreground">
-          Keeping your draft writes a new revision above the server&rsquo;s. Revision{' '}
-          {conflict.currentVersion} itself is never modified, so nothing is destroyed either way —
-          but read the two versions before you choose.
-        </p>
-      </CardContent>
-    </Card>
-  );
+const UPDATE_LABEL: Record<string, string> = {
+  'no-update': 'No update in progress',
+  'revision-in-progress': 'Update in progress',
+};
+
+function badgeTone(detail: ContentWorkspaceDetail): StatusTone {
+  if (detail.publicationSummary.status === 'published') return 'success';
+  if (detail.publicationSummary.status === 'failed') return 'danger';
+  if (detail.publicationSummary.status === 'scheduled') return 'info';
+  if (detail.clientReviewState === 'changes-requested') return 'warning';
+  if (detail.editorialState === 'approved' || detail.clientReviewState === 'approved') return 'success';
+  if (detail.editorialState === 'planned') return 'neutral';
+  return 'unmeasured';
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────
-
-function contentHref(projectId: string): string {
-  return `/projects/${projectId}/content`;
+function placementTone(status: string): StatusTone {
+  if (status === 'published') return 'success';
+  if (status === 'failed') return 'danger';
+  if (status === 'publishing') return 'info';
+  return 'neutral';
 }
 
-function draftFrom(asset: AssetContent): DraftState {
-  const fields = deepCopy(asset.current?.fields ?? {});
-  // Pre-G09 content was stored as one flat object on the asset row, so its
-  // parsed `fields` still carry the title, the Markdown body and a word count
-  // that now have first-class homes on the revision. Sending them back would
-  // write a second, staler copy of each into the new revision — a body that no
-  // longer matches `body`. The generated shape is
-  // { metaDescription, slug, faq, jsonLd } (or { variants }), and that is what
-  // a save stores.
-  delete fields.bodyMarkdown;
-  delete fields.wordCount;
-  delete fields.title;
-  return {
-    title: asset.current?.title ?? asset.title,
-    body: asset.current?.body ?? '',
-    fields,
-  };
+function approvalTone(status: string): StatusTone {
+  if (status === 'approved') return 'success';
+  if (status === 'changes-requested') return 'warning';
+  if (status === 'pending') return 'info';
+  return 'neutral';
 }
 
-/** `fields` is stored as JSON, so a shallow copy is enough — but be explicit. */
-function deepCopy(fields: Record<string, unknown>): Record<string, unknown> {
-  return JSON.parse(JSON.stringify(fields ?? {})) as Record<string, unknown>;
-}
-
-function asString(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
-function asFaq(value: unknown): Array<{ question: string; answer: string }> {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
-    .map((entry) => ({
-      question: typeof entry.question === 'string' ? entry.question : '',
-      answer: typeof entry.answer === 'string' ? entry.answer : '',
-    }));
-}
-
-function asVariants(value: unknown): Array<{ headline: string; description: string }> {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
-    .map((entry) => ({
-      headline: typeof entry.headline === 'string' ? entry.headline : '',
-      description: typeof entry.description === 'string' ? entry.description : '',
-    }));
-}
-
-function countWords(text: string): number {
-  return text.split(/\s+/).filter(Boolean).length;
-}
-
-function adCopyAsText(draft: DraftState | { fields: Record<string, unknown> }): string {
-  const variants = asVariants(draft.fields.variants);
-  return variants.map((variant, index) => `${index + 1}. ${variant.headline}\n${variant.description}`).join('\n\n');
-}
-
-/** What "Copy draft" and "Download draft" hand over. */
-function buildExport(
-  asset: AssetContent,
-  draft: DraftState,
-  isAdCopy: boolean,
-): string {
-  const header = [
-    `# ${draft.title}`,
-    '',
-    `Asset type: ${ASSET_TYPE_LABELS[asset.assetType]}`,
-    `Cailyx revision: ${asset.currentVersion}`,
-    isAdCopy ? null : `Slug: ${asString(draft.fields.slug) || notMeasuredLabel()}`,
-    isAdCopy
-      ? null
-      : `Meta description: ${asString(draft.fields.metaDescription) || notMeasuredLabel()}`,
-    '',
-    'This is the stored text at the revision above. Edits made outside this export are not saved',
-    'back automatically.',
-    '',
-  ].filter((line): line is string => line !== null);
-
-  if (isAdCopy) {
-    return [...header, adCopyAsText(draft)].join('\n');
-  }
-
-  const faq = asFaq(draft.fields.faq);
-  const jsonLd = draft.fields.jsonLd;
-
-  return [
-    ...header,
-    draft.body,
-    '',
-    faq.length > 0
-      ? ['## FAQ pairs', '', ...faq.map((pair) => `**${pair.question}**\n\n${pair.answer}`)].join('\n')
-      : '',
-    '',
-    jsonLd
-      ? ['## JSON-LD', '', '```json', JSON.stringify(jsonLd, null, 2), '```'].join('\n')
-      : '',
-  ].join('\n');
-}
-
-function exportFilename(asset: AssetContent, draft: DraftState): string {
-  const base = (draft.title || asset.title)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 60);
-  return `${base || 'draft'}-r${asset.currentVersion}.md`;
-}
-
-/** A Blob download — no server round-trip, so no request can be mistaken for a save. */
-function downloadText(filename: string, text: string): void {
-  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  URL.revokeObjectURL(url);
-}
-
-function lifecycleLabel(status: string): string {
-  switch (status) {
-    case 'recommended':
-      return 'Recommended';
-    case 'in-progress':
-      return 'In progress';
-    case 'published':
-      return 'Published';
-    default:
-      return status;
-  }
-}
-
-function lifecycleTone(status: string) {
-  switch (status) {
-    case 'published':
-      return 'success' as const;
-    case 'in-progress':
-      return 'info' as const;
-    default:
-      return 'neutral' as const;
-  }
-}
-
-function originLabel(origin: ContentRevision['origin']): string {
-  switch (origin) {
-    case 'generation':
-      return 'Generated draft';
-    case 'operator-edit':
-      return 'Operator edit';
-    case 'client-edit':
-      return 'Client edit';
-    case 'import':
-      return 'Imported';
-  }
-}
-
-function originProvenance(origin: ContentRevision['origin']) {
-  switch (origin) {
-    case 'generation':
-      return 'model-interpretation' as const;
-    case 'operator-edit':
-    case 'client-edit':
-      return 'operator-supplied' as const;
-    case 'import':
-      return 'derived' as const;
-  }
-}
-
-function checkResultLabel(result: CopyCheckReport['result']): string {
-  switch (result) {
-    case 'banned-phrase':
-      return 'Banned phrase found';
-    case 'ungraded-number':
-      return 'Ungraded number';
-    case 'single-run-rate':
-      return 'Single-run rate';
-    case 'passed':
-      return 'Passed';
-  }
+function checkTone(status: string): StatusTone {
+  if (status === 'passed' || status === 'ok') return 'success';
+  if (status === 'failed') return 'danger';
+  if (status === 'warning') return 'warning';
+  return 'neutral';
 }

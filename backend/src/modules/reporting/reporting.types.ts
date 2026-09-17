@@ -117,6 +117,15 @@ export interface ReleasedReportDto extends ReportData {
   revision: number;
   /** When the snapshot was locked (review-lock time) — distinct from every source date inside it and from `releasedAt`. */
   snapshotAt: string;
+  /**
+   * P15 — the frozen Cailyx score family section, straight out of
+   * `ReportRevision.snapshot`. Never recomputed at read time, so a live score
+   * update after release cannot change what this report says. Null for a
+   * revision released before P15.
+   */
+  digitalPerformance: ReportDigitalPerformanceSection | null;
+  /** P15 — the frozen 30-day plan progress section. Same freeze discipline. */
+  planProgress: ReportPlanProgressSection | null;
 }
 
 /** One row of the client's released-report list. */
@@ -131,6 +140,13 @@ export interface ReleasedReportSummaryDto {
   releasedAt: string | null;
   /** When the frozen content was assembled — older than `releasedAt` when a review round trip happened. */
   contentUpdatedAt: string;
+  /**
+   * P15 — carried on the summary so the Overview's report panel can show what
+   * the released report says without a second read, and without ever touching
+   * the live score tables. Null when the revision predates P15.
+   */
+  digitalPerformance?: ReportDigitalPerformanceSection | null;
+  planProgress?: ReportPlanProgressSection | null;
 }
 
 export interface ReportFindingDto {
@@ -276,6 +292,87 @@ export type ReportEditorialStatus = 'draft' | 'in-review' | 'approved' | 'releas
 /** Mirrors `ReportRevision.status` specifically (adds `superseded`, not a `Report.status` value). */
 export type ReportRevisionStatus = ReportEditorialStatus | 'superseded';
 
+// ─── P15 — frozen score-family and plan sections (§14.5 items 2 and 8) ───────
+
+/**
+ * One bucket as it was **at release time**.
+ *
+ * §14.6's freeze rule is why this type exists rather than the live
+ * `ScoreBucketRun` row being read on demand: "A released report's score,
+ * breakdown and figures must stay identical after later live-score updates and
+ * after a new draft revision is created." A released report therefore carries
+ * its own copy of every bucket, and reading the report never re-reads the score
+ * family's tables.
+ */
+export interface ReportScoreBucketSnapshot {
+  key: string;
+  label: string;
+  weight: number;
+  applicability: string;
+  applicabilityReason: string | null;
+  state: string;
+  /** Client-safe label for `state` (§4.3) — the same words the live Results screen uses. */
+  stateLabel: string;
+  /** null when the bucket was not measured. Never 0-by-substitution. */
+  value: number | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+  missingReasons: string[];
+  notes: string[];
+  /** Source names and ages only — internal record handles are dropped at this boundary (§4.6). */
+  sources: Array<{ kind: string; label: string; observedAt: string | null; ageDays: number | null }>;
+}
+
+/**
+ * §14.5 item 2 — "Cailyx score snapshot plus buckets" — frozen at release.
+ *
+ * The field names deliberately mirror the live client-safe score read
+ * (`DigitalPerformanceService.getClientSafe`) so the same screen component can
+ * render both, with the live/report distinction made by the surrounding label
+ * rather than by a second set of field names.
+ */
+export interface ReportDigitalPerformanceSection {
+  family: string;
+  scoreName: string;
+  methodology: { version: number; label: string; weightsApproved: boolean; approvalNote: string };
+  /** The run that was live at release time. Null when no run existed — then `total` is null too. */
+  runId: string | null;
+  runAt: string | null;
+  /** `complete` | `incomplete` | `none`. */
+  status: string;
+  /** Null whenever `status !== "complete"`; a frozen partial sum would be a fake total. */
+  total: number | null;
+  evidenceCoverage: number | null;
+  coverageMeaning: string;
+  buckets: ReportScoreBucketSnapshot[];
+  missingAreas: string[];
+  excludedFromScore: Array<{ key: string; label: string; reason: string | null }>;
+  /** Always the snapshot lock time, so a reader can tell release time from measurement time. */
+  frozenAt: string;
+}
+
+/** One commitment as it was at release time (§14.5 item 8's progress section). */
+export interface ReportCommitmentSnapshot {
+  id: string;
+  title: string;
+  workstream: string;
+  status: string;
+  targetDate: string | null;
+  progressLabel: string;
+}
+
+/** §14.5 item 8 — the 30-day plan's progress, frozen at release. */
+export interface ReportPlanProgressSection {
+  totalCount: number;
+  completedCount: number;
+  /** Rendered verbatim: "3 of 5 commitments completed". */
+  label: string;
+  commitments: ReportCommitmentSnapshot[];
+  windowStart: string | null;
+  windowEnd: string | null;
+  frozenAt: string;
+}
+
 /**
  * The frozen payload written into `ReportRevision.snapshot` exactly once, at
  * `review()` time (when the revision is locked for QA) — never mutated
@@ -310,6 +407,16 @@ export interface ReportRevisionSnapshot {
   /** G13 window/cohort in force, when the report was generated with them pinned. */
   periodId: string | null;
   cohortId: string | null;
+  /**
+   * P15 / §14.5 item 2 — the Cailyx score family's buckets as they stood when
+   * this revision was frozen. Null for a snapshot written before P15.
+   *
+   * This is a **copy**, not a reference: after release, later live score runs
+   * (including a new methodology version) must leave this byte-identical.
+   */
+  digitalPerformance?: ReportDigitalPerformanceSection | null;
+  /** P15 / §14.5 item 8 — the 30-day plan's progress, frozen the same way. */
+  planProgress?: ReportPlanProgressSection | null;
   /** `Report.createdAt`/`updatedAt` at lock time: when the *content* was last written by generation. */
   contentCreatedAt: string;
   contentUpdatedAt: string;

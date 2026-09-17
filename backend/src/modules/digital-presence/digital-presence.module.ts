@@ -23,20 +23,23 @@ import { Module } from '@nestjs/common';
 import { DatabaseModule } from '../database/database.module';
 import { FetcherModule } from '../fetcher/fetcher.module';
 import { SerpIntelligenceModule } from '../serp-intelligence/serp-intelligence.module';
-import { PresenceController } from './presence.controller';
+import { BusinessProfileModule } from '../business-profile/business-profile.module';
+import { PresenceController, PresencePortalController } from './presence.controller';
 import { PresenceApifyService } from './presence.apify.service';
+import { PresenceApplicabilityService } from './presence.applicability.service';
 import { PresenceBrandVoiceService } from './presence.brand-voice.service';
 import { PresenceDataForSeoService } from './presence.dataforseo.service';
 import { PresenceDirectoryRatingService } from './presence.directory-rating.service';
 import { PresenceDiscoveryService } from './presence.discovery.service';
 import { PresenceLlmService } from './presence.llm.service';
+import { PresenceRejectionService } from './presence.rejection.service';
 import { PresenceSerpService } from './presence.serp.service';
 import { PresenceService } from './presence.service';
 import { JobsModule } from '../jobs/jobs.module';
 
 @Module({
-  imports: [DatabaseModule, FetcherModule, JobsModule, SerpIntelligenceModule],
-  controllers: [PresenceController],
+  imports: [DatabaseModule, FetcherModule, JobsModule, SerpIntelligenceModule, BusinessProfileModule],
+  controllers: [PresenceController, PresencePortalController],
   providers: [
     PresenceService,
     PresenceDiscoveryService,
@@ -50,6 +53,9 @@ import { JobsModule } from '../jobs/jobs.module';
     PresenceDirectoryRatingService,
     PresenceLlmService,
     PresenceBrandVoiceService,
+    // P05 — applicability policy (§11.2) and rejection tombstones (§11.4).
+    PresenceApplicabilityService,
+    PresenceRejectionService,
   ],
   exports: [
     PresenceService,
@@ -60,6 +66,8 @@ import { JobsModule } from '../jobs/jobs.module';
     PresenceDirectoryRatingService,
     PresenceLlmService,
     PresenceBrandVoiceService,
+    PresenceApplicabilityService,
+    PresenceRejectionService,
   ],
 })
 export class DigitalPresenceModule {}

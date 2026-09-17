@@ -42,6 +42,22 @@ trap cleanup EXIT
 curl -s -X PUT "$API/projects/$PID/competitors" "${AUTH[@]}" -H 'content-type: application/json' \
   -d '{"competitors":[{"name":"Profound","domain":"tryprofound.com"},{"name":"Peec AI","domain":"peec.ai"}]}' >/dev/null
 
+# P04 (plan §10.2) removed the silent ccTLD/HQ-default market fallback:
+# resolveDefaultMarket() now requires an explicit geo, a confirmed
+# business-profile target country, or usable SiteContext.markets/geo evidence,
+# and throws ConflictException otherwise. This fixture's domain is
+# deliberately unresolvable (0 pages, no SiteContext evidence), so a confirmed
+# target is the only rung left — seed and confirm one so the rest of this
+# script's default-market (no markets[]) assertions still resolve.
+curl -s -X PUT "$API/projects/$PID/business-profile" "${AUTH[@]}" -H 'content-type: application/json' \
+  -d '{"targets":[{"country":"US","priority":1,"active":true}]}' >/dev/null
+CONFIRM=$(curl -s -X POST "$API/projects/$PID/business-profile/confirm" "${AUTH[@]}")
+# The targets live under `profile.data.targets` — `profile.targets` was the
+# pre-P04 shape and has been empty since, so this assertion reported a failure
+# even when the confirm succeeded (it also left the seeding unverified, which is
+# specifically what this fixture depends on).
+[ "$(echo "$CONFIRM" | jget profile.data.targets.0.country)" = "US" ] && ok "confirmed a US target market" || bad "target-market confirm: $(echo "$CONFIRM" | head -c 200)"
+
 # --- 1. site context (deterministic path, no key) ---------------------------
 # maxPages=1: the smoke domain deliberately does not resolve, so every fetch
 # retries to its timeout. One page keeps the suite fast while still proving the
@@ -59,6 +75,13 @@ GET_CTX=$(curl -s "$API/projects/$PID/aeo/context" "${AUTH[@]}")
 # --- 2. prompt matrix (template phrasing, no key) ---------------------------
 MTX=$(curl -s -X POST "$API/projects/$PID/aeo/matrix" "${AUTH[@]}" -H 'content-type: application/json' \
   -d '{"tier":"scorecard","refine":false,"activate":true}')
+# POST /aeo/matrix is throttled to 5 requests per minute, and this suite makes
+# four of them. A second run started inside that window answers 429, which then
+# reads as ~19 unrelated assertion failures. Name the cause on the spot so a
+# throttled run is not mistaken for a code regression.
+if echo "$MTX" | grep -q 'ThrottlerException'; then
+  bad "THROTTLED: POST /aeo/matrix allows 5/min and this suite needs 4 — the matrix failures below are the rate limit, not the code. Re-run once the minute has passed."
+fi
 QSID=$(echo "$MTX" | jget querySetId)
 [ -n "$QSID" ] && [ "$QSID" != "__ERR__" ] && ok "generated matrix $QSID" || { bad "matrix generate"; echo "$MTX"; }
 COUNT=$(echo "$MTX" | jget promptCount)

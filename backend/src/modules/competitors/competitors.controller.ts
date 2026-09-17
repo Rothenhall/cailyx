@@ -24,11 +24,11 @@
  * @module competitors.controller
  */
 
-import { Controller, Post, Get, Delete, Param, Body } from '@nestjs/common';
+import { Controller, Post, Get, Delete, Patch, Param, Body, Query } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody, type SchemaObject } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { CompetitorsService } from './competitors.service';
-import { DiscoverCompetitorsDto } from './dto/competitors.dto';
+import { DiscoverByMarketDto, DiscoverCompetitorsDto, SetCandidateRelevanceDto } from './dto/competitors.dto';
 
 /**
  * The `Competitor` row as the candidate routes return it.
@@ -100,6 +100,31 @@ export class CompetitorsController {
   }
 
   /**
+   * §12.2 — service/market-based discovery. Default (collectNew omitted)
+   * only mines names/domains already stored in AEO verdicts + SERP
+   * snapshots — free, safe to call from a page load. `collectNew: true` also
+   * composes a small bounded set of Google searches through the gated SERP
+   * provider — an explicit, budgeted action, never triggered implicitly.
+   * Writes new `status: "candidate"` rows only; the existing tracked list is
+   * never replaced. Partner/directory/publishing-platform domains and the
+   * client's own domain are excluded before a row is ever created, and a
+   * previously-rejected candidate is never re-proposed.
+   */
+  @Post('discover/market')
+  @Throttle({ default: { ttl: 60000, limit: 5 } })
+  @ApiOperation({
+    summary: 'Propose new competitor candidates from confirmed services/segments + target markets',
+    description:
+      'Mines stored AEO-verdict + SERP evidence for rival names/domains (free), and, only when collectNew=true, additionally runs a bounded set of Google searches through the gated SERP provider (paid/explicit). Excludes the client\'s own domain, known directories/publishing/social platforms, and previously-rejected candidates. Never touches the existing tracked list.',
+  })
+  @ApiBody({ type: DiscoverByMarketDto })
+  @ApiResponse({ status: 201, description: 'Discovery summary + newly proposed candidate rows' })
+  @ApiResponse({ status: 404, description: 'Project not found' })
+  async discoverByMarket(@Param('projectId') projectId: string, @Body() body: DiscoverByMarketDto) {
+    return this.competitors.discoverByMarket(projectId, body ?? {});
+  }
+
+  /**
    * Every competitor for the project, each with its latest profile.
    *
    * Deliberately NOT `GET /projects/:id/competitors` bare — `ProjectsController`
@@ -135,6 +160,37 @@ export class CompetitorsController {
   @ApiResponse({ status: 404, description: 'Project not found' })
   async gap(@Param('projectId') projectId: string) {
     return this.competitors.gap(projectId);
+  }
+
+  /**
+   * §12.3 — every frozen comparison snapshot for the project, newest first.
+   * Summary only (no full result body) so listing stays cheap regardless of
+   * how many comparisons have accumulated.
+   */
+  @Get('comparison-snapshots')
+  @ApiOperation({
+    summary: 'List frozen comparison snapshots',
+    description: 'Every GET .../gap call persists a new immutable snapshot. This lists them newest first, without their full result body.',
+  })
+  @ApiResponse({ status: 200, description: '{ snapshots: [...] }' })
+  @ApiResponse({ status: 404, description: 'Project not found' })
+  async listComparisonSnapshots(@Param('projectId') projectId: string) {
+    return { snapshots: await this.competitors.listComparisonSnapshots(projectId) };
+  }
+
+  /**
+   * §12.3 — read one frozen comparison exactly as computed. Never
+   * recomputed, even if the competitor set has since changed.
+   */
+  @Get('comparison-snapshots/:snapshotId')
+  @ApiOperation({
+    summary: 'Read one frozen comparison snapshot verbatim',
+    description: 'Returns the exact GapResult stored at generation time — never retroactively mutated by later competitor-set changes.',
+  })
+  @ApiResponse({ status: 200, description: 'The frozen GapResult' })
+  @ApiResponse({ status: 404, description: 'Snapshot not found for this project' })
+  async getComparisonSnapshot(@Param('projectId') projectId: string, @Param('snapshotId') snapshotId: string) {
+    return this.competitors.getComparisonSnapshot(projectId, snapshotId);
   }
 
   /**
@@ -183,21 +239,51 @@ export class CompetitorsController {
     return this.competitors.confirmCandidate(projectId, competitorId);
   }
 
-  /** Discard a candidate — a hallucination, a directory site, or not actually a rival. */
+  /**
+   * Reclassify a candidate's relevance (§12.2: direct competitor / adjacent
+   * alternative / not relevant) without confirming or rejecting it.
+   */
+  @Patch('candidates/:competitorId/relevance')
+  @ApiOperation({
+    summary: 'Reclassify a competitor candidate\'s relevance',
+    description: 'Sets direct-competitor / adjacent-alternative / not-relevant on a still-pending candidate. Does not confirm or reject it.',
+  })
+  @ApiBody({ type: SetCandidateRelevanceDto })
+  @ApiResponse({ status: 200, description: 'The updated candidate row', schema: COMPETITOR_ROW_SCHEMA })
+  @ApiResponse({ status: 404, description: 'No pending candidate with that id in this project' })
+  async reclassifyCandidate(
+    @Param('projectId') projectId: string,
+    @Param('competitorId') competitorId: string,
+    @Body() body: SetCandidateRelevanceDto,
+  ) {
+    return this.competitors.reclassifyCandidate(projectId, competitorId, body.relevance);
+  }
+
+  /**
+   * Discard a candidate — a hallucination, a directory site, or not actually
+   * a rival. Records a rejection tombstone first (§12.2 — "rejection memory
+   * prevents rediscovery loops") so neither this module's own market
+   * discovery nor any other producer of candidate rows re-proposes the same
+   * name/domain later.
+   */
   @Delete('candidates/:competitorId')
   @ApiOperation({
     summary: 'Reject and delete a competitor candidate',
     description:
-      'Deletes the candidate row outright. Only ever applies to an unconfirmed candidate — an established tracked competitor cannot be removed here, which is why a row already confirmed answers 404 rather than being deleted.',
+      'Records a rejection tombstone (by name + canonical domain) and deletes the candidate row. Only ever applies to an unconfirmed candidate — an established tracked competitor cannot be removed here, which is why a row already confirmed answers 404 rather than being deleted. The row itself has no undo; the tombstone is what prevents it resurfacing.',
   })
   @ApiResponse({
     status: 200,
-    description: '{ deleted: true } — the row is gone; there is no tombstone and no undo',
+    description: '{ deleted: true } — the row is gone; a rejection tombstone now suppresses rediscovery',
     schema: { type: 'object', required: ['deleted'], properties: { deleted: { type: 'boolean', enum: [true] } } },
   })
   @ApiResponse({ status: 404, description: 'No candidate with that id in this project (unknown id, another project\'s id, or an already-tracked competitor)' })
-  async rejectCandidate(@Param('projectId') projectId: string, @Param('competitorId') competitorId: string) {
-    await this.competitors.rejectCandidate(projectId, competitorId);
+  async rejectCandidate(
+    @Param('projectId') projectId: string,
+    @Param('competitorId') competitorId: string,
+    @Query('reason') reason?: string,
+  ) {
+    await this.competitors.rejectCandidate(projectId, competitorId, reason);
     return { deleted: true };
   }
 }

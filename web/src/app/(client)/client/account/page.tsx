@@ -118,7 +118,7 @@ export default function ClientAccountPage() {
     return (
       <div className="space-y-6">
         <PageHeader title="Account and service" />
-        <ErrorState error={error} onRetry={() => void load()} />
+        <ErrorState error={error} onRetry={() => void load()} showServerMessage={false} />
       </div>
     );
   }
@@ -156,9 +156,7 @@ export default function ClientAccountPage() {
               </Fact>
               <Fact label="Account">
                 {me.client.name}
-                <span className="mt-0.5 block text-meta text-muted-foreground">
-                  Status: {me.client.status}
-                </span>
+                <span className="mt-0.5 block text-meta text-muted-foreground">{accountStatusLabel(me.client.status)}</span>
               </Fact>
               <Fact label="Account created">
                 <Timestamp value={me.createdAt} dateOnly />
@@ -169,7 +167,7 @@ export default function ClientAccountPage() {
               <EmptyState
                 variant="not-measured"
                 subject="your profile details"
-                prerequisite="The endpoint this reads — GET /api/portal/me — is not part of the deployed API yet, so there is nothing to show rather than something missing from your account."
+                prerequisite="Reading your profile details is not available for this account yet, so there is nothing to show here — rather than something missing from your account."
               />
               <Alert>
                 <UserRound aria-hidden="true" className="h-4 w-4" />
@@ -218,12 +216,12 @@ export default function ClientAccountPage() {
             <UnavailableRow
               icon={KeyRound}
               label="Change your password"
-              reason="Password change lives on an operator-only route in this build, so there is no self-service endpoint a client can call yet. Ask your delivery team to reset it for you — deliberately, no 'change password' button is shown, because a control that cannot work is worse than none."
+              reason="Changing your own password is not available for this account yet. Ask your delivery team to reset it for you — deliberately, no 'change password' button is shown, because a control that cannot work is worse than none."
             />
             <UnavailableRow
               icon={ShieldOff}
               label="See or revoke other sessions"
-              reason="Session management is also operator-only in this build. If you think someone else has your password, message your delivery team: they can reset it, which revokes every session."
+              reason="Seeing and revoking your other sessions is not available for this account yet. If you think someone else has your password, message your delivery team: they can reset it, which signs out every session."
             />
           </ul>
         </CardContent>
@@ -271,7 +269,7 @@ export default function ClientAccountPage() {
                       {subscription.cancelAt ? (
                         <>
                           {' '}
-                          — access runs to <Timestamp value={subscription.cancelAt} dateOnly />.
+                          — access continues until <Timestamp value={subscription.cancelAt} dateOnly />.
                         </>
                       ) : null}
                     </p>
@@ -337,8 +335,7 @@ export default function ClientAccountPage() {
           ) : null}
 
           <p className="text-meta text-muted-foreground">
-            Who your delivery lead is is not shown on this screen — there is no
-            client-visible lead field in this build. The{' '}
+            Your delivery lead is not shown on this screen yet. The{' '}
             <Link href="/client/messages" className="text-primary underline underline-offset-4">
               messages
             </Link>{' '}
@@ -416,7 +413,7 @@ export default function ClientAccountPage() {
             <UnavailableRow
               icon={UserRound}
               label="Notification preferences"
-              reason="This build has no notification settings API, so there is nothing to configure here. Everything that needs your attention appears on your Home, Approvals and Messages screens."
+              reason="Notification preferences are not available for this account yet, so there is nothing to configure here. Everything that needs your attention appears on your Home, Approvals and Messages screens."
             />
           </ul>
           <p className="text-meta text-muted-foreground">
@@ -527,16 +524,39 @@ function humanizeKey(key: string): string {
  * the route is not deployed (a build gap), while anything else is a live
  * failure worth retrying.
  */
+/**
+ * §4.3: raw statuses are internal vocabulary. The account status is shown as a
+ * sentence a client can read, and an unrecognised value is described rather
+ * than printed.
+ */
+const ACCOUNT_STATUS_LABEL: Record<string, string> = {
+  active: 'Active',
+  onboarding: 'Being set up',
+  trial: 'Trial',
+  paused: 'Paused',
+  suspended: 'Paused',
+  cancelled: 'Cancelled',
+  canceled: 'Cancelled',
+  churned: 'Closed',
+  archived: 'Closed',
+};
+
+function accountStatusLabel(status: string | null | undefined): string {
+  if (!status) return 'Status not recorded';
+  const key = status.trim().toLowerCase();
+  return ACCOUNT_STATUS_LABEL[key] ?? 'Status recorded by your delivery team';
+}
+
 function describeMeFailure(cause: unknown): string {
   const kind =
     cause && typeof cause === 'object' && 'kind' in cause
       ? (cause as { kind?: string }).kind
       : undefined;
   if (kind === 'not-found') {
-    return 'The account endpoint this card reads returns 404: it is not registered on the server running this build. Your identity still exists — it is simply not readable from here.';
+    return 'Your profile details are not available for this account yet. Your account itself is unaffected — the details are simply not readable from here.';
   }
   if (kind === 'forbidden') {
-    return 'The server refused this read. Client accounts are only allowed on routes marked for the client portal, and this endpoint is not one of them in this build.';
+    return 'You do not have access to these account details. This is a permissions decision, not a temporary failure — trying again will not change it. Ask your delivery team if you need access.';
   }
   if (kind === 'unauthenticated') {
     return 'Your session has expired. Sign in again to see your profile.';

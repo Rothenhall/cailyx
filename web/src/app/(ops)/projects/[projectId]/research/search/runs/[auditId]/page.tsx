@@ -405,7 +405,9 @@ export default function SeoRunPage() {
         actions={
           <>
             <Button asChild variant="outline" size="sm">
-              <Link href={`/projects/${projectId}/research/search`}>Back to search performance</Link>
+              {/* P12 (§7.1): search performance is a view of Website now. The
+                  old route redirects, but a direct link skips the extra hop. */}
+              <Link href={`/projects/${projectId}/research/website?tab=search`}>Back to Google search</Link>
             </Button>
           </>
         }

@@ -1,7 +1,7 @@
 # Cailyx — Module Status & Required-Modules Plan
 
 > **Status:** Living document, updated per module completion
-> **Date:** 2026-08-29
+> **Date:** 2026-08-29 — last extended 2026-09-17 (platform improvement phases, §1.2g)
 > **Sources:** `docs/PRD.md` (AI Visibility Diagnostic, working name Beacon), `docs/PLAN.md`, `docs/cailyx-audit-modules-spec.md`, module READMEs in `backend/src/modules/`
 > **Rule reminder:** One module at a time. Analysis doc (`docs/analysis/<module>.md`) with 2-3 tool options per dependency, user approval, then code. See `AGENTS.md`.
 > **Going live:** see [`docs/PRODUCTION-READINESS.md`](PRODUCTION-READINESS.md) for every secret / API key / infra / hardening step. Build history: [`CHANGELOG.md`](../CHANGELOG.md).
@@ -70,6 +70,38 @@ Leak fix: `scheduling.service.ts` now implements `OnModuleDestroy` (closed the B
 
 Schema added: `SiteContext`, `AeoAudit`, `AeoStance`. Modified nullable-only (no data migration): `QuerySetItem.dimension`, `QuerySetItem.meta` + two indexes. `Surface` union widened with `chatgpt-browser`.
 
+### 1.2g Built — platform improvement phases (added 2026-09-17)
+
+> Source: `platform_improvement_plan.md` (the 36 changes from the two product
+> discussions; introduced in `CHANGELOG.md` 2026-09-16). Section references
+> below (§3.5, §6.x, §9.x, §10, §11, §12.x, §13.x) are that plan's, not the
+> PRD's. Phase numbers are the plan's P01–P16.
+>
+> **Documentation state at the time of writing.** Module READMEs are written
+> for the five phases in the table below. P08/P09 (`content-workspace`,
+> `writing-style`) and P12 (`website`) were **still landing**: the modules
+> exist under `backend/src/modules/` and their controllers are mounted, but
+> their READMEs and `docs/API.md` sections are deliberately deferred rather
+> than written against a moving target. P10 (`content-calendar`), P13
+> (unified AI visibility), P14 (scoring methodology) and the remaining phases
+> were likewise still in flight — no state is asserted for them here.
+
+| Module | Maps to | Built | Deferred / gated |
+|---|---|---|---|
+| `delivery-plan` (P01, P11) | §3.5 client-safe projections, §5.6 needs-your-action, §6.1–6.3 commitments | Commitments whose `agreed` state only an explicit confirmation can reach, progress derived from verified work items (never stored), outcome commitments that cannot complete on closed tasks alone, cycle denominators frozen at commit with append-only scope changes, per-audience allowlist projections, and a needs-your-action queue derived live from other modules' records with no table of its own | — |
+| `business-profile` (P02, P04) | §9.1–9.2 business information, §10 target locations | `GET …/overview` keeps `confirmed` / `suggestions` / `gaps` as three separate lists; rejections are keyed by value (`projectId + fieldPath + valueHash`) and read from stored `SiteContext`, never the request body; structured target locations with per-provider support tracing; **the silent ccTLD → default-`US` market fallback is removed** (§10.2) — the market now resolves explicitly or 409s naming the screen that fixes it | — |
+| `digital-presence` (P05) | §11 applicability, rejection memory, client projection | Per-platform `relevant / optional / not-relevant` applicability with versioned operator overrides that survive rediscovery (gaps, coverage and the Google sweep all respect it); "not ours" rejection tombstones with a required reason; plain-English portal projection | — |
+| `competitors` (P06) | §12.1–12.4 market discovery, frozen comparisons | `POST …/discover/market` — free by default (mines the newest completed AEO verdict + up to 300 stored SERP rows, `queriesRun: 0, costUsd: 0`), ≤6 live queries only on an explicit `collectNew: true`; candidates remain proposals until confirmed; `CompetitorComparisonSnapshot` immutable with its provenance | — |
+| `opportunities` (P07, new) | §12.5–12.7 | One `Opportunity` row per idea under a dedup identity that survives re-analysis, a **read-only** keyword-gap engine bounded to the already-captured corpus (`unknown` ≠ `not-observed`, null volume ≠ 0), dismiss-with-reason that no re-run can reopen, and an idempotent convert-to-content contract | `ai-question-gap` / `refresh` / `client-request` origins and the §12.7 "update an existing page" branch are modelled but unreachable / not built (named in the module README) |
+| `content-workspace` (P08/P09, new) | §13.1–13.5, §13.8–13.11 | **In flight.** Composes `GrowthAsset`, `ContentBrief`/`ContentRevision`, `ApprovalRequest`/`CheckResult` and `Publication` into one canonical content list with separated state axes; `writing-style` adds a versioned draft→confirm style record owned by content (never a mutation of `PresenceBrandVoice`) | README + `docs/API.md` section |
+| `website` (P12, new) | §7.6 unified website read model | **In flight.** Read model over technical checks, Search Console / Analytics snapshots and page-analysis, joined through a shared page identity; read paths serve from storage and never call Google or re-crawl | README + `docs/API.md` section |
+
+Verification for the five documented phases: `backend/smoke/keyword-gaps.smoke.sh`,
+`portal-plan.smoke.sh`, `thirty-day-plan.smoke.sh`,
+`online-presence-unified.smoke.sh`, `competitors-unified.smoke.sh`,
+`target-markets.smoke.sh`. **None was re-run during the documentation pass** —
+they are cited as the exit gates that exist, not as a pass claimed here.
+
 ### 1.3 Not started (required by PRD / PLAN)
 
 Individual frontend feature UIs beyond the shell (query-set builder, measurement runs, reports with react-pdf, swarm-layer UIs, etc.) — each lands with its module's UI work in `PLAN.md` §3.2 order. No backend module from the PRD/PLAN remains unbuilt.
@@ -114,7 +146,7 @@ Order reconciles `PLAN.md` phases, PRD §16 build sequence, and the dependency g
 
 ### Wave 0 — Foundation (blocks everything) — NEXT P0
 
-- [ ] **`auth`** — JWT + refresh, roles: admin, delivery-lead, content, technical, outreach, sales. Analysis must present: custom JWT vs Auth0 vs Clerk (2-3 options, pricing). Feeds every module (currently all endpoints are unauthenticated, `docs/API.md` notes "Auth: not yet implemented").
+- [x] **`auth`** — ✅ Built (custom JWT, not Auth0/Clerk). Access + refresh tokens with rotation and reuse detection, roles: admin, delivery-lead, content, technical, outreach, sales. Feeds every module: a global `JwtAuthGuard` + `RolesGuard` now requires a bearer token on every endpoint except `@Public()` routes, client-account tokens are default-deny outside `@ClientPortal()`, and `docs/API.md`'s stale "Auth: not yet implemented" header was corrected on 2026-09-17 (its Auth Module section had documented the real behaviour all along).
 - [x] **`projects`** — ✅ Built 2026-08-30. CRUD (domain unique), engagement lifecycle, artifact stats.
 
 ### Wave 1 — Core measurement engine (the moat, PLAN Phase 1)
@@ -193,3 +225,5 @@ Copied from `AGENTS.md`, non-negotiable before starting the next module:
 ## 6. One-line summary
 
 Waves 0–5 plus the frontend dashboard shell are complete on 2026-08-30 — every PRD/PLAN backend module is built and e2e-verified where runnable (auth + roles, projects, intake, query-set, reporting, `measurement` moat, versioned-rubric `scoring`, `claims` discipline gate, `findings` copy, `crawler-monitor`, entity model-diff + judge, `monitoring` deltas/alerts, the Wave-4 content & outreach tools, and Wave-5 `pipeline-math` / `scorecard` / `delivery`), and the frontend shell was verified in a real browser (login → project → Rung-0 scorecard run → logout). Live-LLM/schedule/GSC/payment/Plunk paths all gated with honest 503s or env flags. Backend typechecks clean, build green, e2e rows wiped to zero. Next: individual frontend feature UIs (module by module; react-pdf for the report PDF).
+
+**2026-09-17:** the `platform_improvement_plan.md` phases are landing on top of that base — see §1.2g. Five of them now have module READMEs (`delivery-plan`, `business-profile`, `digital-presence`, `competitors`, `opportunities`) and `docs/API.md` sections; `content-workspace`, `writing-style` and `website` were still in flight and are documented as such rather than described ahead of their code.

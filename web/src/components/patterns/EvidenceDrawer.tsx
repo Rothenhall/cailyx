@@ -126,16 +126,19 @@ const CONFIDENCE_LABEL: Record<EvidenceConfidence['level'], string> = {
   unknown: 'Confidence not established',
 };
 
+// §4.3: "Gap / intervention → Opportunity / improvement"; a "run" is internal
+// shorthand for a single measurement, and "deployment" is a change to the
+// client's own website.
 const RELATED_LABEL: Record<NonNullable<EvidenceRelatedLink['kind']>, string> = {
-  gap: 'Gap',
+  gap: 'Opportunity',
   work: 'Work',
-  run: 'Run',
+  run: 'Measurement',
   report: 'Report',
-  deployment: 'Deployment',
+  deployment: 'Website change',
 };
 
 /**
- * §3.3 Evidence drawer — source URL/run, captured time, observed fact,
+ * §3.3 Evidence drawer — source, captured time, observed fact,
  * interpretation, raw answer/check, confidence and related gap/work.
  *
  * Built on `ui/sheet`, so on tablet and mobile (<1200px) it is a real overlay
@@ -286,12 +289,10 @@ function EvidenceContent({
         <dt className="text-muted-foreground">Source</dt>
         <dd className="min-w-0 break-words text-foreground">{source.name}</dd>
 
-        {source.runId ? (
-          <>
-            <dt className="text-muted-foreground">Run</dt>
-            <dd className="min-w-0 break-all font-mono text-meta text-foreground">{source.runId}</dd>
-          </>
-        ) : null}
+        {/* §4.3: the stored measurement id is an internal identifier, so it is
+            not printed here — the capture date and the source name are what
+            tell the reader which measurement this came from. The run itself
+            stays reachable from the screen the evidence was opened on. */}
 
         <dt className="text-muted-foreground">Captured</dt>
         <dd className="min-w-0">
@@ -300,7 +301,7 @@ function EvidenceContent({
 
         {source.url ? (
           <>
-            <dt className="text-muted-foreground">Source URL</dt>
+            <dt className="text-muted-foreground">Web address</dt>
             <dd className="min-w-0 break-all">
               {url ? (
                 <a
@@ -325,10 +326,10 @@ function EvidenceContent({
       </dl>
 
       {source.query ? (
-        <section aria-label="Reproduction">
+        <section aria-label="What we checked">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-meta font-semibold text-foreground">Reproduction</h3>
-            <CopyButton value={queryCopy} label="Copy reproduction" />
+            <h3 className="text-meta font-semibold text-foreground">What we checked</h3>
+            <CopyButton value={queryCopy} label="Copy what we checked" />
           </div>
           <p className="mt-1 rounded-md border border-border bg-surface-sunken p-2 font-mono text-meta break-words text-foreground">
             {source.query}
@@ -342,9 +343,9 @@ function EvidenceContent({
       </section>
 
       {interpretation ? (
-        <section aria-label="Interpretation">
+        <section aria-label="Our reading">
           <h3 className="flex flex-wrap items-center gap-2 text-meta font-semibold text-foreground">
-            Interpretation
+            Our reading
             <ProvenanceBadge kind={interpretationKind} />
           </h3>
           <div className="mt-1 rounded-md border border-border bg-surface-sunken p-3 text-table text-foreground">
@@ -357,15 +358,26 @@ function EvidenceContent({
       ) : null}
 
       {raw ? (
-        <section aria-label="Raw answer or check output">
+        <section aria-label="The full answer we looked at">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-meta font-semibold text-foreground">{raw.label ?? 'Raw answer / check'}</h3>
-            <CopyButton value={raw.text} label="Copy raw" />
+            <h3 className="text-meta font-semibold text-foreground">
+              {raw.label ?? 'The full answer we looked at'}
+            </h3>
+            <CopyButton value={raw.text} label="Copy this text" />
           </div>
           {/* `.evidence` keeps fetched text monospace and wrapped, visually
               outside the app's own chrome. React escapes these children, and
               no prop on this component accepts markup (§10.5). */}
-          <pre className="evidence mt-1 max-h-80 overflow-auto rounded-md border border-border bg-surface-sunken p-3 text-foreground">
+          {/* §4.5: a scrollable region is keyboard-reachable — otherwise a
+              keyboard-only reader cannot scroll the text they were sent here
+              to read. `role="region"` plus the label makes it a landmark the
+              screen reader announces. */}
+          <pre
+            role="region"
+            tabIndex={0}
+            aria-label={raw.label ?? 'The full answer we looked at'}
+            className="evidence mt-1 max-h-80 overflow-auto rounded-md border border-border bg-surface-sunken p-3 text-foreground"
+          >
             {raw.text}
           </pre>
         </section>
@@ -379,7 +391,7 @@ function EvidenceContent({
       ) : null}
 
       {related && related.length > 0 ? (
-        <section aria-label="Related gap or work">
+        <section aria-label="Related work and opportunities">
           <h3 className="flex items-center gap-1.5 text-meta font-semibold text-foreground">
             <Paperclip aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             Related

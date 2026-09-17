@@ -13,9 +13,11 @@
  * @module client-portal.service
  */
 
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { ReportLifecycleService } from '../reporting/report-lifecycle.service';
+import { ContentWorkspaceService } from '../content-workspace/content-workspace.service';
+import { WritingStyleService } from '../writing-style/writing-style.service';
 import type { PortalProjectDto, PortalReportSummaryDto, PortalMessageDto } from './client-portal.types';
 
 @Injectable()
@@ -23,29 +25,126 @@ export class ClientPortalService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly reportLifecycle: ReportLifecycleService,
+    private readonly contentWorkspace: ContentWorkspaceService,
+    private readonly writingStyle: WritingStyleService,
   ) {}
+
+  /** Every client-project route re-checks ownership here — never trusts a client-supplied projectId. */
+  private async assertOwnsProject(clientId: string, projectId: string): Promise<void> {
+    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { clientId: true } });
+    if (!project || project.clientId !== clientId) {
+      throw new ForbiddenException('That project does not belong to this client');
+    }
+  }
+
+  /**
+   * P08 §13.5 client-safe content list. Only pieces with an explicitly
+   * shared revision appear at all (§13.5 exit gate) — an unshared draft is
+   * never included, not merely hidden by the UI.
+   */
+  async listContent(clientId: string, projectId: string) {
+    await this.assertOwnsProject(clientId, projectId);
+    const items = await this.contentWorkspace.listClientSafeItems(projectId);
+    return { items };
+  }
+
+  /**
+   * P08 §13.5 client-safe content detail. Defaults to the explicitly shared
+   * revision, never the latest internal draft; 404s (rather than a filtered
+   * 200) when nothing has ever been shared, so "no content" and "not shared
+   * with you" are never confused by the response shape.
+   */
+  async getContent(clientId: string, projectId: string, assetId: string) {
+    await this.assertOwnsProject(clientId, projectId);
+    const item = await this.contentWorkspace.getClientSafeItem(projectId, assetId);
+    if (!item) throw new NotFoundException(`Content ${assetId} not found or not shared with this client`);
+    return item;
+  }
+
+  /**
+   * P09 §13.8 client-safe writing-style read: the ACTIVE CONFIRMED style
+   * only, never a draft — client-edit rights are a §22 D04 decision with no
+   * evidence a prior phase settled it, so this stays read-only.
+   */
+  async getWritingStyle(clientId: string, projectId: string) {
+    await this.assertOwnsProject(clientId, projectId);
+    return this.writingStyle.getActive(projectId);
+  }
 
   async listProjects(clientId: string): Promise<{ projects: PortalProjectDto[] }> {
     const rows = await this.prisma.project.findMany({ where: { clientId }, orderBy: { createdAt: 'desc' } });
+
+    // G05 — "latest" means the latest **released** report. A draft or an
+    // unreleased revision is not the client's to see, and showing its score
+    // here would leak exactly what the editorial gate holds back. The score
+    // must come from the frozen released `ReportRevision` snapshot, not the
+    // mutable `Report.scoreTotal` columns: an operator editing a draft
+    // revision after release must not change the client's project card, and
+    // this is the same snapshot discipline `listReleasedForClient` applies
+    // to the report list/detail.
+    const projectIds = rows.map((p) => p.id);
+    const releasedReports = projectIds.length
+      ? await this.prisma.report.findMany({
+          where: {
+            projectId: { in: projectIds },
+            status: 'released',
+            releasedRevision: { not: null },
+            releasedAt: { not: null },
+          },
+          orderBy: { releasedAt: 'desc' },
+          select: { id: true, projectId: true, releasedRevision: true, releasedAt: true },
+        })
+      : [];
+    const latestReleasedPerProject = new Map<string, (typeof releasedReports)[number]>();
+    for (const report of releasedReports) {
+      // Ordered by releasedAt desc, so the first seen per project is the latest.
+      if (!latestReleasedPerProject.has(report.projectId)) {
+        latestReleasedPerProject.set(report.projectId, report);
+      }
+    }
+    // One batched read for every released revision referenced above; each
+    // revision is fetched at its exact released number and status — a
+    // disagreeing row (status ≠ released) serves nothing, matching the
+    // lifecycle service's "serve nothing rather than a guess" rule.
+    const revisions = await this.prisma.reportRevision.findMany({
+      where: {
+        OR: [...latestReleasedPerProject.values()].map((report) => ({
+          reportId: report.id,
+          revision: report.releasedRevision ?? -1,
+          status: 'released',
+        })),
+      },
+      select: { reportId: true, revision: true, snapshot: true },
+    });
+    const latestScoreByProject = new Map<string, { scoreTotal: number | null; scoreBand: string | null; releasedAt: Date | null }>();
+    for (const report of latestReleasedPerProject.values()) {
+      const revision = revisions.find((r) => r.reportId === report.id && r.revision === report.releasedRevision);
+      if (!revision) continue;
+      try {
+        const snapshot = JSON.parse(revision.snapshot) as { scoreTotal?: number; scoreBand?: string };
+        latestScoreByProject.set(report.projectId, {
+          scoreTotal: typeof snapshot.scoreTotal === 'number' ? snapshot.scoreTotal : null,
+          scoreBand: typeof snapshot.scoreBand === 'string' ? snapshot.scoreBand : null,
+          releasedAt: report.releasedAt,
+        });
+      } catch {
+        // Unreadable snapshot: leave the card without a score rather than
+        // falling back to mutable columns or a fabricated value.
+      }
+    }
+
     const projects = await Promise.all(
       rows.map(async (p) => {
-        // G05 — "latest" means the latest **released** report. A draft or an
-        // unreleased revision is not the client's to see, and showing its
-        // score here would leak exactly what the editorial gate holds back.
-        const latestReport = await this.prisma.report.findFirst({
-          where: { projectId: p.id, status: 'released', releasedRevision: { not: null } },
-          orderBy: { releasedAt: 'desc' },
-          select: { scoreTotal: true, scoreBand: true, releasedAt: true },
-        });
+        const released = latestScoreByProject.get(p.id);
         return {
           id: p.id,
           name: p.name,
           domain: p.domain,
           onboardingStatus: p.onboardingStatus,
           onboardingStep: p.onboardingStep,
-          latestScore: latestReport?.scoreTotal ?? null,
-          latestBand: latestReport?.scoreBand ?? null,
-          lastAuditAt: latestReport?.releasedAt?.toISOString() ?? null,
+          latestScore: released?.scoreTotal ?? null,
+          latestBand: released?.scoreBand ?? null,
+          lastAuditAt: released?.releasedAt?.toISOString() ?? null,
         };
       }),
     );

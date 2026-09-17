@@ -112,3 +112,59 @@ export interface AnalyticsSummary {
   channels: Array<{ key: string; sessions: number; totalUsers: number }>;
   topPages: Array<{ key: string; screenPageViews: number; sessions: number }>;
 }
+
+/* ── P12 (§7.3) data-extension contracts ────────────────────────────────
+ * The summaries above answer "what are the top 10 queries/pages" in
+ * isolation. Website (P12) needs page-query-date-country-device facts at
+ * GSC's own aggregation grain, and GA landing-session facts, each with
+ * pagination + honest source-completeness metadata — not another summary.
+ */
+
+/** One GSC Search Analytics row at whatever dimension grain was requested. */
+export interface GscFactRow {
+  page: string | null;
+  query: string | null;
+  date: string | null;
+  country: string | null;
+  device: string | null;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number;
+}
+
+export interface GscFactPage {
+  range: DateWindow;
+  /** Search Analytics rows are grouped aggregates in Pacific time — never relabeled. */
+  timezoneNote: 'Pacific time (America/Los_Angeles) per the Search Analytics API';
+  site: string;
+  dimensions: string[];
+  rows: GscFactRow[];
+  rowCount: number;
+  startRow: number;
+  rowLimit: number;
+  /** false when `rowCount === rowLimit` — more rows may exist; page again with `startRow`. */
+  complete: boolean;
+}
+
+/** One GA4 landing-session row: a session's entry page + its acquisition channel. */
+export interface GaLandingSessionRow {
+  landingPage: string | null;
+  channelGroup: string | null;
+  sessionSource: string | null;
+  date: string | null;
+  sessions: number;
+  totalUsers: number;
+  engagedSessions: number;
+}
+
+export interface GaLandingSessionPage {
+  range: DateWindow;
+  /** GA4 dates use the property's configured reporting timezone, which may differ from GSC's Pacific clock. */
+  timezoneNote: string;
+  property: string;
+  rows: GaLandingSessionRow[];
+  rowCount: number;
+  /** GA4 Data API caps a single report at 100k rows server-side; this call's own `limit` may be lower. */
+  complete: boolean;
+}

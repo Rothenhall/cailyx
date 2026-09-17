@@ -632,6 +632,12 @@ export class ReportLifecycleService {
         scoreBand: snapshot.scoreBand,
         releasedAt: iso(report.releasedAt),
         contentUpdatedAt: snapshot.contentUpdatedAt,
+        // P15 — the frozen sections travel with the summary so the Overview can
+        // show what the released report says without a second read and without
+        // ever touching the live score tables. `?? null` covers a snapshot
+        // written before P15.
+        digitalPerformance: snapshot.digitalPerformance ?? null,
+        planProgress: snapshot.planProgress ?? null,
       });
     }
     return { reports: summaries };
@@ -909,6 +915,8 @@ const EMPTY_SNAPSHOT: ReportRevisionSnapshot = {
   manifestId: null,
   periodId: null,
   cohortId: null,
+  digitalPerformance: null,
+  planProgress: null,
   contentCreatedAt: '',
   contentUpdatedAt: '',
   snapshotAt: '',

@@ -133,7 +133,7 @@ export function ApprovalCard({
           <Info aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>
             {isPending
-              ? 'A decision applies to this version only. If the artifact changes, a new decision is required.'
+              ? 'A decision applies to this version only. If the item changes, a new decision is required.'
               : `This decision was recorded against ${item.version}. Any later version needs its own decision.`}
           </span>
         </p>

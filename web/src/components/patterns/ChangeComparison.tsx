@@ -141,7 +141,10 @@ export function ChangeComparison({
         {!compatible ? (
           <span className="inline-flex items-center gap-1.5 rounded-md border border-warning/40 bg-warning-subtle px-2 py-0.5 text-meta font-semibold text-warning-foreground">
             <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-            Methodology break
+            {/* §4.3: "Methodology break → Results are not directly comparable."
+                The reader is told what the state *means* for them, not the
+                internal name of the condition. */}
+            Results are not directly comparable
           </span>
         ) : null}
       </div>
@@ -194,14 +197,14 @@ export function ChangeComparison({
           <AlertTriangle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
             <p className="font-semibold">
-              These two runs used different methodology, so the difference between them is not a measured
-              change.
+              These two periods were measured in different ways, so the difference between them is not
+              a measured change.
             </p>
             <p className="mt-1">
               {formatSide(before)} and {formatSide(after)} are shown as recorded, with the date each was
-              captured. No improvement or decline is calculated from them, because the comparison key
-              (query set, engine/model/transport, market, repeats or rubric version) changed between the
-              two.
+              captured. No improvement or decline is calculated from them, because what we checked
+              changed between them — the customer questions, the search engine, the location, how many
+              times each question was repeated, or how the score is calculated.
             </p>
             {methodologyNote ? <div className="mt-2">{methodologyNote}</div> : null}
           </div>
@@ -212,7 +215,7 @@ export function ChangeComparison({
         <div className="mt-3 border-t border-border pt-3">
           <h4 className="flex items-center gap-1.5 text-meta font-semibold text-foreground">
             <Rocket aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            Deployments and changes between these runs
+            Website changes and releases between these two periods
           </h4>
           <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-table text-muted-foreground">
             {relevantDeployments.map((deployment) => (
@@ -250,8 +253,10 @@ function ComparisonSide({
       <p className="text-meta font-medium text-muted-foreground">{label}</p>
       <p className="mt-1 text-subsection font-semibold text-foreground">{formatSide(side)}</p>
       <p className="mt-1 flex flex-wrap items-center gap-1.5 text-meta text-muted-foreground">
-        <span className="font-mono break-all">{side.id}</span>
-        <span aria-hidden="true">·</span>
+        {/* §4.3 forbids internal IDs in normal client screens, and §4.6 says
+            the same business fact must not change between the staff and client
+            views — so the date is what identifies the period here. The id is
+            still available to staff diagnostics on the run's own screen. */}
         <Timestamp value={side.date} timeZone={timeZone} dateOnly />
         {/* The calendar day depends on the zone, so the zone is always named. */}
         <span>({resolveTimeZone(timeZone)})</span>

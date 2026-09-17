@@ -406,7 +406,7 @@ function EnrichmentResult({ result }: { result: IntakeSubjectResult }) {
           <span className="text-meta text-muted-foreground">Project</span>
           <span className="font-mono text-meta">{result.projectId}</span>
           <Button variant="outline" size="sm" asChild>
-            <a href={`/ops/projects/${result.projectId}`}>
+            <a href={`/projects/${result.projectId}`}>
               Open the project
               <ExternalLink aria-hidden="true" className="ml-2 h-3.5 w-3.5" />
             </a>

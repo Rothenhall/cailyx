@@ -1088,3 +1088,120 @@ export async function getMeasurementRun(
     })),
   };
 }
+
+// ── AI visibility (merged read composition, P13 / design_plan §8) ────────
+//
+// Three reads matching the merged screen's three views (summary / customer
+// questions / history). All composed server-side from the same audit/verdict
+// this file already reads — no raw model answers are exposed here (that stays
+// the staff-only `getMeasurementRun` call above, reached from the History
+// view's "Read stored answers" link, never widened by this merge).
+
+export interface AeoVisibilitySummary {
+  auditId: string;
+  status: string;
+  generatedAt: string | null;
+  period: { startedAt: string | null; finishedAt: string | null };
+  markets: string[];
+  headline: string;
+  appeared: { count: number; of: number; rateValid: boolean };
+  recommended: { count: number; of: number; rateValid: boolean } | null;
+  questionsChecked: number;
+  totalQuestions: number;
+  disclosedFailures: Array<{ surface: string; label: string; market: string | null; reason: string }>;
+  methodology: {
+    surfaces: Array<{ surface: string; label: string; status: string; market: string | null; accessMode: string; failureKind: string | null }>;
+    questionSetVersion: number;
+    questionSetId: string;
+    samplingConfig: { tier: string; runCount: number };
+    markets: string[];
+  };
+  headlines: string[];
+}
+
+export interface AeoVisibilityQuestionResult {
+  surface: string;
+  label: string;
+  attemptedVia: string | null;
+  market: string | null;
+  mentioned: boolean;
+  cited: boolean;
+  /** The public source the answer cited (§8.1's safe source reference). Not model output. */
+  sourceUrl: string | null;
+  stance: string | null;
+  checkedAt: string;
+}
+
+export interface AeoCustomerQuestion {
+  id: string;
+  prompt: string;
+  topic: string | null;
+  topicLabel: string;
+  funnelStage: string;
+  branding: string | null;
+  checked: boolean;
+  attempts: number;
+  appearedCount: number;
+  recommendedCount: number | null;
+  checkedAt: string | null;
+  results: AeoVisibilityQuestionResult[];
+}
+
+export interface AeoCustomerQuestionsPage {
+  auditId: string;
+  querySetId: string;
+  querySetVersion: number;
+  querySetStatus: string;
+  topic: string | null;
+  items: AeoCustomerQuestion[];
+  pageInfo: { total: number; nextCursor: string | null; hasMore: boolean };
+}
+
+export interface AeoVisibilityHistoryEntry {
+  auditId: string;
+  querySetId: string;
+  querySetVersion: number;
+  generatedAt: string | null;
+  finishedAt: string | null;
+  markets: string[];
+  status: string;
+  questionsChecked: number;
+  totalQuestions: number;
+  /** `null` when this measurement checked nothing — "Not checked", never a 0-of-0 rate. */
+  appeared: { count: number; of: number } | null;
+  comparabilityBreak: boolean;
+  comparabilityNote: string | null;
+  disclosedFailures: Array<{ surface: string; label: string; market: string | null; reason: string }>;
+}
+
+export async function getAeoVisibilitySummary(
+  projectId: string,
+  options?: { auditId?: string; signal?: AbortSignal },
+): Promise<AeoVisibilitySummary> {
+  return api.get<AeoVisibilitySummary>(`/projects/${projectId}/aeo/visibility/summary`, {
+    signal: options?.signal,
+    query: options?.auditId ? { auditId: options.auditId } : undefined,
+  });
+}
+
+export async function getAeoVisibilityQuestions(
+  projectId: string,
+  options?: { auditId?: string; topic?: string; cursor?: string; limit?: number; signal?: AbortSignal },
+): Promise<AeoCustomerQuestionsPage> {
+  return api.get<AeoCustomerQuestionsPage>(`/projects/${projectId}/aeo/visibility/questions`, {
+    signal: options?.signal,
+    query: {
+      ...(options?.auditId ? { auditId: options.auditId } : {}),
+      ...(options?.topic ? { topic: options.topic } : {}),
+      ...(options?.cursor ? { cursor: options.cursor } : {}),
+      ...(options?.limit ? { limit: options.limit } : {}),
+    },
+  });
+}
+
+export async function getAeoVisibilityHistory(
+  projectId: string,
+  options?: { signal?: AbortSignal },
+): Promise<{ history: AeoVisibilityHistoryEntry[] }> {
+  return api.get<{ history: AeoVisibilityHistoryEntry[] }>(`/projects/${projectId}/aeo/visibility/history`, options);
+}

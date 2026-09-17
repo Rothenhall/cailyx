@@ -34,12 +34,22 @@ import {
   AddAccountDto,
   BusinessProfileDto,
   DiscoverDto,
+  ReconsiderRejectionDto,
+  RejectCandidateDto,
   RunHistoryQueryDto,
+  SetApplicabilityDto,
   SocialActivityDto,
 } from './dto/presence.dto';
 import { PresenceService } from './presence.service';
+import { PresenceApplicabilityService } from './presence.applicability.service';
 import { PresenceBrandVoiceService } from './presence.brand-voice.service';
 import { PresenceDirectoryRatingService } from './presence.directory-rating.service';
+import { PresenceRejectionService } from './presence.rejection.service';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { ClientPortal } from '../../common/decorators/auth.decorators';
+import { ScopeValidationService } from '../../common/guards/scope-validation.service';
+import type { AuthedRequestUser } from '../auth/strategies/jwt.strategy';
+import type { PresencePlatform } from './presence.types';
 
 @ApiTags('Digital Presence')
 @ApiBearerAuth()
@@ -49,6 +59,8 @@ export class PresenceController {
     private readonly presence: PresenceService,
     private readonly brandVoice: PresenceBrandVoiceService,
     private readonly directoryRating: PresenceDirectoryRatingService,
+    private readonly applicability: PresenceApplicabilityService,
+    private readonly rejections: PresenceRejectionService,
   ) {}
 
   @Get()
@@ -248,5 +260,137 @@ export class PresenceController {
   @ApiResponse({ status: 404, description: 'Project not found' })
   async pullDirectoryRatings(@Param('projectId') projectId: string) {
     return this.directoryRating.fetchAndStoreForProject(projectId);
+  }
+
+  // ─── Candidate validation — Confirm / Not ours / Correct link (§11.4) ────
+  // Confirm = POST accounts/:id/confirm (above). Correct link = PATCH
+  // accounts/:accountId (above). This is "Not ours" and its undo.
+
+  @Post('accounts/:accountId/reject')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Reject a search candidate — "Not ours"',
+    description:
+      'Records a tombstone (normalized URL + platform + project scope + reason + actor) and removes the ' +
+      'live candidate row. A subsequent discovery/SERP sweep will not recreate this exact URL as a candidate ' +
+      'again — otherwise the next search keeps recommending the same unrelated business. No permanent ' +
+      'destructive deletion: the tombstone can be reconsidered via POST .../rejections/:id/reconsider.',
+  })
+  @ApiBody({ type: RejectCandidateDto })
+  @ApiResponse({ status: 201, description: 'Tombstone recorded; candidate removed' })
+  @ApiResponse({ status: 400, description: 'Row is not a candidate, or no reason given' })
+  @ApiResponse({ status: 404, description: 'Account not found' })
+  async rejectCandidate(
+    @Param('projectId') projectId: string,
+    @Param('accountId') accountId: string,
+    @Body() body: RejectCandidateDto,
+    @CurrentUser() user: AuthedRequestUser,
+  ) {
+    return this.presence.rejectCandidate(projectId, accountId, body.reason, user?.email ?? null);
+  }
+
+  @Get('rejections')
+  @ApiOperation({ summary: 'Rejection tombstones for this project (newest first)' })
+  @ApiResponse({ status: 200, description: 'Tombstones, including reconsidered ones' })
+  async listRejections(@Param('projectId') projectId: string) {
+    return this.rejections.list(projectId);
+  }
+
+  @Post('rejections/:rejectionId/reconsider')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Undo a "Not ours" rejection',
+    description:
+      'Authorized reconsideration only — clears the tombstone\'s effect (it is kept for history, not deleted) ' +
+      'so the URL can surface again on the next discovery/SERP sweep.',
+  })
+  @ApiBody({ type: ReconsiderRejectionDto, required: false })
+  @ApiResponse({ status: 200, description: 'Rejection reconsidered' })
+  @ApiResponse({ status: 404, description: 'Rejection not found' })
+  async reconsiderRejection(
+    @Param('projectId') projectId: string,
+    @Param('rejectionId') rejectionId: string,
+    @CurrentUser() user: AuthedRequestUser,
+  ) {
+    return this.rejections.reconsider(projectId, rejectionId, user?.email ?? null);
+  }
+
+  // ─── Applicability policy (§11.2) ────────────────────────────────────────
+
+  @Get('applicability')
+  @ApiOperation({
+    summary: 'Applicability policy for every platform',
+    description:
+      'What matters for THIS client and why: relevant / optional / not-relevant / needs-confirmation, each ' +
+      'with a reason and rule version. The same result GET .../presence embeds and the collector/gap-list use — ' +
+      'never a second opinion computed elsewhere.',
+  })
+  @ApiResponse({ status: 200, description: 'Per-platform applicability' })
+  @ApiResponse({ status: 404, description: 'Project not found' })
+  async getApplicability(@Param('projectId') projectId: string) {
+    const project = await this.presence.getProjectCategory(projectId);
+    if (project === undefined) throw new NotFoundException('Project not found');
+    return this.applicability.forProject(projectId, project);
+  }
+
+  @Patch('applicability/:platform')
+  @ApiOperation({
+    summary: 'Staff/client override for one platform\'s applicability',
+    description:
+      'Explicit correction of the computed default (e.g. "this local listing IS relevant even though the ' +
+      'business reads as online-only"). Versioned: the prior override is superseded, never mutated, and this ' +
+      'one wins from now on — including after a rediscovery run, since discovery never writes to this table.',
+  })
+  @ApiBody({ type: SetApplicabilityDto })
+  @ApiResponse({ status: 200, description: 'Override recorded' })
+  async setApplicability(
+    @Param('projectId') projectId: string,
+    @Param('platform') platform: string,
+    @Body() body: SetApplicabilityDto,
+    @CurrentUser() user: AuthedRequestUser,
+  ) {
+    return this.applicability.setOverride(
+      projectId,
+      platform as PresencePlatform,
+      body.status,
+      body.reason,
+      user?.email ?? null,
+    );
+  }
+}
+
+// ─── Client portal ──────────────────────────────────────────────────────
+
+/**
+ * The client's own read of their online presence — P05 §11.1 / §4.6.
+ *
+ * Deliberately a narrower projection than the operator's `GET .../presence`:
+ * no raw candidate confidence score, no discovery-run ids, no SERP query text
+ * or spend, no `foundOn` internals. A search-suggested candidate reads as
+ * "Recommended profile — needs confirmation", never an unexplained percentage.
+ */
+@ApiTags('Digital Presence: portal')
+@ApiBearerAuth()
+@ClientPortal()
+@Controller('portal/projects/:projectId/presence')
+export class PresencePortalController {
+  constructor(
+    private readonly presence: PresenceService,
+    private readonly scope: ScopeValidationService,
+  ) {}
+
+  @Get()
+  @ApiOperation({
+    summary: "This client's online presence — confirmed/needs-confirmation/relevant-not-found only",
+    description:
+      'No raw discovery internals: no confidence score, no run ids, no SERP query text or cost. States are ' +
+      'plain-English: "Confirmed account", "Recommended profile — needs confirmation", "Found; not fully ' +
+      'checked", "Recommended profile not found".',
+  })
+  @ApiResponse({ status: 200, description: 'Client-safe presence projection' })
+  @ApiResponse({ status: 403, description: 'Project does not belong to this client' })
+  async portalInventory(@CurrentUser() user: AuthedRequestUser, @Param('projectId') projectId: string) {
+    await this.scope.assertProjectAccess(user, projectId);
+    return this.presence.portalInventory(projectId);
   }
 }

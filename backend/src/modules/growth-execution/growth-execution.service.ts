@@ -354,6 +354,7 @@ export class GrowthExecutionService {
   private async generateArticle(
     topic: TopicSuggestionDto,
     project: { name: string; domain: string; category: string | null },
+    styleContext?: string,
   ): Promise<{ content: ArticleContent; model: string }> {
     const result = await this.llm.json(
       {
@@ -364,6 +365,7 @@ export class GrowthExecutionService {
         system:
           'You write publishable-draft-quality SEO blog articles for a B2B marketing team. Ground every claim ONLY in ' +
           'the business context given — never invent product features, prices, customer names, or statistics not provided. ' +
+          (styleContext ? `Match this confirmed writing style exactly:\n${styleContext}\n` : '') +
           'Output:\n' +
           '- title: SEO title, 50-60 characters, includes the target keyword naturally.\n' +
           '- metaDescription: 150-160 characters, includes the keyword and a concrete benefit.\n' +
@@ -453,7 +455,7 @@ export class GrowthExecutionService {
   }
 
   /** 3-4 ready-to-run ad variants (Google/Meta-style headline + description), distinct angles. */
-  private async generateAdCopy(topic: TopicSuggestionDto): Promise<{ content: AdCopyContent; model: string }> {
+  private async generateAdCopy(topic: TopicSuggestionDto, styleContext?: string): Promise<{ content: AdCopyContent; model: string }> {
     const result = await this.llm.json(
       {
         purpose: 'growth-execution ad copy generation',
@@ -465,6 +467,7 @@ export class GrowthExecutionService {
           'the keyword and angle given — never invent prices, guarantees, or claims not provided. Produce exactly 4 ' +
           'variants with genuinely distinct angles (benefit-led, urgency, social-proof, direct-offer). Each headline ' +
           '<=30 characters. Each description <=90 characters, states a concrete benefit with an implicit call to action. ' +
+          (styleContext ? `Match this confirmed writing style exactly:\n${styleContext}\n` : '') +
           'Respond with ONLY JSON matching: {"variants":[{"headline":string,"description":string}]}',
         user: `Target keyword: ${topic.targetKeyword}${topic.searchVolume != null ? ` (search volume ~${topic.searchVolume}/mo)` : ''}\nAngle: ${topic.adAngle}`,
       },
@@ -480,6 +483,97 @@ export class GrowthExecutionService {
       },
     );
     return { content: result.data, model: result.model };
+  }
+
+  /**
+   * P09 §13.7 durable-generation entry point: generate ONE asset's content
+   * for a pinned topic/style, with no side effects (no GrowthAsset/revision
+   * created here — the caller, content-generation.service.ts, owns
+   * persisting the result transactionally with its job-state update so a
+   * crash between "generated" and "saved" is recoverable). Only the two
+   * types with a real tested writer are accepted — callers must have
+   * already checked the capability matrix; this throws honestly rather than
+   * silently degrading if they didn't.
+   * @throws ServiceUnavailableException no LLM provider configured.
+   * @throws NotFoundException project not found.
+   */
+  async generatePinnedAsset(params: {
+    projectId: string;
+    assetType: 'article' | 'ad-copy';
+    topic: TopicSuggestionDto;
+    styleContext?: string;
+  }): Promise<{ content: ArticleContent | AdCopyContent; model: string }> {
+    if (!this.llm.isAvailable()) {
+      throw new ServiceUnavailableException(
+        'No LLM provider configured (OPENROUTER_API_KEY or ANTHROPIC_API_KEY) — content generation needs a real writer model, there is no deterministic fallback.',
+      );
+    }
+    const project = await this.prisma.project.findUnique({ where: { id: params.projectId } });
+    if (!project) throw new NotFoundException(`Project ${params.projectId} not found`);
+
+    if (params.assetType === 'article') return this.generateArticle(params.topic, project, params.styleContext);
+    return this.generateAdCopy(params.topic, params.styleContext);
+  }
+
+  // ─── P07 §12.7: opportunity -> content conversion contract ──────────
+  //
+  // The DESIGN-and-basic-wiring half of §12.7 only (full brief-family/stable
+  // identity rework is explicitly P08's job, §13.2). This method is the
+  // minimal extension `opportunities.service.ts` needs: a real, idempotent
+  // "Create content" action that reuses `GrowthAsset` — the existing brief
+  // identity — rather than inventing a second content model. It is
+  // idempotent two ways:
+  //   1. `idempotencyKey` is a unique column — a retried call with the same
+  //      key can never insert a second row (DB-enforced, not just checked).
+  //   2. Even with a NEW idempotency key, a `sourceOpportunityId` that
+  //      already has a linked asset returns the existing one — "Open
+  //      existing draft", never a second Generate button creating
+  //      duplicates (§12.7).
+  async createFromOpportunity(
+    projectId: string,
+    dto: {
+      sourceOpportunityId: string;
+      idempotencyKey: string;
+      assetType: AssetType;
+      title: string;
+      brief: string;
+      targetKeyword: string | null;
+    },
+  ): Promise<{ asset: GrowthAssetDto; created: boolean }> {
+    await this.ensureProject(projectId);
+
+    const byKey = await this.prisma.growthAsset.findUnique({ where: { idempotencyKey: dto.idempotencyKey } });
+    if (byKey) {
+      if (byKey.projectId !== projectId) {
+        throw new NotFoundException(`Idempotency key was not issued for project ${projectId}`);
+      }
+      return { asset: this.toDto(byKey), created: false };
+    }
+
+    const byOpportunity = await this.prisma.growthAsset.findFirst({
+      where: { projectId, sourceOpportunityId: dto.sourceOpportunityId },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (byOpportunity) {
+      return { asset: this.toDto(byOpportunity), created: false };
+    }
+
+    const row = await this.prisma.growthAsset.create({
+      data: {
+        projectId,
+        assetType: dto.assetType,
+        title: dto.title,
+        brief: dto.brief,
+        targetKeyword: dto.targetKeyword,
+        sourceGapId: null,
+        sourceOpportunityId: dto.sourceOpportunityId,
+        idempotencyKey: dto.idempotencyKey,
+        status: 'recommended',
+        source: 'deterministic',
+      },
+    });
+    this.logger.log(`growth-execution: asset ${row.id} created from opportunity ${dto.sourceOpportunityId} for ${projectId}`);
+    return { asset: this.toDto(row), created: true };
   }
 
   // ─── List / status ─────────────────────────────────────────────────
@@ -524,6 +618,8 @@ export class GrowthExecutionService {
     brief: string;
     targetKeyword: string | null;
     sourceGapId: string | null;
+    sourceOpportunityId: string | null;
+    idempotencyKey: string | null;
     status: string;
     source: string;
     generationModel: string | null;
@@ -549,6 +645,8 @@ export class GrowthExecutionService {
       brief: row.brief,
       targetKeyword: row.targetKeyword,
       sourceGapId: row.sourceGapId,
+      sourceOpportunityId: row.sourceOpportunityId,
+      idempotencyKey: row.idempotencyKey,
       status: row.status as GrowthAssetDto['status'],
       source: row.source as GrowthAssetDto['source'],
       generationModel: row.generationModel,

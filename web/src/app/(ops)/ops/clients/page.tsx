@@ -57,7 +57,9 @@ export default function ClientsPage() {
     () => [
       {
         key: 'name',
-        header: 'Client',
+        // §3.4's client-list column is "business name" — the record is a
+        // business, and "Client" named the commercial relationship instead.
+        header: 'Business name',
         accessor: (row) => row.name,
         sortable: true,
         render: (row) => (
@@ -119,6 +121,84 @@ export default function ClientsPage() {
           ),
       },
       {
+        key: 'deliveryLead',
+        // §3.4 lists "delivery lead" as its own column: who is accountable
+        // for the work is a different fact from who owns the relationship
+        // (the `owner` column above), so the two are never merged.
+        header: 'Delivery lead',
+        accessor: (row) => row.deliveryLeadName,
+        sortable: true,
+        width: 160,
+        emptyLabel: 'Not recorded',
+        render: (row) => <span className="truncate">{row.deliveryLeadName}</span>,
+      },
+      {
+        key: 'planProgress',
+        // §3.4's "current plan progress". Rendered as delivered-of-committed
+        // exactly as the plan screen renders it, and the denominator is the
+        // cycle's FROZEN count — a scope change moves the plan screen's
+        // disclosure, it does not silently move this number.
+        header: 'Plan progress',
+        accessor: (row) => row.planProgress.committed,
+        sortable: true,
+        align: 'right',
+        width: 140,
+        sortValue: (row) => row.planProgress.committed,
+        render: (row) =>
+          row.planProgress.committed > 0 ? (
+            <span className="tabular-nums">
+              {row.planProgress.delivered} of {row.planProgress.committed}
+            </span>
+          ) : null,
+        emptyLabel: 'No cycle',
+      },
+      {
+        key: 'overdueCommitments',
+        // §3.4's "overdue commitments". A zero here is real, so it renders as
+        // a plain 0 rather than being swallowed into the empty state — "none
+        // overdue" and "nothing on file" are different facts.
+        header: 'Overdue',
+        accessor: (row) => row.overdueCommitments,
+        sortable: true,
+        align: 'right',
+        width: 110,
+        render: (row) =>
+          row.overdueCommitments > 0 ? (
+            <StatusPill tone="danger" label={`${row.overdueCommitments} overdue`} />
+          ) : (
+            <span className="text-muted-foreground">None</span>
+          ),
+      },
+      {
+        key: 'waitingOnClient',
+        // §3.4's "waiting on client" — the same sources the per-project action
+        // queue reads, counted across this client's projects.
+        header: 'Waiting on client',
+        accessor: (row) => row.waitingOnClient,
+        sortable: true,
+        align: 'right',
+        width: 160,
+        render: (row) =>
+          row.waitingOnClient > 0 ? (
+            <StatusPill tone="warning" label={`${row.waitingOnClient} open`} />
+          ) : (
+            <span className="text-muted-foreground">Nothing</span>
+          ),
+      },
+      {
+        key: 'lastReport',
+        // §3.4's "last report". Released only — a draft revision is not
+        // something the client has been sent, so it must not appear as one.
+        header: 'Last report',
+        accessor: (row) => row.lastReport?.releasedAt ?? null,
+        sortable: true,
+        width: 150,
+        sortValue: (row) => (row.lastReport?.releasedAt ? Date.parse(row.lastReport.releasedAt) : null),
+        emptyLabel: 'None released',
+        render: (row) =>
+          row.lastReport?.releasedAt ? <Timestamp value={row.lastReport.releasedAt} dateOnly /> : null,
+      },
+      {
         key: 'createdAt',
         header: 'Client since',
         accessor: (row) => row.createdAt,
@@ -126,6 +206,20 @@ export default function ClientsPage() {
         width: 150,
         defaultHidden: true,
         render: (row) => <Timestamp value={row.createdAt} dateOnly />,
+      },
+      {
+        // §3.4 lists "last update" as a client-list column, and the field was
+        // already on the row (`ClientSummary.updatedAt`) but never rendered.
+        // It answers "has anything happened here since I last looked?", which
+        // is the question §15.1's portfolio attention list is about — and it
+        // is deliberately NOT a delivery or account-health signal, so it is
+        // labelled as an update time and nothing more.
+        key: 'updatedAt',
+        header: 'Last update',
+        accessor: (row) => row.updatedAt,
+        sortable: true,
+        width: 190,
+        render: (row) => <Timestamp value={row.updatedAt} />,
       },
     ],
     [],

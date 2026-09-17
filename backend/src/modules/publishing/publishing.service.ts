@@ -663,6 +663,37 @@ export class PublishingService {
       }
     }
 
+    // P10 — the placement this attempt executes, when the caller is the content
+    // calendar. Checked to be the same project *and* the same asset: a
+    // publication may only hang off the placement it actually fulfils, so a
+    // mismatched id cannot be used to make one piece's calendar event report
+    // another piece's push.
+    let scheduleId: string | null = null;
+    if (dto.scheduleId) {
+      const placement = await this.prisma.contentSchedule.findUnique({
+        where: { id: dto.scheduleId },
+        select: { id: true, projectId: true, assetId: true, status: true },
+      });
+      if (!placement || placement.projectId !== projectId) {
+        throw new NotFoundException(
+          `Placement ${dto.scheduleId} not found for project ${projectId}`,
+        );
+      }
+      if (placement.assetId !== dto.assetId) {
+        throw new BadRequestException({
+          error: 'schedule-asset-mismatch',
+          message: `Placement ${placement.id} is for a different content piece, so this publication cannot be attached to it.`,
+        });
+      }
+      if (placement.status === 'cancelled') {
+        throw new ConflictException({
+          error: 'placement-cancelled',
+          message: 'That placement is cancelled, so nothing may be dispatched under it.',
+        });
+      }
+      scheduleId = placement.id;
+    }
+
     const row = await this.prisma.publication.create({
       data: {
         projectId,
@@ -670,6 +701,7 @@ export class PublishingService {
         assetId: dto.assetId,
         revisionId: revision.id,
         approvalId: approval.id,
+        scheduleId,
         mode: dto.mode ?? 'draft',
         scheduledFor,
         status: 'pending',
@@ -688,6 +720,7 @@ export class PublishingService {
         approvalId: approval.id,
         permissions: requested,
         scheduledFor: scheduledFor ? scheduledFor.toISOString() : null,
+        scheduleId,
       },
       origin: 'api',
     });
@@ -1007,11 +1040,47 @@ export class PublishingService {
     if (row.approvalId) {
       const approval = await this.prisma.approvalRequest.findUnique({
         where: { id: row.approvalId },
-        select: { status: true },
+        select: { status: true, artifactRevision: true, revisionId: true },
       });
       if (!approval) return 'the approval that authorized this publication no longer exists';
       if (approval.status !== 'approved') {
         return `the approval that authorized this publication is now "${approval.status}" — publish under a current approval`;
+      }
+
+      // §21.2 journey 12 / §13.10: editing approved content must stop a
+      // pending dispatch until the new revision is approved. Checking the
+      // approval's *status* alone was not enough — an approval that is still
+      // `approved` can have been superseded by a newer revision, and this
+      // dispatch would then have shipped the pre-edit body (`publishOne`
+      // sends `row.revisionId`).
+      //
+      // Two things are therefore checked, both read from storage rather than
+      // trusted from the row:
+      //   1. the approval must cover THIS exact revision, and
+      //   2. this revision must still be the asset's current one.
+      // (2) is what catches the edit-after-approval case: the older approval
+      // legitimately remains `approved` forever, so only comparing revisions
+      // can tell that the content moved on underneath it.
+      const revision = await this.prisma.contentRevision.findUnique({
+        where: { id: row.revisionId },
+        select: { id: true, revision: true, assetId: true },
+      });
+      if (!revision) return 'the revision this publication points at is gone';
+
+      const covered =
+        approval.revisionId === revision.id ||
+        (approval.revisionId === null && approval.artifactRevision === revision.revision);
+      if (!covered) {
+        return 'the approval on file is for a different revision of this content — approve the revision being published';
+      }
+
+      const newest = await this.prisma.contentRevision.findFirst({
+        where: { assetId: revision.assetId },
+        orderBy: { revision: 'desc' },
+        select: { revision: true },
+      });
+      if (newest && newest.revision > revision.revision) {
+        return `the content was edited after this revision was approved (revision ${newest.revision} is now current) — review and approve the latest revision before publishing`;
       }
     } else {
       return 'this publication has no recorded approval';

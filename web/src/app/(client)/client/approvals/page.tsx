@@ -7,12 +7,13 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ApprovalCard } from '@/components/patterns/ApprovalCard';
 import { EmptyState } from '@/components/patterns/EmptyState';
-import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
+import { artifactTypeLabel } from '@/lib/format';
+import { ErrorState, clientActionMessage, toApiError } from '@/components/patterns/ErrorState';
 import { PageHeader } from '@/components/patterns/PageHeader';
 import {
   decidePortalApproval,
   listPortalApprovals,
-  type ApprovalRequest,
+  type PortalApprovalRequest,
 } from '@/services/approvals';
 // Two different things share the name `ApprovalDecision`: the API's decision
 // *record* (id, author, timestamp) and the view model's decision *value*
@@ -44,7 +45,7 @@ import type { ApprovalDecision as ViewDecision, ApprovalItem } from '@/types';
  * there is nothing here to tamper with.
  */
 export default function ClientApprovalsPage() {
-  const [requests, setRequests] = useState<ApprovalRequest[] | null>(null);
+  const [requests, setRequests] = useState<PortalApprovalRequest[] | null>(null);
   const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -65,7 +66,7 @@ export default function ClientApprovalsPage() {
     return () => controller.abort();
   }, [load]);
 
-  async function onDecide(request: ApprovalRequest, decision: ViewDecision) {
+  async function onDecide(request: PortalApprovalRequest, decision: ViewDecision) {
     if (decision === 'pending') return;
 
     // A request with no pinned revision cannot be decided at all: the server
@@ -94,9 +95,7 @@ export default function ClientApprovalsPage() {
       setActionError(
         isConflict
           ? 'This item changed after you opened it, so your decision was not recorded. Reload to see the current version before deciding.'
-          : caught instanceof Error
-            ? caught.message
-            : 'Your decision could not be recorded.',
+          : clientActionMessage(caught, 'Your decision could not be recorded.'),
       );
     }
   }
@@ -105,7 +104,7 @@ export default function ClientApprovalsPage() {
     return (
       <div className="space-y-6">
         <PageHeader title="Approvals" />
-        <ErrorState error={error} onRetry={() => void load()} />
+        <ErrorState error={error} onRetry={() => void load()} showServerMessage={false} />
       </div>
     );
   }
@@ -215,21 +214,21 @@ export default function ClientApprovalsPage() {
  * a fabricated version label is exactly what would let someone approve the
  * wrong thing.
  */
-function toApprovalItem(request: ApprovalRequest): ApprovalItem {
+function toApprovalItem(request: PortalApprovalRequest): ApprovalItem {
   const revision =
     typeof request.artifactRevision === 'number' ? `revision ${request.artifactRevision}` : null;
 
   return {
     id: request.id,
     version: revision
-      ? `${humanize(request.artifactType)} · ${revision}`
-      : `${humanize(request.artifactType)} · version not recorded`,
+      ? `${artifactTypeLabel(request.artifactType)} · ${revision}`
+      : `${artifactTypeLabel(request.artifactType)} · version not recorded`,
     requestor: 'Your delivery team',
     reviewer: undefined,
     dueDate: request.dueAt ?? undefined,
     decisionRequested:
       request.detail ??
-      `Review this ${request.artifactType} and either approve it or ask for changes.`,
+      `Review this ${artifactTypeLabel(request.artifactType).toLowerCase()} and either approve it or ask for changes.`,
     // §3.3 requires the consequence of delay. Saying "no deadline" is honest;
     // inventing urgency the backend did not set is not.
     delayConsequence: request.dueAt
@@ -239,7 +238,7 @@ function toApprovalItem(request: ApprovalRequest): ApprovalItem {
   };
 }
 
-function mapDecision(status: ApprovalRequest['status']): ApprovalItem['decision'] {
+function mapDecision(status: PortalApprovalRequest['status']): ApprovalItem['decision'] {
   switch (status) {
     case 'approved':
       return 'approved';
@@ -255,6 +254,3 @@ function mapDecision(status: ApprovalRequest['status']): ApprovalItem['decision'
   }
 }
 
-function humanize(value: string): string {
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}

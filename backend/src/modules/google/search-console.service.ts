@@ -13,7 +13,7 @@
 import { BadGatewayException, ConflictException, Injectable, Logger } from '@nestjs/common';
 import { GoogleConnectionService } from './google-connection.service';
 import { GSC_SCOPE_READWRITE } from './google.types';
-import type { DateWindow, GoogleResourceOption, SearchConsoleSummary } from './google.types';
+import type { DateWindow, GoogleResourceOption, GscFactPage, GscFactRow, SearchConsoleSummary } from './google.types';
 
 const API = 'https://searchconsole.googleapis.com/webmasters/v3';
 const INSPECT_API = 'https://searchconsole.googleapis.com/v1/urlInspection/index:inspect';
@@ -125,6 +125,74 @@ export class SearchConsoleService {
       totals: { clicks: t.clicks, impressions: t.impressions, ctr: t.ctr, position: t.position },
       topQueries: shape(queriesRes.rows),
       topPages: shape(pagesRes.rows),
+    };
+  }
+
+  /**
+   * P12 (§7.3) data extension: page/query/date/country/device facts at an
+   * approved aggregation grain, with pagination and honest completeness
+   * metadata — the fact Website needs and `summary()`'s independent top-10
+   * queries/pages does not provide.
+   *
+   * Search Analytics returns grouped aggregate rows in Pacific time and does
+   * not guarantee every row; pagination (`startRow`) does not remove that
+   * limitation, so `complete` is derived from whether this page came back
+   * full, not asserted true.
+   */
+  async pageFacts(
+    userId: string,
+    siteUrl: string,
+    opts: { days?: number; dimensions?: Array<'page' | 'query' | 'date' | 'country' | 'device'>; rowLimit?: number; startRow?: number } = {},
+  ): Promise<GscFactPage> {
+    const range = window(opts.days ?? 28);
+    const dimensions = opts.dimensions ?? ['page', 'query'];
+    const rowLimit = Math.min(opts.rowLimit ?? 500, 25_000); // GSC's own documented per-request max
+    const startRow = opts.startRow ?? 0;
+
+    const res = await this.call<{
+      rows?: Array<{ keys?: string[]; clicks: number; impressions: number; ctr: number; position: number }>;
+    }>(userId, `/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`, {
+      method: 'POST',
+      body: JSON.stringify({
+        startDate: range.startDate,
+        endDate: range.endDate,
+        dimensions,
+        rowLimit,
+        startRow,
+        dataState: 'all',
+      }),
+    });
+
+    const idx = (name: string) => dimensions.indexOf(name as never);
+    const rows: GscFactRow[] = (res.rows ?? []).map((r) => {
+      const keys = r.keys ?? [];
+      const at = (name: string) => {
+        const i = idx(name);
+        return i >= 0 ? keys[i] ?? null : null;
+      };
+      return {
+        page: at('page'),
+        query: at('query'),
+        date: at('date'),
+        country: at('country'),
+        device: at('device'),
+        clicks: r.clicks ?? 0,
+        impressions: r.impressions ?? 0,
+        ctr: r.ctr ?? 0,
+        position: r.position ?? 0,
+      };
+    });
+
+    return {
+      range,
+      timezoneNote: 'Pacific time (America/Los_Angeles) per the Search Analytics API',
+      site: siteUrl,
+      dimensions,
+      rows,
+      rowCount: rows.length,
+      startRow,
+      rowLimit,
+      complete: rows.length < rowLimit,
     };
   }
 

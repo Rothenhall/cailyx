@@ -686,6 +686,28 @@ export interface SocialActivitySummary {
   avgEngagement: number | null;
 }
 
+/** P05 §11.2 — one platform's applicability policy result. */
+export interface PlatformApplicability {
+  platform: string;
+  label: string;
+  status: 'relevant' | 'optional' | 'not-relevant' | 'needs-confirmation';
+  reason: string;
+  ruleVersion: string;
+  overridden: boolean;
+}
+
+/** P05 §11.4 — a "Not ours" tombstone. */
+export interface PresenceRejection {
+  id: string;
+  platform: string;
+  normalizedUrl: string;
+  reason: string;
+  actorEmail: string | null;
+  createdAt: string;
+  reconsideredAt: string | null;
+  reconsideredBy: string | null;
+}
+
 export interface PresenceInventory {
   projectId: string;
   domain: string;
@@ -708,6 +730,8 @@ export interface PresenceInventory {
   businessProfile: BusinessProfileSnapshot | null;
   reviews: ReviewSnapshot[];
   socialActivity: SocialActivitySummary[];
+  /** P05 §11.2 — the same applicability result the collector/gaps already used. */
+  applicability: PlatformApplicability[];
 }
 
 export async function getPresenceInventory(
@@ -770,6 +794,56 @@ export async function confirmPresenceCandidate(
   const endpoint = `POST /projects/${projectId}/presence/accounts/${accountId}/confirm`;
   return asRecord<PresenceAccount>(
     await api.post<unknown>(`/projects/${projectId}/presence/accounts/${accountId}/confirm`),
+    endpoint,
+  );
+}
+
+/**
+ * "Not ours" — P05 §11.4. Stores a tombstone (normalized URL/platform/project
+ * scope + reason + actor) and removes the live candidate row. A subsequent
+ * discovery/SERP sweep will not recreate the identical URL as a candidate.
+ */
+export async function rejectPresenceCandidate(
+  projectId: string,
+  accountId: string,
+  reason: string,
+): Promise<{ rejectionId: string }> {
+  const endpoint = `POST /projects/${projectId}/presence/accounts/${accountId}/reject`;
+  return asRecord<{ rejectionId: string }>(
+    await api.post<unknown>(`/projects/${projectId}/presence/accounts/${accountId}/reject`, { reason }),
+    endpoint,
+  );
+}
+
+export async function listPresenceRejections(projectId: string): Promise<PresenceRejection[]> {
+  const endpoint = `GET /projects/${projectId}/presence/rejections`;
+  const payload = await api.get<unknown>(`/projects/${projectId}/presence/rejections`);
+  if (!Array.isArray(payload)) throw shapeError(endpoint, 'a list', payload);
+  return payload as PresenceRejection[];
+}
+
+/** Authorized undo of a "Not ours" — the tombstone is kept, not deleted. */
+export async function reconsiderPresenceRejection(
+  projectId: string,
+  rejectionId: string,
+): Promise<PresenceRejection> {
+  const endpoint = `POST /projects/${projectId}/presence/rejections/${rejectionId}/reconsider`;
+  return asRecord<PresenceRejection>(
+    await api.post<unknown>(`/projects/${projectId}/presence/rejections/${rejectionId}/reconsider`),
+    endpoint,
+  );
+}
+
+/** Staff/client override of one platform's computed applicability — versioned, survives rediscovery. */
+export async function setPresenceApplicability(
+  projectId: string,
+  platform: string,
+  status: PlatformApplicability['status'],
+  reason: string,
+): Promise<PlatformApplicability> {
+  const endpoint = `PATCH /projects/${projectId}/presence/applicability/${platform}`;
+  return asRecord<PlatformApplicability>(
+    await api.patch<unknown>(`/projects/${projectId}/presence/applicability/${platform}`, { status, reason }),
     endpoint,
   );
 }
@@ -1038,6 +1112,10 @@ export interface CompetitorRecord {
   domain: string | null;
   source: string;
   status: string;
+  /** direct-competitor | adjacent-alternative | not-relevant (§12.2). */
+  relevance?: string;
+  /** Why a market-discovery candidate was proposed; null/undefined for other sources. */
+  discoveryReason?: string | null;
   createdAt: string;
 }
 
@@ -1083,12 +1161,87 @@ export async function confirmCompetitorCandidate(
   );
 }
 
-/** Reject and delete an **unconfirmed** candidate. */
+/** Reject and delete an **unconfirmed** candidate. Records a rejection tombstone (§12.2) so it never resurfaces. */
 export async function rejectCompetitorCandidate(
   projectId: string,
   competitorId: string,
+  reason?: string,
 ): Promise<void> {
-  await api.delete<unknown>(`/projects/${projectId}/competitors/candidates/${competitorId}`);
+  await api.delete<unknown>(`/projects/${projectId}/competitors/candidates/${competitorId}`, {
+    query: reason ? { reason } : undefined,
+  });
+}
+
+/** Reclassify a candidate's relevance without confirming/rejecting it. */
+export async function reclassifyCompetitorCandidate(
+  projectId: string,
+  competitorId: string,
+  relevance: 'direct-competitor' | 'adjacent-alternative' | 'not-relevant',
+): Promise<CompetitorRecord> {
+  const endpoint = `PATCH /projects/${projectId}/competitors/candidates/${competitorId}/relevance`;
+  return asRecord<CompetitorRecord>(
+    await api.patch<unknown>(`/projects/${projectId}/competitors/candidates/${competitorId}/relevance`, { relevance }),
+    endpoint,
+  );
+}
+
+/** §12.2 — service/market-based discovery result summary. */
+export interface DiscoverByMarketResult {
+  projectId: string;
+  collectNew: boolean;
+  queriesRun: number;
+  costUsd: number;
+  servicesConsidered: string[];
+  marketsConsidered: string[];
+  candidatesProposed: number;
+  candidatesExcluded: number;
+  exclusionSample: string[];
+  candidates: CompetitorRecord[];
+  note: string;
+}
+
+/**
+ * Mine stored AEO/SERP evidence (+ confirmed services/target markets) for new
+ * candidates. Free by default; pass `collectNew: true` for the explicit,
+ * budgeted bounded-search pass (never triggered by a page load).
+ */
+export async function discoverCompetitorsByMarket(
+  projectId: string,
+  input?: { collectNew?: boolean; provider?: 'dataforseo' | 'fixture' },
+): Promise<DiscoverByMarketResult> {
+  const endpoint = `POST /projects/${projectId}/competitors/discover/market`;
+  return asRecord<DiscoverByMarketResult>(
+    await api.post<unknown>(`/projects/${projectId}/competitors/discover/market`, input ?? {}),
+    endpoint,
+  );
+}
+
+/** Summary row of a frozen comparison snapshot (§12.3), without its full result body. */
+export interface ComparisonSnapshotSummary {
+  id: string;
+  competitorSetVersion: string;
+  extractionVersion: string;
+  generatedAt: string;
+}
+
+export async function listComparisonSnapshots(
+  projectId: string,
+  options?: { signal?: AbortSignal },
+): Promise<ComparisonSnapshotSummary[]> {
+  const endpoint = `GET /projects/${projectId}/competitors/comparison-snapshots`;
+  const payload = await api.get<unknown>(`/projects/${projectId}/competitors/comparison-snapshots`, options);
+  return asKeyedList<ComparisonSnapshotSummary>(payload, 'snapshots', endpoint);
+}
+
+/** Reads one frozen comparison exactly as computed — never recomputed. */
+export async function getComparisonSnapshot(
+  projectId: string,
+  snapshotId: string,
+  options?: { signal?: AbortSignal },
+): Promise<GapResult> {
+  const endpoint = `GET /projects/${projectId}/competitors/comparison-snapshots/${snapshotId}`;
+  const payload = await api.get<unknown>(`/projects/${projectId}/competitors/comparison-snapshots/${snapshotId}`, options);
+  return asRecord<GapResult>(payload, endpoint);
 }
 
 /** Promote `Project.competitors` (+ an explicit list) into profiled rows. 5/minute. */

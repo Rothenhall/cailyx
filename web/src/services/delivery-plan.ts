@@ -474,6 +474,238 @@ export async function commitCycle(projectId: string, cycleId: string, note?: str
   return api.post<Cycle>(`/projects/${projectId}/cycles/${cycleId}/commit`, { note });
 }
 
+// ── Commitments (P11 — plan §6.1-6.3) ───────────────────────────────────
+
+/**
+ * §6.1 keeps three concepts distinct, and this type is the first of them: a
+ * **plan commitment** is what the team intends to accomplish in the period
+ * ("Publish ten useful articles"), which is neither a work item (a concrete
+ * execution step) nor a content schedule entry (a publication date).
+ *
+ * `progress` is **derived at read time**, never stored — a countable
+ * commitment counts linked work items that reached `verified`, and an
+ * outcome-style commitment reports only its own recorded metric. That is why
+ * a commitment whose tasks all closed is not automatically complete.
+ */
+export type CommitmentStatus =
+  | 'draft'
+  | 'proposed'
+  | 'agreed'
+  | 'active'
+  | 'needs-attention'
+  | 'completed'
+  | 'closed'
+  | 'cancelled'
+  | 'superseded';
+
+/** The five workstreams §6.2 names as "areas of work", plus an explicit
+ *  catch-all. A section is shown only when the client actually has work in
+ *  it — an empty tab for an unpurchased service is the thing to avoid. */
+export type CommitmentWorkstream =
+  | 'website'
+  | 'content'
+  | 'email'
+  | 'ads'
+  | 'online-presence'
+  | 'other';
+
+export interface CommitmentScopeChangeEntry {
+  at: string;
+  by: string;
+  reason: string;
+  previousTarget: number | null;
+  newTarget: number | null;
+  previousDate: string | null;
+  newDate: string | null;
+  requiresReconfirmation: boolean;
+}
+
+export interface CommitmentProgress {
+  kind: 'countable' | 'outcome' | 'none';
+  verifiedCount: number;
+  linkedCount: number;
+  targetCount: number | null;
+  targetUnit: string | null;
+  /** A plain-English "3 of 10 articles" style label. Never a bare percentage. */
+  label: string;
+  outcomeMetricLabel: string | null;
+  outcomeMetricUnit: string | null;
+  outcomeMetricBaseline: number | null;
+  outcomeMetricTarget: number | null;
+  outcomeMetricCurrent: number | null;
+  outcomeMetricObservedAt: string | null;
+}
+
+export interface Commitment {
+  id: string;
+  projectId: string;
+  cycleId: string;
+  title: string;
+  reason: string | null;
+  workstream: string;
+  status: CommitmentStatus;
+  targetCount: number | null;
+  targetUnit: string | null;
+  targetDate: string | null;
+  outcomeMetricLabel: string | null;
+  outcomeMetricUnit: string | null;
+  outcomeMetricBaseline: number | null;
+  outcomeMetricTarget: number | null;
+  outcomeMetricCurrent: number | null;
+  outcomeMetricObservedAt: string | null;
+  accountableLead: string | null;
+  clientVisibleLead: boolean;
+  linkedWorkItemIds: string[];
+  contentRef: string | null;
+  agreedAt: string | null;
+  agreedBy: string | null;
+  scopeChanges: CommitmentScopeChangeEntry[];
+  supersededBy: string | null;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+  progress: CommitmentProgress;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function listCommitments(
+  projectId: string,
+  filter?: { cycleId?: string; status?: CommitmentStatus },
+  options?: { signal?: AbortSignal },
+): Promise<Commitment[]> {
+  return api
+    .get<{ commitments: Commitment[] }>(`/projects/${projectId}/commitments`, {
+      ...options,
+      query: { cycleId: filter?.cycleId, status: filter?.status },
+    })
+    .then((payload) => unwrap<Commitment[]>(payload, 'commitments'));
+}
+
+export function getCommitment(projectId: string, commitmentId: string, options?: { signal?: AbortSignal }) {
+  return api.get<Commitment>(`/projects/${projectId}/commitments/${commitmentId}`, options);
+}
+
+export interface CreateCommitmentInput {
+  cycleId: string;
+  title: string;
+  reason?: string;
+  workstream?: CommitmentWorkstream;
+  targetCount?: number;
+  targetUnit?: string;
+  targetDate?: string;
+  outcomeMetricLabel?: string;
+  outcomeMetricUnit?: string;
+  outcomeMetricBaseline?: number;
+  outcomeMetricTarget?: number;
+  accountableLead?: string;
+  clientVisibleLead?: boolean;
+  linkedWorkItemIds?: string[];
+  contentRef?: string;
+}
+
+export function createCommitment(projectId: string, input: CreateCommitmentInput) {
+  return api.post<Commitment>(`/projects/${projectId}/commitments`, input);
+}
+
+/**
+ * A forward lifecycle move. `agreed` and `completed` are **not** valid targets
+ * here — the server refuses both and points at the dedicated actions, because
+ * an operator writing a plan is not the client agreeing to it, and closing
+ * tasks is not the same as delivering an outcome (§6.2/§6.3).
+ */
+export function setCommitmentStatus(
+  projectId: string,
+  commitmentId: string,
+  status: Exclude<CommitmentStatus, 'agreed' | 'completed'>,
+) {
+  return api.patch<Commitment>(`/projects/${projectId}/commitments/${commitmentId}/status`, { status });
+}
+
+/** The one path to `agreed`; requires an explicit confirmation. */
+export function agreeCommitment(projectId: string, commitmentId: string, note?: string) {
+  return api.post<Commitment>(`/projects/${projectId}/commitments/${commitmentId}/agree`, {
+    confirm: true,
+    note,
+  });
+}
+
+export function recordCommitmentScopeChange(
+  projectId: string,
+  commitmentId: string,
+  input: {
+    reason: string;
+    newTarget?: number;
+    newDate?: string;
+    requiresReconfirmation?: boolean;
+  },
+) {
+  return api.post<Commitment>(`/projects/${projectId}/commitments/${commitmentId}/scope-change`, input);
+}
+
+export function recordCommitmentOutcome(
+  projectId: string,
+  commitmentId: string,
+  input: { value: number },
+) {
+  return api.post<Commitment>(`/projects/${projectId}/commitments/${commitmentId}/outcome-metric`, input);
+}
+
+export function completeCommitment(
+  projectId: string,
+  commitmentId: string,
+  input: { force?: boolean; forceReason?: string; outcomeMetricCurrent?: number } = {},
+) {
+  return api.post<Commitment>(`/projects/${projectId}/commitments/${commitmentId}/complete`, input);
+}
+
+export function cancelCommitment(projectId: string, commitmentId: string, dto: { reason: string }) {
+  return api.post<Commitment>(`/projects/${projectId}/commitments/${commitmentId}/cancel`, dto);
+}
+
+// ── Needs-your-action queue (P11 — plan §5.6) ───────────────────────────
+
+export type ActionSourceType =
+  | 'approval-request'
+  | 'onboarding-request'
+  | 'review-task'
+  | 'delivery-blocker';
+
+export type ActionSeverity = 'overdue' | 'blocking' | 'normal';
+
+/**
+ * One item in the staff-scoped action queue.
+ *
+ * Every item is **derived from its source record** — there is no duplicate
+ * task row behind a card, and an item only disappears when the underlying
+ * approval/request/work item is actually resolved, never because someone
+ * opened it. An audit finding ("17 pages have missing descriptions") is not
+ * a client action and never appears in the client-facing queue.
+ */
+export interface ActionItem {
+  sourceType: ActionSourceType;
+  sourceId: string;
+  audience: 'client' | 'staff';
+  eligibleActorId: string | null;
+  title: string;
+  reason: string;
+  deadline: string | null;
+  severity: ActionSeverity;
+  projectId: string;
+  destination: string;
+  currentVersion: string;
+  completionCondition: string;
+  createdAt: string;
+}
+
+export interface ActionQueue {
+  items: ActionItem[];
+  total: number;
+}
+
+export function getStaffActions(projectId: string, options?: { signal?: AbortSignal }): Promise<ActionQueue> {
+  return api.get<ActionQueue>(`/projects/${projectId}/actions`, options);
+}
+
 // ── Work items ──────────────────────────────────────────────────────────
 
 export async function listWorkItems(

@@ -11,7 +11,9 @@
 
 import { Module } from '@nestjs/common';
 import {
+  ActionsController,
   CapacityController,
+  CommitmentsController,
   CyclesController,
   DeliveryPlanPortalController,
   EngagementsController,
@@ -24,6 +26,8 @@ import { DeliveryPlanService } from './delivery-plan.service';
   controllers: [
     EngagementsController,
     CyclesController,
+    CommitmentsController,
+    ActionsController,
     WorkItemsController,
     MilestonesController,
     CapacityController,

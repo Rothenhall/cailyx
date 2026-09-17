@@ -556,4 +556,22 @@ export interface PresenceInventory {
   reviews: ReviewDto[];
   /** Per-platform posting cadence + reach from the Apify enrichment (wave-6 D7). */
   socialActivity: SocialActivitySummary[];
+  /**
+   * P05 §11.2 — the applicability policy result for every recognised platform.
+   * The SAME array `gaps`/`assessment`/the collector all read; exposed here so
+   * the UI can render "Not relevant" (settings/details only, per §11.1) and
+   * explain a recommendation without recomputing the policy client-side.
+   */
+  applicability: PlatformApplicabilityDto[];
+}
+
+/** Re-exported shape of `presence.applicability.service`'s `PlatformApplicability`,
+ *  declared locally to avoid a types-file → service-file import. */
+export interface PlatformApplicabilityDto {
+  platform: PresencePlatform;
+  label: string;
+  status: 'relevant' | 'optional' | 'not-relevant' | 'needs-confirmation';
+  reason: string;
+  ruleVersion: string;
+  overridden: boolean;
 }

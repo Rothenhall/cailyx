@@ -75,6 +75,15 @@ export class CreatePublicationDto {
   @IsString()
   @MaxLength(128)
   contentHash?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'P10 — the `ContentSchedule` placement this publication executes. Set by the content calendar so the calendar event keeps one identity while attempts accumulate under it. Omit for a publication created straight from content detail.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  scheduleId?: string;
 }
 
 export class CancelPublicationDto {

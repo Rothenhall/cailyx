@@ -4,13 +4,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/patterns/EmptyState';
 import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
 import { PageHeader } from '@/components/patterns/PageHeader';
 import { ProvenanceBadge } from '@/components/patterns/ProvenanceBadge';
-import { StatusPill } from '@/components/patterns/StatusPill';
+import { StatusPill, type StatusTone } from '@/components/patterns/StatusPill';
 import { Timestamp } from '@/components/patterns/Timestamp';
 import { formatNumber } from '@/lib/format';
 import {
@@ -29,13 +31,171 @@ import {
   type Roadmap,
 } from '@/services/planning';
 import {
+  getStaffActions,
+  listCommitments,
   listCycles,
   listMilestones,
   listWorkItems,
+  type ActionItem,
+  type Commitment,
+  type CommitmentStatus,
   type Cycle,
   type Milestone,
   type WorkItem,
 } from '@/services/delivery-plan';
+
+/** §6.2's areas of work. Only the ones a project actually uses are rendered. */
+const WORKSTREAM_LABEL: Record<string, string> = {
+  website: 'Website',
+  content: 'Content',
+  email: 'Email',
+  ads: 'Ads',
+  'online-presence': 'Online presence',
+  other: 'Other agreed work',
+};
+
+/**
+ * One commitment in the staff view.
+ *
+ * `progress.label` is rendered exactly as the server derived it ("3 of 10
+ * articles published"), never recomputed into a percentage here — the number
+ * a client will hold the team to must come from one place. The staff-only
+ * expansion is the linked execution tasks, which the client view omits.
+ */
+function CommitmentRow({
+  commitment,
+  projectId,
+  workItems,
+}: {
+  commitment: Commitment;
+  projectId: string;
+  workItems: WorkItem[];
+}) {
+  const { progress } = commitment;
+  const showBar = progress.kind === 'countable' && progress.targetCount != null && progress.targetCount > 0;
+  const percent = showBar
+    ? Math.min(100, Math.round((progress.verifiedCount / (progress.targetCount ?? 1)) * 100))
+    : 0;
+  const linked = commitment.linkedWorkItemIds
+    .map((id) => workItems.find((item) => item.id === id))
+    .filter((item): item is WorkItem => item !== undefined);
+  const missing = commitment.linkedWorkItemIds.length - linked.length;
+
+  return (
+    <li className="space-y-2 rounded-lg border border-border p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 space-y-0.5">
+          <p className="text-table font-medium">{commitment.title}</p>
+          {commitment.reason ? (
+            <p className="text-meta text-muted-foreground">{commitment.reason}</p>
+          ) : null}
+        </div>
+        <StatusPill
+          label={commitmentStatusLabel(commitment.status)}
+          tone={commitmentStatusTone(commitment.status)}
+        />
+      </div>
+
+      <p className="text-table font-medium">{progress.label}</p>
+      {showBar ? <Progress value={percent} aria-label={progress.label} /> : null}
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-muted-foreground">
+        {commitment.targetDate ? (
+          <span>
+            Target <Timestamp value={commitment.targetDate} dateOnly />
+          </span>
+        ) : null}
+        {commitment.agreedAt ? (
+          <span>
+            Agreed <Timestamp value={commitment.agreedAt} dateOnly />
+          </span>
+        ) : (
+          // §6.3: an operator writing the plan is not client agreement, so an
+          // unagreed commitment says so rather than looking settled.
+          <span>Not yet agreed with the client</span>
+        )}
+        {commitment.accountableLead ? (
+          <span>{commitment.clientVisibleLead ? 'Lead shown to client' : 'Lead hidden from client'}</span>
+        ) : null}
+      </div>
+
+      {linked.length > 0 || missing > 0 ? (
+        <details className="text-meta">
+          <summary className="cursor-pointer text-muted-foreground">
+            {linked.length} linked task{linked.length === 1 ? '' : 's'}
+            {missing > 0 ? ` · ${missing} no longer present` : ''}
+          </summary>
+          <ul className="mt-1 space-y-1 pl-4">
+            {linked.map((item) => (
+              <li key={item.id}>
+                <Link
+                  href={`/projects/${projectId}/work/${item.id}`}
+                  className="underline-offset-4 hover:underline"
+                >
+                  {item.title}
+                </Link>
+                <span className="text-muted-foreground"> · {item.status}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
+      {commitment.scopeChanges.length > 0 ? (
+        <details className="text-meta">
+          <summary className="cursor-pointer text-muted-foreground">
+            {commitment.scopeChanges.length} scope change
+            {commitment.scopeChanges.length === 1 ? '' : 's'}
+          </summary>
+          <ul className="mt-1 space-y-1 pl-4">
+            {commitment.scopeChanges.map((change, index) => (
+              <li key={`${change.at}-${index}`} className="text-muted-foreground">
+                <Timestamp value={change.at} dateOnly /> — {change.reason}
+                {change.newTarget != null ? ` (target → ${formatNumber(change.newTarget)})` : ''}
+                {change.requiresReconfirmation ? ' · needs client reconfirmation' : ''}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
+      {commitment.cancelReason ? (
+        <p className="text-meta text-muted-foreground">Cancelled: {commitment.cancelReason}</p>
+      ) : null}
+    </li>
+  );
+}
+
+function commitmentStatusLabel(status: CommitmentStatus): string {
+  switch (status) {
+    case 'active':
+      return 'In progress';
+    case 'needs-attention':
+      return 'Needs attention';
+    case 'agreed':
+      return 'Agreed';
+    default:
+      return status.charAt(0).toUpperCase() + status.slice(1);
+  }
+}
+
+function commitmentStatusTone(status: CommitmentStatus): StatusTone {
+  switch (status) {
+    case 'completed':
+    case 'closed':
+      return 'success';
+    case 'needs-attention':
+      return 'warning';
+    case 'cancelled':
+    case 'superseded':
+      return 'neutral';
+    case 'active':
+    case 'agreed':
+      return 'info';
+    default:
+      return 'unmeasured';
+  }
+}
 
 /**
  * PJ07 — Roadmap.
@@ -72,6 +232,8 @@ export default function RoadmapPage() {
   const [cycles, setCycles] = useState<Cycle[]>([]);
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [workItems, setWorkItems] = useState<WorkItem[]>([]);
+  const [commitments, setCommitments] = useState<Commitment[]>([]);
+  const [actions, setActions] = useState<ActionItem[]>([]);
   const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -89,21 +251,37 @@ export default function RoadmapPage() {
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
-      const [planResult, roadmapResult, gapResult, cycleResult, milestoneResult, workResult] =
-        await Promise.all([
-          getActionPlan(projectId, { signal }),
-          getGapRoadmap(projectId, { signal }),
-          listGaps(projectId, undefined, { signal }),
-          listCycles(projectId, undefined, { signal }).catch(() => []),
-          listMilestones(projectId, { signal }).catch(() => []),
-          listWorkItems(projectId, undefined, { signal }).catch(() => []),
-        ]);
+      const [
+        planResult,
+        roadmapResult,
+        gapResult,
+        cycleResult,
+        milestoneResult,
+        workResult,
+        commitmentResult,
+        actionResult,
+      ] = await Promise.all([
+        getActionPlan(projectId, { signal }),
+        getGapRoadmap(projectId, { signal }),
+        listGaps(projectId, undefined, { signal }),
+        listCycles(projectId, undefined, { signal }).catch(() => []),
+        listMilestones(projectId, { signal }).catch(() => []),
+        listWorkItems(projectId, undefined, { signal }).catch(() => []),
+        // §6.2's dated commitments and §5.6's action queue are their own
+        // reads. They are allowed to fail independently: a project with no
+        // commitments yet, or a caller who may not see the queue, must still
+        // get the ranked plan rather than a blank page.
+        listCommitments(projectId, undefined, { signal }).catch(() => []),
+        getStaffActions(projectId, { signal }).catch(() => ({ items: [], total: 0 })),
+      ]);
       setPlan(planResult);
       setRoadmap(roadmapResult);
       setGaps(gapResult.gaps);
       setCycles(cycleResult);
       setMilestones(milestoneResult);
       setWorkItems(workResult);
+      setCommitments(commitmentResult);
+      setActions(actionResult.items);
     },
     [projectId],
   );
@@ -183,6 +361,40 @@ export default function RoadmapPage() {
     });
   }, [now, workItems, milestones, cycles]);
 
+  /**
+   * §6.2: commitments are grouped by area of work, and **a section appears
+   * only when the project actually has work in it** — "avoid empty workstream
+   * tabs for services the client has not purchased or approved". So the
+   * grouping is built from the commitments that exist rather than from the
+   * full list of possible workstreams.
+   *
+   * Closed and cancelled commitments are kept in the list but sorted last:
+   * §6.3 requires that completed work is never silently removed to make
+   * progress look better.
+   */
+  const commitmentGroups = useMemo(() => {
+    const order: string[] = [];
+    const byWorkstream = new Map<string, Commitment[]>();
+    for (const commitment of commitments) {
+      const key = commitment.workstream || 'other';
+      if (!byWorkstream.has(key)) {
+        byWorkstream.set(key, []);
+        order.push(key);
+      }
+      byWorkstream.get(key)?.push(commitment);
+    }
+    const settled = new Set<CommitmentStatus>(['completed', 'closed', 'cancelled', 'superseded']);
+    return order.map((workstream) => ({
+      workstream,
+      commitments: [...(byWorkstream.get(workstream) ?? [])].sort((a, b) => {
+        const aSettled = settled.has(a.status) ? 1 : 0;
+        const bSettled = settled.has(b.status) ? 1 : 0;
+        if (aSettled !== bSettled) return aSettled - bSettled;
+        return a.title.localeCompare(b.title);
+      }),
+    }));
+  }, [commitments]);
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -244,6 +456,114 @@ export default function RoadmapPage() {
           <AlertDescription>{buildError}</AlertDescription>
         </Alert>
       ) : null}
+
+      {/* ── Needs your attention (staff queue, §5.6) ────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-subsection">Needs your attention</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-table text-muted-foreground">
+            Work assigned to you or waiting on the team, derived from the approvals, requests and
+            work items that actually hold it — not a separate to-do list. An item leaves this list
+            when its source is resolved, not when it is opened.
+          </p>
+          {actions.length === 0 ? (
+            <EmptyState
+              variant="not-measured"
+              subject="items waiting on the team"
+              prerequisite="an assigned approval, request or review task"
+              layout="inline"
+            >
+              <p>
+                Nothing is waiting on you or on the team right now. Audit findings are deliberately
+                absent here — they live on Priorities as evidence, and only become an action when
+                somebody asks you to supply or approve something.
+              </p>
+            </EmptyState>
+          ) : (
+            <ul className="divide-y divide-border">
+              {actions.map((item) => (
+                <li key={`${item.sourceType}:${item.sourceId}`} className="flex flex-wrap items-start justify-between gap-3 py-3">
+                  <div className="min-w-0 space-y-0.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-table font-medium">{item.title}</span>
+                      <StatusPill
+                        tone={item.severity === 'overdue' ? 'danger' : item.severity === 'blocking' ? 'warning' : 'neutral'}
+                        label={item.severity === 'overdue' ? 'Overdue' : item.severity === 'blocking' ? 'Blocking' : 'Requested'}
+                      />
+                    </div>
+                    <p className="text-table text-muted-foreground">{item.reason}</p>
+                    <p className="text-meta text-muted-foreground">
+                      Completes when {item.completionCondition}
+                      {item.deadline ? (
+                        <>
+                          {' · '}due <Timestamp value={item.deadline} dateOnly />
+                        </>
+                      ) : null}
+                    </p>
+                  </div>
+                  <Button asChild size="sm" variant="outline">
+                    <Link href={item.destination}>Open</Link>
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── 30-day plan commitments (§6.1-6.3) ──────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-subsection">30-day plan</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-table text-muted-foreground">
+            What we intend to accomplish in this period, grouped by area of work. A commitment is
+            not a task: its progress counts verified deliverables against a target that is frozen
+            when the scope is agreed, and an outcome goal is never completed just because its tasks
+            closed. This is the staff view — the client sees the same commitments without the
+            execution detail.
+          </p>
+
+          {commitments.length === 0 ? (
+            <EmptyState
+              variant="not-measured"
+              subject="plan commitments"
+              prerequisite="a cycle to attach them to"
+              action={{ label: 'Open the cycle board', href: `/projects/${projectId}/cycles` }}
+              layout="inline"
+            >
+              <p>
+                No commitment has been written for this project yet. The ranked plan below is a
+                ranking, not a promise — a commitment is what carries a target and a date, and it is
+                created deliberately.
+              </p>
+            </EmptyState>
+          ) : (
+            <div className="space-y-5">
+              {commitmentGroups.map((group) => (
+                <section key={group.workstream} className="space-y-2">
+                  <h3 className="text-table font-medium">
+                    {WORKSTREAM_LABEL[group.workstream] ?? group.workstream}
+                  </h3>
+                  <ul className="space-y-2">
+                    {group.commitments.map((commitment) => (
+                      <CommitmentRow
+                        key={commitment.id}
+                        commitment={commitment}
+                        projectId={projectId}
+                        workItems={workItems}
+                      />
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* ── Fix / build / influence ─────────────────────────────────────── */}
       <Card>

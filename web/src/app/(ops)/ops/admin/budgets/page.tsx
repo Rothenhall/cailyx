@@ -193,7 +193,7 @@ function BudgetsScreen() {
   if (error?.kind === 'forbidden' && !projectId) {
     return (
       <div className="space-y-6">
-        <PageHeader title="Budgets" />
+        <PageHeader title="Spending limits" />
         <EmptyState
           variant="insufficient-role"
           restrictedAction="read budget ceilings and spend"
@@ -218,7 +218,7 @@ function BudgetsScreen() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Budgets"
+        title="Spending limits"
         context={
           selectedProject
             ? `${selectedProject.name} · ${selectedProject.domain}${

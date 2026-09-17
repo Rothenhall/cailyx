@@ -20,7 +20,10 @@ import { formatDate } from '@/lib/format';
 import { toViewWorkStatus } from '@/lib/work-mapping';
 import { listPortalProjectSummaries, type PortalProjectSummary } from '@/services/portal';
 import {
+  getPortalCommitments,
   getPortalPlan,
+  type CommitmentStatus,
+  type PortalCommitment,
   type PortalCycle,
   type PortalMilestone,
   type PortalPlan,
@@ -62,6 +65,7 @@ export default function ClientPlanPage() {
 
   const [project, setProject] = useState<PortalProjectSummary | null>(null);
   const [plan, setPlan] = useState<PortalPlan | null>(null);
+  const [commitments, setCommitments] = useState<PortalCommitment[]>([]);
   const [checklist, setChecklist] = useState<PortalChecklist | null>(null);
   const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
 
@@ -69,14 +73,16 @@ export default function ClientPlanPage() {
     async (signal?: AbortSignal) => {
       try {
         setError(null);
-        const [projects, planResult, checklistResult] = await Promise.allSettled([
+        const [projects, planResult, commitmentsResult, checklistResult] = await Promise.allSettled([
           listPortalProjectSummaries({ signal }),
           getPortalPlan(projectId, { signal }),
+          getPortalCommitments(projectId, { signal }),
           getPortalChecklist(projectId, { signal }),
         ]);
         if (projects.status === 'rejected') throw projects.reason;
         setProject(projects.value.find((entry) => entry.id === projectId) ?? null);
         if (planResult.status === 'fulfilled') setPlan(planResult.value);
+        if (commitmentsResult.status === 'fulfilled') setCommitments(commitmentsResult.value);
         if (checklistResult.status === 'fulfilled') setChecklist(checklistResult.value);
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === 'AbortError') return;
@@ -96,7 +102,7 @@ export default function ClientPlanPage() {
     return (
       <div className="space-y-6">
         <PageHeader title="Plan" />
-        <ErrorState error={error} onRetry={() => void load()} notFoundReason="missing-or-private" />
+        <ErrorState error={error} onRetry={() => void load()} notFoundReason="missing-or-private" showServerMessage={false} />
       </div>
     );
   }
@@ -184,16 +190,19 @@ export default function ClientPlanPage() {
         <Alert>
           <AlertTitle>No engagement is attached to this project</AlertTitle>
           <AlertDescription>
-            Cycles and milestones can still exist, but there is no service period
-            on file for this project. Your delivery lead can attach one.
+            Work periods and milestones can still exist, but there is no
+            service period on file for this project. Your delivery lead can
+            attach one.
           </AlertDescription>
         </Alert>
       ) : null}
 
-      {/* ── This cycle ─────────────────────────────────────────────────── */}
+      {/* ── This work period ───────────────────────────────────────────── */}
+      {/* §4.3: a "cycle" is internal shorthand for the period of work the
+          commitments below cover, so the client reads "work period". */}
       <section aria-labelledby="cycle-heading" className="space-y-3">
         <h2 id="cycle-heading" className="text-subsection font-semibold tracking-tight">
-          This cycle
+          This work period
         </h2>
         {liveCycle ? (
           <CycleCard cycle={liveCycle} projectId={projectId} />
@@ -202,8 +211,8 @@ export default function ClientPlanPage() {
             <CardContent className="py-4">
               <EmptyState
                 variant="not-measured"
-                subject="the current cycle"
-                prerequisite="No cycle has been created for this project yet. Your delivery team publishes one when a work period starts."
+                subject="the current work period"
+                prerequisite="No work period has been planned for this project yet. Your delivery team publishes one when a period of work starts."
               />
             </CardContent>
           </Card>
@@ -212,26 +221,50 @@ export default function ClientPlanPage() {
             <CardContent className="py-4">
               <EmptyState
                 variant="not-measured"
-                subject="the current cycle"
-                prerequisite="No cycle is active right now. The roadmap below lists what has been planned and finished."
+                subject="the current work period"
+                prerequisite="No work period is active right now. Your 30-day plan below lists what has been planned and finished."
               />
             </CardContent>
           </Card>
         )}
       </section>
 
+      {/* ── Commitments ────────────────────────────────────────────────── */}
+      <section aria-labelledby="commitments-heading" className="space-y-3">
+        <h2 id="commitments-heading" className="text-subsection font-semibold tracking-tight">
+          Your 30-day plan
+        </h2>
+        {commitments.length === 0 ? (
+          <Card>
+            <CardContent className="py-4">
+              <EmptyState
+                variant="not-measured"
+                subject="plan commitments"
+                prerequisite="Nothing has been agreed for this period yet."
+              />
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-3">
+            {commitments.map((commitment) => (
+              <CommitmentCard key={commitment.id} commitment={commitment} />
+            ))}
+          </div>
+        )}
+      </section>
+
       {/* ── Roadmap ────────────────────────────────────────────────────── */}
       <section aria-labelledby="roadmap-heading" className="space-y-3">
         <h2 id="roadmap-heading" className="text-subsection font-semibold tracking-tight">
-          Roadmap
+          30-day plan
         </h2>
         {plan.cycles.length === 0 ? (
           <Card>
             <CardContent className="py-4">
               <EmptyState
                 variant="not-measured"
-                subject="the roadmap"
-                prerequisite="No cycle has been planned yet."
+                subject="the 30-day plan"
+                prerequisite="No work period has been planned yet."
               />
             </CardContent>
           </Card>
@@ -258,8 +291,8 @@ export default function ClientPlanPage() {
                         />
                         <span className="text-meta text-muted-foreground">
                           {cycle.committedAt
-                            ? `${cycle.deliveredCount} of ${cycle.committedCount} committed delivered`
-                            : 'not committed yet'}
+                            ? `${cycle.deliveredCount} of ${cycle.committedCount} agreed items delivered`
+                            : 'not agreed yet'}
                         </span>
                       </span>
                     </div>
@@ -274,8 +307,7 @@ export default function ClientPlanPage() {
                           {cycle.scopeChanges.map((change, index) => (
                             <li key={`${change.at}-${index}`} className="text-muted-foreground">
                               <Timestamp value={change.at} dateOnly /> — {change.reason}
-                              {change.added.length > 0 ? ` (+${change.added.length})` : ''}
-                              {change.removed.length > 0 ? ` (−${change.removed.length})` : ''}
+                              {change.requiresReconfirmation ? ' (needs your confirmation)' : ''}
                             </li>
                           ))}
                         </ul>
@@ -337,7 +369,9 @@ export default function ClientPlanPage() {
                         <span className="text-table font-medium">{item.title}</span>
                       </div>
                       {item.blockedReason ? (
-                        <p className="mt-1 text-meta text-muted-foreground">{item.blockedReason}</p>
+                        <p className="mt-1 text-meta text-muted-foreground">
+                          {blockedReasonLabel(item.blockedReason)}
+                        </p>
                       ) : (
                         <p className="mt-1 text-meta text-muted-foreground">
                           No reason was recorded for this blocker.
@@ -485,7 +519,7 @@ function CycleCard({ cycle, projectId }: { cycle: PortalCycle; projectId: string
             </p>
             {drift !== 0 ? (
               <Alert>
-                <AlertTitle>The cycle holds {cycle.currentCount} items now</AlertTitle>
+                <AlertTitle>This work period holds {cycle.currentCount} items now</AlertTitle>
                 <AlertDescription>
                   {drift > 0
                     ? `${drift} item${drift === 1 ? '' : 's'} were added after the commitment was made. `
@@ -496,8 +530,7 @@ function CycleCard({ cycle, projectId }: { cycle: PortalCycle; projectId: string
                     {cycle.scopeChanges.map((change, index) => (
                       <li key={`${change.at}-${index}`}>
                         {change.reason}
-                        {change.added.length > 0 ? ` (+${change.added.length})` : ''}
-                        {change.removed.length > 0 ? ` (−${change.removed.length})` : ''}
+                        {change.requiresReconfirmation ? ' (needs your confirmation)' : ''}
                       </li>
                     ))}
                   </ul>
@@ -509,10 +542,10 @@ function CycleCard({ cycle, projectId }: { cycle: PortalCycle; projectId: string
             ) : null}
           </div>
         ) : (
-          // §3.5 — an uncommitted cycle has no denominator, so no progress is drawn.
+          // §3.5 — an uncommitted work period has no denominator, so no progress is drawn.
           <p className="text-table text-muted-foreground">
-            This cycle has not been committed yet, so there is no agreed count to
-            measure delivery against. {cycle.currentCount} item
+            This work period has not been agreed yet, so there is no agreed count
+            to measure delivery against. {cycle.currentCount} item
             {cycle.currentCount === 1 ? '' : 's'} are currently planned in it.
           </p>
         )}
@@ -528,8 +561,119 @@ function CycleCard({ cycle, projectId }: { cycle: PortalCycle; projectId: string
   );
 }
 
+/**
+ * One plan commitment (§6.1-6.2) — distinct from a WorkItem or a content
+ * schedule entry. Progress is rendered exactly as the server labels it
+ * ("3 of 10 articles published"), never recomputed into a percentage here.
+ */
+function CommitmentCard({ commitment }: { commitment: PortalCommitment }) {
+  const showBar = commitment.progress.kind === 'countable' && commitment.progress.targetCount != null;
+  const percent = showBar
+    ? Math.min(100, Math.round((commitment.progress.verifiedCount / (commitment.progress.targetCount ?? 1)) * 100))
+    : 0;
+
+  return (
+    <Card>
+      <CardHeader className="flex-row items-start justify-between space-y-0">
+        <div className="space-y-1">
+          <CardTitle className="text-subsection">{commitment.title}</CardTitle>
+          {commitment.reason ? <p className="text-meta text-muted-foreground">{commitment.reason}</p> : null}
+        </div>
+        <StatusPill label={commitmentStatusLabel(commitment.status)} tone={commitmentStatusTone(commitment.status)} />
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2 text-meta text-muted-foreground">
+          <span>{commitment.accountableLead}</span>
+          {commitment.targetDate ? (
+            <>
+              <span aria-hidden="true">·</span>
+              <span>
+                By <Timestamp value={commitment.targetDate} dateOnly />
+              </span>
+            </>
+          ) : null}
+        </div>
+
+        <p className="text-table font-medium">{commitment.progress.label}</p>
+        {showBar ? (
+          <Progress value={percent} aria-label={commitment.progress.label} />
+        ) : null}
+
+        {commitment.nextClientAction ? (
+          <Button asChild size="sm" variant="outline">
+            <Link href={commitment.nextClientAction.destination}>
+              {commitment.nextClientAction.title}
+              <ArrowRight aria-hidden="true" className="ml-1.5 h-3.5 w-3.5" />
+            </Link>
+          </Button>
+        ) : null}
+
+        {commitment.scopeChanges.length > 0 ? (
+          <details className="text-meta">
+            <summary className="cursor-pointer text-muted-foreground">
+              {commitment.scopeChanges.length} change{commitment.scopeChanges.length === 1 ? '' : 's'} to this
+              commitment
+            </summary>
+            <ul className="mt-1 space-y-1 pl-4">
+              {commitment.scopeChanges.map((change, index) => (
+                <li key={`${change.at}-${index}`} className="text-muted-foreground">
+                  <Timestamp value={change.at} dateOnly /> — {change.reason}
+                  {change.requiresReconfirmation ? ' (needs your confirmation)' : ''}
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function commitmentStatusLabel(status: CommitmentStatus): string {
+  switch (status) {
+    case 'draft':
+      return 'Draft';
+    case 'proposed':
+      return 'Proposed';
+    case 'agreed':
+      return 'Agreed';
+    case 'active':
+      return 'In progress';
+    case 'needs-attention':
+      return 'Needs attention';
+    case 'completed':
+      return 'Completed';
+    case 'closed':
+      return 'Closed';
+    case 'cancelled':
+      return 'Cancelled';
+    case 'superseded':
+      return 'Superseded';
+    default:
+      return status;
+  }
+}
+
+function commitmentStatusTone(status: CommitmentStatus): StatusTone {
+  switch (status) {
+    case 'completed':
+    case 'closed':
+      return 'success';
+    case 'needs-attention':
+      return 'warning';
+    case 'cancelled':
+    case 'superseded':
+      return 'neutral';
+    case 'active':
+    case 'agreed':
+      return 'info';
+    default:
+      return 'unmeasured';
+  }
+}
+
 function MilestoneRow({ milestone, now }: { milestone: PortalMilestone; now: number }) {
-  const due = milestone.dueAt ? new Date(milestone.dueAt) : null;
+  const due = milestone.dueOn ? new Date(milestone.dueOn) : null;
   const overdue =
     due !== null && !Number.isNaN(due.getTime()) && due.getTime() < now && milestone.status !== 'met';
 
@@ -537,12 +681,9 @@ function MilestoneRow({ milestone, now }: { milestone: PortalMilestone; now: num
     <li className="flex flex-wrap items-start justify-between gap-3 py-3">
       <div className="min-w-0">
         <div className="text-table font-medium">{milestone.title}</div>
-        {milestone.description ? (
-          <p className="mt-1 text-meta text-muted-foreground">{milestone.description}</p>
-        ) : null}
-        {milestone.dueAt ? (
+        {milestone.dueOn ? (
           <p className="text-meta text-muted-foreground">
-            Due <Timestamp value={milestone.dueAt} dateOnly />
+            Due <Timestamp value={milestone.dueOn} dateOnly />
             {overdue ? ' — past its date' : ''}
           </p>
         ) : (
@@ -559,7 +700,7 @@ function cycleStatusLabel(status: string): string {
     case 'planning':
       return 'Planning';
     case 'committed':
-      return 'Committed';
+      return 'Agreed';
     case 'active':
       return 'In progress';
     case 'review':
@@ -567,7 +708,8 @@ function cycleStatusLabel(status: string): string {
     case 'closed':
       return 'Closed';
     default:
-      return status;
+      // §4.3: an unmapped state is never printed as a slug.
+      return 'Status not recorded';
   }
 }
 
@@ -619,10 +761,27 @@ function toWorkViewItem(item: PortalWorkItem): WorkViewItem {
     id: item.id,
     deliverable: item.title,
     owner: 'Not shown here',
-    dueDate: item.dueAt ?? undefined,
+    dueDate: item.dueOn ?? undefined,
     status: toViewWorkStatus(item.status),
-    blocker: item.status === 'blocked' ? (item.blockedReason ?? undefined) : undefined,
+    blocker: item.status === 'blocked' ? (blockedReasonLabel(item.blockedReason) ?? undefined) : undefined,
     evidenceHref: `/client/projects/${item.projectId}/work/${item.id}`,
     nextAction: undefined,
   };
+}
+
+/** Client-facing text for the normalized blocker category the backend sends
+ * (never the raw internal blockedReason text). */
+function blockedReasonLabel(reason: PortalWorkItem['blockedReason']): string | null {
+  switch (reason) {
+    case 'client-action':
+      return 'Waiting on something from you.';
+    case 'approval':
+      return 'Waiting on an approval.';
+    case 'dependency':
+      return 'Waiting on other work to finish first.';
+    case 'other':
+      return 'Waiting on something on our side.';
+    default:
+      return null;
+  }
 }

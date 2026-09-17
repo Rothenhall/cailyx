@@ -27,7 +27,9 @@ export interface CoveragePanelProps {
   className?: string;
 }
 
-const DEFAULT_TITLE = 'Evidence coverage';
+// §4.3: "Evidence manifest → Sources and dates". The panel lists which sources
+// answered and when; that is what its title now says.
+const DEFAULT_TITLE = 'Sources and dates';
 
 interface CoverageCounts {
   expected: number;
@@ -67,7 +69,10 @@ function readCounts(summary: CoverageSummary): CoverageCounts {
 
 function issueListLabel(kind: 'failed' | 'deferred', count: number): string {
   const noun = `source${count === 1 ? '' : 's'}`;
-  return kind === 'failed' ? `${count} failed ${noun}` : `${count} deferred ${noun}`;
+  // §4.3: a status is described by what happened, not by the internal state
+  // name. "failed" reads as a verdict about the client's data; "did not report"
+  // describes the measurement.
+  return kind === 'failed' ? `${count} ${noun} did not report` : `${count} ${noun} still to report`;
 }
 
 /**
@@ -146,7 +151,7 @@ export function CoveragePanel({
 
   const headline =
     expected === 0
-      ? 'No checks were agreed for this run, so coverage cannot be reported as a percentage.'
+      ? 'No checks were agreed for this measurement, so coverage cannot be reported as a percentage.'
       : `${successful} of ${expected} agreed ${expected === 1 ? 'check' : 'checks'} returned evidence.`;
 
   return (
@@ -218,7 +223,9 @@ export function CoveragePanel({
 function IssueList({ kind, issues }: { kind: 'failed' | 'deferred'; issues: CoverageIssue[] }) {
   const isFailed = kind === 'failed';
   const Icon = isFailed ? AlertTriangle : Clock;
-  const heading = isFailed ? 'Failed sources' : 'Deferred sources (accepted, not measured)';
+  const heading = isFailed
+    ? 'Sources that did not report'
+    : 'Sources still to report (agreed, not measured yet)';
 
   return (
     <div>
@@ -264,9 +271,10 @@ function ContradictionNote({ counts }: { counts: CoverageCounts }) {
     <div className="mt-3 flex gap-2 rounded-md border border-warning/40 bg-warning-subtle p-2.5 text-table text-warning-foreground">
       <ShieldQuestion aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
       <p>
-        This run reports <strong className="font-semibold">all agreed checks successful</strong> but also
-        names {named} as not completed. Treat the coverage figure above as incomplete until the run&rsquo;s
-        own counts are reconciled.
+        This measurement reports{' '}
+        <strong className="font-semibold">all agreed checks successful</strong> but also names {named} as
+        not completed. Treat the coverage figure above as incomplete until this measurement&rsquo;s own
+        counts are reconciled.
       </p>
     </div>
   );

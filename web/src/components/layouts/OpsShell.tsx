@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useSession } from '@/hooks/useSession';
-import { OPERATOR_NAV, PROJECT_NAV, projectNavHref, visibleSections } from '@/lib/navigation';
+import { OPERATOR_NAV, resolveProjectNav, visibleSections } from '@/lib/navigation';
 import { AppShell } from './AppShell';
 
 /**
@@ -45,14 +45,11 @@ export function OpsShell({ badges, detailPanel, contentWidth, children }: OpsShe
   const { user, status, signOut } = useSession();
   const projectId = projectPrefix(pathname);
 
+  // §3.2's project tree, resolved in `lib/navigation` rather than here so the
+  // structure stays assertable from source — the smoke check for §3.2 reads the
+  // same function this shell renders.
   const sections = projectId
-    ? PROJECT_NAV.map((section) => ({
-        ...section,
-        items: section.items.map((item) => ({
-          ...item,
-          href: projectNavHref(projectId, item.href),
-        })),
-      }))
+    ? resolveProjectNav(projectId, user?.role)
     : visibleSections(OPERATOR_NAV, user?.role);
 
   return (
@@ -62,6 +59,10 @@ export function OpsShell({ badges, detailPanel, contentWidth, children }: OpsShe
       badges={badges}
       detailPanel={detailPanel}
       contentWidth={contentWidth}
+      // §3.2 — "remember its state per user": the scope is the signed-in
+      // user, so two people sharing a browser do not inherit each other's
+      // collapsed Team tools group.
+      navScope={user?.id ? `ops:${user.id}` : undefined}
       topbarStart={
         <div className="flex min-w-0 items-center gap-2">
           {projectId ? <ProjectBreadcrumb projectId={projectId} /> : <WorkspaceLabel />}

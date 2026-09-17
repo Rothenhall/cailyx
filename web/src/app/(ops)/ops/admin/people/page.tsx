@@ -272,7 +272,7 @@ export default function AdminPeoplePage() {
   if (error?.kind === 'forbidden') {
     return (
       <div className="space-y-6">
-        <PageHeader title="People" />
+        <PageHeader title="People and access" />
         <EmptyState
           variant="insufficient-role"
           restrictedAction="manage operator accounts"
@@ -285,7 +285,7 @@ export default function AdminPeoplePage() {
   if (error) {
     return (
       <div className="space-y-6">
-        <PageHeader title="People" />
+        <PageHeader title="People and access" />
         <ErrorState error={error} onRetry={() => void load()} />
       </div>
     );
@@ -303,7 +303,7 @@ export default function AdminPeoplePage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="People"
+        title="People and access"
         context={`${operators.length} account${operators.length === 1 ? '' : 's'}, ${adminCount} with the admin role.`}
         primaryAction={{
           label: 'Add operator',

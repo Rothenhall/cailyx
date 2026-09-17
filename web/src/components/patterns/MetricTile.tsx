@@ -282,7 +282,7 @@ export function MetricTile({
 
       {!measured && baseline ? (
         <p className="text-meta text-unmeasured-foreground">
-          A comparison is withheld: there is no measured value to compare against a baseline yet.
+          A comparison is withheld: there is no measured value to compare against a previous period yet.
         </p>
       ) : null}
 
@@ -307,7 +307,7 @@ export function MetricTile({
       {measured && !deltaView && !notComparableNote ? (
         <p className="flex items-start gap-1.5 text-meta text-muted-foreground">
           <Info aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          First measurement — a comparison will appear after a comparable run
+          First measurement — a comparison will appear after a similar period is measured
         </p>
       ) : null}
 
@@ -327,7 +327,7 @@ export function MetricTile({
               remembering a label. */}
           {baselineHref ? (
             <a className="font-medium text-primary hover:underline" href={baselineHref}>
-              {runLabel ?? 'Open run'}
+              {runLabel ?? 'Open the details'}
             </a>
           ) : runLabel ? (
             <span>{runLabel}</span>
@@ -390,11 +390,12 @@ function DeltaPill({
         {delta.text}
       </span>
       <span className="text-meta text-muted-foreground">
-        {baseline.label ?? 'vs comparable run'}
+        {baseline.label ?? 'vs the previous period'}
         {' · '}
         <Timestamp value={baseline.runDate} timeZone={timeZone} dateOnly />
-        {' · '}
-        <span className="font-mono">{baseline.runId}</span>
+        {/* §4.3 keeps internal IDs off normal screens; the date is what
+            identifies the period the comparison is against. Staff can still
+            reach the run itself from the evidence panel. */}
       </span>
     </span>
   );

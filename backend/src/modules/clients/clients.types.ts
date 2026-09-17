@@ -28,6 +28,25 @@ export interface ClientOverviewDto extends ClientDto {
   latestBand: string | null;
   openGapCount: number;
   hasProjectOnboarding: boolean;
+
+  // ── §3.4's client-list columns ────────────────────────────────────────
+  // "A project performance score can be a secondary detail, but never confuse
+  // it with account health or delivery completion" (§3.4). These are the
+  // delivery facts, kept deliberately distinct from `latestScore`.
+  /** Accountable staff member on the most recent engagement, by name. Null =
+   *  nobody recorded one, not "no lead exists". */
+  deliveryLeadName: string | null;
+  /** Delivered/committed counts from the client's current cycle. `committed`
+   *  is the FROZEN denominator and is never recomputed into a live count. */
+  planProgress: { delivered: number; committed: number };
+  /** Commitments past their target date that have not settled. */
+  overdueCommitments: number;
+  /** Open asks directed at the client — the same sources the per-project
+   *  action queue reads, counted across every project this client owns. */
+  waitingOnClient: number;
+  /** The most recent RELEASED report, or null when nothing has been released.
+   *  §3.4's "last report" column; drafts are deliberately excluded. */
+  lastReport: { slug: string; releasedAt: string | null } | null;
 }
 
 export interface ClientProjectSummaryDto {

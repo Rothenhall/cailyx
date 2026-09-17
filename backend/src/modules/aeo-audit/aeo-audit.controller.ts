@@ -2,8 +2,11 @@
  * AEO Audit Controller — REST API for answer-engine visibility audits.
  *
  * Routes (all under `/api/projects/:projectId/aeo`):
- *   POST /context                    scrape the site → SiteContext
+ *   POST /context                    run the staged website-understanding pipeline → SiteContext
  *   GET  /context                    latest stored context
+ *   GET  /context/runs               staff: staged-run history for this project
+ *   GET  /context/runs/:runId        staff: one run's stage/budget/page/fact detail
+ *   POST /context/runs/:runId/resume staff: resume a paused/failed run
  *   POST /matrix                     generate the categorised prompt matrix
  *   GET  /matrix/:querySetId         read a matrix, grouped by category
  *   GET  /budget                     what a run would cost, before starting it
@@ -32,15 +35,18 @@ import {
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { AeoAuditService } from './aeo-audit.service';
-import { AeoContextService } from './aeo-context.service';
+import { AeoContextService, SiteContextRunPausedException } from './aeo-context.service';
 import { AeoMatrixService } from './aeo-matrix.service';
+import { AeoVisibilityService } from './aeo-visibility.service';
 import {
   BudgetQueryDto,
   BuildContextDto,
   GenerateMatrixDto,
   MatrixQueryDto,
+  ResumeContextRunDto,
   RunAuditDto,
   StancePassResponse,
+  VisibilityQueryDto,
 } from './dto/aeo-audit.dto';
 import { AEO_SURFACES, TIER_SIZES } from './aeo-audit.types';
 import type { AeoSurface, MatrixTier, PromptDimension } from './aeo-audit.types';
@@ -53,7 +59,61 @@ export class AeoAuditController {
     private readonly audits: AeoAuditService,
     private readonly context: AeoContextService,
     private readonly matrix: AeoMatrixService,
+    private readonly visibility: AeoVisibilityService,
   ) {}
+
+  // ─── AI visibility (merged read composition, §8) ───────────────────────
+  // Staff-scoped like the rest of this controller — no `@ClientPortal()` here,
+  // so these reads are not reachable by a client account (RolesGuard is
+  // default-deny). The client-facing AEO numbers remain the aggregate-only
+  // portal results read.
+
+  @Get('visibility/summary')
+  @ApiOperation({
+    summary: 'AI visibility — summary view',
+    description:
+      'Score/mention-rate where valid, how many questions were checked, locations, dates and a plain-' +
+      'English status. Composed from the audit/verdict this module already computes — no new measurement. ' +
+      'Failed/gated surfaces are named in `disclosedFailures`, never dropped to flatter the visible rate.',
+  })
+  @ApiResponse({ status: 200, description: 'Summary' })
+  @ApiResponse({ status: 404, description: 'No completed measurement for this project, or the given audit does not belong to it' })
+  async visibilitySummary(@Param('projectId') projectId: string, @Query() query: VisibilityQueryDto) {
+    return this.visibility.summary(projectId, query.auditId);
+  }
+
+  @Get('visibility/questions')
+  @ApiOperation({
+    summary: 'AI visibility — customer questions view',
+    description:
+      'Question-level aggregate, grouped by business topic, with stable pagination and the current/' +
+      'selected question-set version stamped on every page. A question with zero observations reports ' +
+      '`checked: false` ("Not checked"), never a fabricated zero-appearance count.',
+  })
+  @ApiResponse({ status: 200, description: 'One page of customer questions' })
+  @ApiResponse({ status: 404, description: 'No completed measurement for this project, or the given audit does not belong to it' })
+  async visibilityQuestions(@Param('projectId') projectId: string, @Query() query: VisibilityQueryDto) {
+    return this.visibility.questions(projectId, {
+      auditId: query.auditId,
+      topic: query.topic as PromptDimension | undefined,
+      cursor: query.cursor,
+      limit: query.limit,
+    });
+  }
+
+  @Get('visibility/history')
+  @ApiOperation({
+    summary: 'AI visibility — history view',
+    description:
+      'Comparable measurements across every completed/failed audit, oldest-to-newest internally but ' +
+      'returned newest-first. Each entry that used a different question-set version than the one before ' +
+      'it carries `comparabilityBreak: true` and a stated reason — history is never silently flattened ' +
+      'into one continuous chart across a wording/topic/market change.',
+  })
+  @ApiResponse({ status: 200, description: 'History entries, newest first' })
+  async visibilityHistory(@Param('projectId') projectId: string) {
+    return { history: await this.visibility.history(projectId) };
+  }
 
   // ─── Context ───────────────────────────────────────────────────────────
 
@@ -69,10 +129,29 @@ export class AeoAuditController {
       'deterministic extraction stands and `extraction` reports "deterministic".',
   })
   @ApiBody({ type: BuildContextDto })
-  @ApiResponse({ status: 201, description: 'Context built and stored' })
+  @ApiResponse({
+    status: 201,
+    description:
+      'The run row was created. A completed run returns the stored context; a run that hit its elapsed-time budget ' +
+      'returns `{ paused: true, runId, reachedStage, message }` instead — resume it with POST /context/runs/:runId/resume. ' +
+      'Both are 201 because the run itself was created either way; the payload distinguishes them.',
+  })
   @ApiResponse({ status: 404, description: 'Project not found' })
   async buildContext(@Param('projectId') projectId: string, @Body() body: BuildContextDto) {
-    return this.context.build(projectId, { maxPages: body.maxPages, refine: body.refine });
+    try {
+      return await this.context.build(projectId, {
+        maxPages: body.maxPages,
+        refine: body.refine,
+        maxRequests: body.maxRequests,
+        maxChars: body.maxChars,
+        maxElapsedMs: body.maxElapsedMs,
+      });
+    } catch (err) {
+      if (err instanceof SiteContextRunPausedException) {
+        return { paused: true, runId: err.runId, reachedStage: err.reachedStage, message: err.message };
+      }
+      throw err;
+    }
   }
 
   @Get('context')
@@ -85,6 +164,57 @@ export class AeoAuditController {
       throw new NotFoundException('No site context for project ' + projectId + ' — POST /context first');
     }
     return ctx;
+  }
+
+  @Get('context/runs')
+  @ApiOperation({ summary: 'Staged context-pipeline run history (staff)', description: 'Every stage, budget and coverage-plan snapshot for past runs, newest first.' })
+  @ApiResponse({ status: 200, description: 'Run summaries' })
+  async listContextRuns(@Param('projectId') projectId: string) {
+    return { projectId, runs: await this.context.listRuns(projectId) };
+  }
+
+  @Get('context/runs/:runId')
+  @ApiOperation({ summary: 'One staged context run in detail (staff)', description: 'Stage/budget/coverage state plus every discovered page and extracted fact, for inspecting or diagnosing a run.' })
+  @ApiResponse({ status: 200, description: 'Run detail' })
+  @ApiResponse({ status: 404, description: 'Run not found' })
+  async getContextRun(@Param('projectId') projectId: string, @Param('runId') runId: string) {
+    const detail = await this.context.getRun(runId);
+    if (detail.run.projectId !== projectId) {
+      throw new NotFoundException('Site context run not found: ' + runId + ' for project ' + projectId);
+    }
+    return detail;
+  }
+
+  @Post('context/runs/:runId/resume')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { ttl: 60000, limit: 10 } })
+  @ApiOperation({
+    summary: 'Resume a paused/failed staged context run (staff)',
+    description:
+      'Continues from the last completed stage. Pages already fetched are not re-fetched; pages whose ' +
+      'extraction already succeeded are not re-extracted; only pending/failed pages (under the retry cap) are retried.',
+  })
+  @ApiBody({ type: ResumeContextRunDto })
+  @ApiResponse({
+    status: 200,
+    description:
+      'A completed run returns the stored context; a run that hit its elapsed-time budget again returns ' +
+      '`{ paused: true, runId, reachedStage, message }` — resume it once more. Both are 200.',
+  })
+  @ApiResponse({ status: 404, description: 'Run not found' })
+  async resumeContextRun(@Param('projectId') projectId: string, @Param('runId') runId: string, @Body() body: ResumeContextRunDto) {
+    const existing = await this.context.getRun(runId);
+    if (existing.run.projectId !== projectId) {
+      throw new NotFoundException('Site context run not found: ' + runId + ' for project ' + projectId);
+    }
+    try {
+      return await this.context.resume(runId, { maxElapsedMs: body.maxElapsedMs });
+    } catch (err) {
+      if (err instanceof SiteContextRunPausedException) {
+        return { paused: true, runId: err.runId, reachedStage: err.reachedStage, message: err.message };
+      }
+      throw err;
+    }
   }
 
   // ─── Matrix ────────────────────────────────────────────────────────────

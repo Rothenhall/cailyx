@@ -328,7 +328,20 @@ export function classifyUrl(raw: string): ClassifiedUrl | null {
   return { platform: sig.platform, url: normalize(u), handle, entity };
 }
 
-/** Strip tracking params, fragments and trailing slashes so re-runs dedupe. */
+/**
+ * Strip tracking params, fragments and trailing slashes so re-runs dedupe —
+ * exported so callers outside this module (the rejection tombstone) key on
+ * exactly the same normalized form as account dedupe does, rather than
+ * maintaining a second, driftable copy of this logic.
+ */
+export function normalizeUrl(raw: string): string {
+  try {
+    return normalize(new URL(raw));
+  } catch {
+    return raw.trim().toLowerCase();
+  }
+}
+
 function normalize(u: URL): string {
   const out = new URL(u.toString());
   out.hash = '';

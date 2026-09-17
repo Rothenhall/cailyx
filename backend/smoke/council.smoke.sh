@@ -65,7 +65,9 @@ C2=$(curl -s -X POST "$API/projects/$PID/council" "${AUTH[@]}" -H 'content-type:
 [ "$(echo "$C2" | jget rounds)" = "2" ] && ok "session records rounds = 2" || bad "rounds not 2"
 
 # --- guards ---------------------------------------------------
-[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/council" "${AUTH[@]}" -H 'content-type: application/json' -d '{"useLlm":true}')" = "503" ] && ok "useLlm without ANTHROPIC_API_KEY → 503" || bad "useLlm not 503"
+llm_gate_check "useLlm without a provider" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/council" "${AUTH[@]}" -H 'content-type: application/json' -d '{"useLlm":true}')"
+
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/council" "${AUTH[@]}" -H 'content-type: application/json' -d '{"rounds":9}')" = "400" ] && ok "rounds out of range → 400" || bad "rounds not validated"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/council" "${AUTH[@]}" -H 'content-type: application/json' -d '{"agentRoles":["wizard"]}')" = "400" ] && ok "unknown agent role → 400" || bad "bad role not 400"
 

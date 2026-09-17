@@ -18,7 +18,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { ConfirmDialog } from '@/components/patterns/ConfirmDialog';
 import { EmptyState } from '@/components/patterns/EmptyState';
-import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
+import { ErrorState, clientActionMessage, toApiError } from '@/components/patterns/ErrorState';
 import { PageHeader } from '@/components/patterns/PageHeader';
 import { StatusPill } from '@/components/patterns/StatusPill';
 import { Timestamp } from '@/components/patterns/Timestamp';
@@ -108,8 +108,17 @@ export default function ClientConnectionsPage() {
 
         if (projects.status === 'rejected') throw projects.reason;
         setProject(projects.value.find((entry) => entry.id === projectId) ?? null);
-        if (statusResult.status === 'fulfilled') setConfigured(statusResult.value.configured);
-        if (connectionsResult.status === 'fulfilled') setConnections(connectionsResult.value);
+        // §3.5: a read that failed must not leave the page on its loading
+        // skeleton for ever. The connection list and whether Google is
+        // available at all are both required before anything renders, so a
+        // failure in either is the page's failure and shows the error state
+        // with a retry. The checklist is the one read that degrades on its
+        // own: its section says it could not be read rather than blanking the
+        // whole page, because the connections above it are still true.
+        if (connectionsResult.status === 'rejected') throw connectionsResult.reason;
+        if (statusResult.status === 'rejected') throw statusResult.reason;
+        setConfigured(statusResult.value.configured);
+        setConnections(connectionsResult.value);
         if (checklistResult.status === 'fulfilled') setChecklist(checklistResult.value);
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === 'AbortError') return;
@@ -133,7 +142,7 @@ export default function ClientConnectionsPage() {
       setPicker(await getPortalGoogleResources(projectId, service));
     } catch (caught) {
       setPickerError(
-        caught instanceof Error ? caught.message : 'The list of sites and properties could not be read.',
+        clientActionMessage(caught, 'The list of sites and properties could not be read.'),
       );
     }
   }
@@ -148,7 +157,7 @@ export default function ClientConnectionsPage() {
       window.location.href = url;
     } catch (caught) {
       setActionError(
-        caught instanceof Error ? caught.message : 'The authorization could not be started.',
+        clientActionMessage(caught, 'The authorization could not be started.'),
       );
       setBusy(null);
     }
@@ -164,7 +173,7 @@ export default function ClientConnectionsPage() {
       await load();
     } catch (caught) {
       setPickerError(
-        caught instanceof Error ? caught.message : 'That property could not be mapped.',
+        clientActionMessage(caught, 'That property could not be mapped.'),
       );
     } finally {
       setBusy(null);
@@ -180,7 +189,7 @@ export default function ClientConnectionsPage() {
     } catch (caught) {
       setTestErrors((current) => ({
         ...current,
-        [service]: caught instanceof Error ? caught.message : 'The read failed with no detail returned.',
+        [service]: clientActionMessage(caught, 'The read failed with no detail returned.'),
       }));
     } finally {
       setBusy(null);
@@ -200,9 +209,7 @@ export default function ClientConnectionsPage() {
       setDisconnecting(service);
     } catch (caught) {
       setActionError(
-        caught instanceof Error
-          ? caught.message
-          : 'The impact of disconnecting could not be read, so nothing was disconnected.',
+        clientActionMessage(caught, 'The impact of disconnecting could not be read, so nothing was disconnected.'),
       );
     } finally {
       setBusy(null);
@@ -216,7 +223,7 @@ export default function ClientConnectionsPage() {
       setDisconnectOutcome(impact);
       await load();
     } catch (caught) {
-      setActionError(caught instanceof Error ? caught.message : 'The connection could not be revoked.');
+      setActionError(clientActionMessage(caught, 'The connection could not be revoked.'));
     } finally {
       setBusy(null);
       setDisconnecting(null);
@@ -232,7 +239,7 @@ export default function ClientConnectionsPage() {
       await load();
     } catch (caught) {
       setActionError(
-        caught instanceof Error ? caught.message : 'That request could not be updated.',
+        clientActionMessage(caught, 'That request could not be updated.'),
       );
     } finally {
       setRequestBusy(null);
@@ -243,7 +250,7 @@ export default function ClientConnectionsPage() {
     return (
       <div className="space-y-6">
         <PageHeader title="Connections" />
-        <ErrorState error={error} onRetry={() => void load()} notFoundReason="missing-or-private" />
+        <ErrorState error={error} onRetry={() => void load()} notFoundReason="missing-or-private" showServerMessage={false} />
       </div>
     );
   }
@@ -283,12 +290,12 @@ export default function ClientConnectionsPage() {
       {!configured ? (
         <Alert variant="destructive" role="alert">
           <AlertTriangle aria-hidden="true" className="h-4 w-4" />
-          <AlertTitle>Google connections are not available on this deployment</AlertTitle>
+          <AlertTitle>Google connections are not available for this account yet</AlertTitle>
           <AlertDescription>
-            The server has no Google OAuth credentials configured, so no
-            connection can be made or reconnected from here. This is a
-            deployment setting, not something a button on this page can fix —
-            your delivery team can connect it on their side.
+            Connecting a Google account is not switched on for this account
+            yet, so no connection can be made or reconnected from here. Nothing
+            on this page can change that — your delivery team can connect it on
+            their side for you.
           </AlertDescription>
         </Alert>
       ) : (
@@ -771,7 +778,7 @@ function SummaryReadout({ summary }: { summary: PortalGoogleSummary }) {
         )}
       </dl>
       <p className="mt-2 text-meta text-muted-foreground">
-        This is a live read from the provider, not a stored report figure.
+        This is read live from your connected Google account, not a stored report figure.
       </p>
     </div>
   );

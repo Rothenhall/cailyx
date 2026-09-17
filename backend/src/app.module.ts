@@ -47,6 +47,7 @@ import { SerpIntelligenceModule } from './modules/serp-intelligence/serp-intelli
 import { AuthorityModule } from './modules/authority/authority.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { GoogleModule } from './modules/google/google.module';
+import { WebsiteModule } from './modules/website/website.module';
 import { SeoAuditModule } from './modules/seo-audit/seo-audit.module';
 import { AeoAuditModule } from './modules/aeo-audit/aeo-audit.module';
 import { DigitalPresenceModule } from './modules/digital-presence/digital-presence.module';
@@ -54,6 +55,7 @@ import { TechStackModule } from './modules/tech-stack/tech-stack.module';
 import { KeywordResearchModule } from './modules/keyword-research/keyword-research.module';
 import { CompetitorsModule } from './modules/competitors/competitors.module';
 import { GrowthExecutionModule } from './modules/growth-execution/growth-execution.module';
+import { OpportunitiesModule } from './modules/opportunities/opportunities.module';
 import { ClientsModule } from './modules/clients/clients.module';
 import { ClientPortalModule } from './modules/client-portal/client-portal.module';
 import { BacklinksModule } from './modules/backlinks/backlinks.module';
@@ -67,8 +69,12 @@ import { BusinessProfileModule } from './modules/business-profile/business-profi
 import { DeliveryPlanModule } from './modules/delivery-plan/delivery-plan.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { ContentModule } from './modules/content/content.module';
+import { ContentWorkspaceModule } from './modules/content-workspace/content-workspace.module';
+import { WritingStyleModule } from './modules/writing-style/writing-style.module';
+import { ContentGenerationModule } from './modules/content-generation/content-generation.module';
 import { ApprovalsModule } from './modules/approvals/approvals.module';
 import { PublishingModule } from './modules/publishing/publishing.module';
+import { ContentCalendarModule } from './modules/content-calendar/content-calendar.module';
 import { BudgetsModule } from './modules/budgets/budgets.module';
 import { ResultsModule } from './modules/results/results.module';
 import { OperationsModule } from './modules/operations/operations.module';
@@ -170,6 +176,9 @@ import { OrganizationModule } from './modules/organization/organization.module';
     // Google Search Console + Analytics (3-legged OAuth)
     GoogleModule,
 
+    // Website (P12) — unified health/Google/visitors screen, joined page identity
+    WebsiteModule,
+
     // SEO audit — Search Console data + fixes
     SeoAuditModule,
 
@@ -194,6 +203,7 @@ import { OrganizationModule } from './modules/organization/organization.module';
     // Stage 11, "Marketing & Growth Execution" — the flowchart's last
     // previously-unbuilt stage before Final Output (stage 12, `reporting`).
     GrowthExecutionModule,
+    OpportunitiesModule,
 
     // Lean admin/client-management layer (2026-09-13) — NOT the full
     // docs/analysis/client-portal.md plan. See clients/README.md.
@@ -217,8 +227,12 @@ import { OrganizationModule } from './modules/organization/organization.module';
     DeliveryPlanModule,      // G06
     NotificationsModule,     // G08
     ContentModule,           // G09
+    ContentWorkspaceModule,  // P08 — canonical content workspace on top of G09/G10/G11
+    WritingStyleModule,      // P09 — versioned writing style profile (§13.8)
+    ContentGenerationModule, // P09 — durable, resumable content generation (§13.7)
     ApprovalsModule,         // G10
     PublishingModule,        // G11
+    ContentCalendarModule,   // P10 — the one content calendar (§6.4-§6.7)
     BudgetsModule,           // G12
     ResultsModule,           // G13
     OperationsModule,        // G14

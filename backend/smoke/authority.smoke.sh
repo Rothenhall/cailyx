@@ -74,7 +74,12 @@ CID2=$(echo "$S" | jget candidates.1.id)
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "$API/projects/$PID/authority-scans/$SID/candidates/$CID2" "${AUTH[@]}" -H 'content-type: application/json' -d '{"status":"dismissed"}')" = "200" ] && ok "dismiss candidate → 200" || bad "dismiss failed"
 
 # --- guards -----------------------------------------------------
-[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/authority-scans" "${AUTH[@]}" -H 'content-type: application/json' -d '{"method":"llm"}')" = "503" ] && ok "method=llm without ANTHROPIC_API_KEY → 503" || bad "llm method not 503"
+# The no-provider branch is only reachable when no key is configured; see
+# `llm_gate_check` in _common.sh. Calling this with a provider configured
+# would do real work and spend real money.
+llm_gate_check "method=llm without a provider" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/authority-scans" "${AUTH[@]}" -H 'content-type: application/json' -d '{"method":"llm"}')"
+
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/authority-scans" "${AUTH[@]}" -H 'content-type: application/json' -d '{"method":"bogus"}')" = "400" ] && ok "unknown method → 400" || bad "bad method not 400"
 
 # --- determinism ---------------------------------------------

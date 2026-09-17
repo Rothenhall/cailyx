@@ -30,6 +30,7 @@ import { PrismaService } from '../database/prisma.service';
 import { MeasurementService, MIN_RUN_COUNT } from '../measurement/measurement.service';
 import { CloroAdapterError, CloroClient, CLORO_BASE_CREDITS, type CloroSurface } from '../measurement/adapters/cloro.adapter';
 import { PipelineQueueService } from '../jobs/pipeline-queue.service';
+import { BusinessProfileService } from '../business-profile/business-profile.service';
 import { AeoContextService } from './aeo-context.service';
 import { AeoMatrixService } from './aeo-matrix.service';
 import { AeoStanceService, type StancePassResult } from './aeo-stance.service';
@@ -112,6 +113,7 @@ export class AeoAuditService {
     private readonly measurement: MeasurementService,
     private readonly pipelineQueue: PipelineQueueService,
     private readonly cloro: CloroClient,
+    private readonly businessProfile: BusinessProfileService,
   ) {
     // Resuming is safe to retry: it skips any stage/surface already completed.
     this.pipelineQueue.registerHandler('aeo-audit-resume', (data: {
@@ -146,7 +148,7 @@ export class AeoAuditService {
    */
   async runFullAsync(projectId: string, input: RunAuditInput = {}) {
     const audit = await this.start(projectId, input);
-    await this.pipelineQueue.enqueue(
+    const enqueued = this.pipelineQueue.enqueue(
       'aeo-audit-resume',
       // `projectId` rides in the job data for two reasons, both load-bearing:
       // the queue uses it to attach a durable `JobRun` to this job (G07), and
@@ -156,6 +158,33 @@ export class AeoAuditService {
       { auditId: audit.id, projectId, input },
       { attempts: 3, backoff: { type: 'exponential', delay: 30000 } },
     );
+    // The queue's own Redis connection is opened with `maxRetriesPerRequest:
+    // null` (pipeline-queue.service.ts), so when Redis is unreachable the
+    // underlying BullMQ `add()` call neither resolves nor rejects — it
+    // retries forever. Awaiting it unbounded here means this HTTP request
+    // (and the smoke/CI runner behind it) hangs forever too, with no way to
+    // tell "queueing is slow" from "Redis is simply not running". Bound the
+    // wait: on timeout the audit row already exists in `pending` and can be
+    // driven by hand via POST /audits/:auditId/resume, and the deferred
+    // enqueue is still allowed to land later if Redis comes back — this only
+    // stops it from blocking the response.
+    const enqueueTimeoutMs = Number(this.config.get<string>('AEO_ENQUEUE_TIMEOUT_MS', '5000'));
+    let timer: ReturnType<typeof setTimeout>;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), enqueueTimeoutMs);
+    });
+    const outcome = await Promise.race([enqueued.then((): 'enqueued' => 'enqueued'), timedOut]);
+    clearTimeout(timer!);
+    if (outcome === 'timeout') {
+      this.logger.warn(
+        `Audit ${audit.id}: queueing "aeo-audit-resume" did not confirm within ${enqueueTimeoutMs}ms — ` +
+          `the pipeline queue backend (Redis) may be unreachable. The audit remains pending; drive it by ` +
+          `hand with POST /projects/${projectId}/aeo/audits/${audit.id}/resume, or retry once the queue is reachable.`,
+      );
+      enqueued.catch((err) =>
+        this.logger.warn(`Audit ${audit.id}: deferred enqueue of "aeo-audit-resume" failed: ${(err as Error).message}`),
+      );
+    }
     return audit;
   }
 
@@ -216,27 +245,54 @@ export class AeoAuditService {
   }
 
   /**
-   * The single default market for a surface run that has none yet, per
-   * wave-6 D8's precedence: the operator's own `geo` (the pre-existing
-   * single-value override, kept working exactly as before this fanned out
-   * to markets), then the site's own top-ranked stated service area, then
-   * its ccTLD-derived geo, then the pre-existing hardcoded fallback — never
-   * a bare guess with no signal at all.
+   * The single default market for a surface run that has none yet (P04, plan
+   * §10.2 step 6: *"Remove the silent ccTLD -> default-US path for the
+   * normal client workflow"*).
    *
-   * `geo` is validated the same way `markets[]` already is — an audit found
-   * this was the one override that skipped the check, so a caller passing
-   * `geo: "ireland"` or `geo: "en-IE"` would have persisted verbatim into
-   * `AeoSurfaceRun.market` and every downstream market slice, silently
-   * breaking the "ISO-3166 alpha-2" contract every other market value keeps.
-   * An invalid `geo` is dropped, not thrown on — it just falls through to the
-   * next signal in the precedence, same as an absent one always has.
+   * Precedence, and why each rung is not silent:
+   *
+   * 1. **`input.geo`** — an explicit, human-supplied override on this call.
+   *    Kept at top precedence exactly as wave-6 D8 left it: passing a geo is
+   *    a deliberate act, not a guess, so it wins even over a confirmed
+   *    profile (a staff-approved provisional run, §10.2's last paragraph).
+   * 2. **The project's CONFIRMED business-profile target markets**
+   *    (`BusinessProfileService.getConfirmedTargetCountries`) — structured,
+   *    client-confirmed targets (§10.1). This is the fix: a business
+   *    headquartered in India with a confirmed US target is measured for the
+   *    US, never silently for India, because this rung is checked BEFORE any
+   *    site-derived signal.
+   * 3. **`context.markets[0]` / `context.geo`** — the site's own stated
+   *    service area / ccTLD-derived guess. Still used as a *provisional*
+   *    fallback when nothing has been confirmed, but never presented as a
+   *    confirmed fact — callers that need to say so read `source` off the
+   *    return value.
+   *
+   * There is no longer a rung 4. A hardcoded `'US'` last resort used to sit
+   * here and fire whenever a project had no confirmed target AND no site
+   * signal at all — exactly the silent default this phase removes. That case
+   * now refuses to guess: it throws, naming what to do about it.
+   *
+   * `geo` is validated the same way `markets[]` already is — an invalid one
+   * is dropped, not thrown on, and falls through to the next rung.
    */
-  private resolveDefaultMarket(input: RunAuditInput, context: SiteContextData): string {
-    return (
-      this.normalizeMarketCode(input.geo) ??
-      this.normalizeMarketCode(context.markets[0]) ??
-      this.normalizeMarketCode(context.geo) ??
-      'US'
+  private async resolveDefaultMarket(
+    projectId: string,
+    input: RunAuditInput,
+    context: SiteContextData,
+  ): Promise<{ market: string; source: 'explicit-override' | 'confirmed-target' | 'provisional-site-context' }> {
+    const explicit = this.normalizeMarketCode(input.geo);
+    if (explicit) return { market: explicit, source: 'explicit-override' };
+
+    const confirmedCountries = await this.businessProfile.getConfirmedTargetCountries(projectId);
+    const confirmed = confirmedCountries.map((c) => this.normalizeMarketCode(c)).find((c): c is string => c !== null);
+    if (confirmed) return { market: confirmed, source: 'confirmed-target' };
+
+    const provisional = this.normalizeMarketCode(context.markets[0]) ?? this.normalizeMarketCode(context.geo);
+    if (provisional) return { market: provisional, source: 'provisional-site-context' };
+
+    throw new ConflictException(
+      `Project ${projectId} has no confirmed target market (Business information -> Target locations) and no site-derived service-area signal to fall back to. ` +
+        `Confirm at least one target country before running this audit, or pass an explicit "geo" for a staff-approved provisional run (results will be marked provisional).`,
     );
   }
 
@@ -314,15 +370,20 @@ export class AeoAuditService {
         where: { auditId, market: null },
       });
       if (unresolvedMarket) {
-        const defaultMarket = this.resolveDefaultMarket(input, context);
+        const resolved = await this.resolveDefaultMarket(audit.projectId, input, context);
         await this.prisma.aeoSurfaceRun.updateMany({
           where: { auditId, market: null },
-          data: { market: defaultMarket },
+          data: { market: resolved.market },
         });
         await this.prisma.aeoAudit.update({
           where: { id: auditId },
-          data: { markets: JSON.stringify([defaultMarket]) },
+          data: { markets: JSON.stringify([resolved.market]) },
         });
+        if (resolved.source !== 'confirmed-target') {
+          this.logger.warn(
+            `Audit ${auditId}: market ${resolved.market} resolved from ${resolved.source}, not a confirmed target — provisional.`,
+          );
+        }
       }
 
       // ── 2. Prompt matrix ───────────────────────────────────────────────

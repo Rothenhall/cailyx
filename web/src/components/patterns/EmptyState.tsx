@@ -200,14 +200,14 @@ function contentFor(props: EmptyStateProps): VariantContent {
         ? {
             icon: FileClock,
             title: 'Your first report is being prepared',
-            body: 'A run has started for this project. The report appears here once it finishes — you do not need to do anything.',
+            body: 'We have started measuring this project. Your report appears here when it is ready — you do not need to do anything.',
             iconClass: 'bg-info-subtle text-info',
             action: props.action,
           }
         : {
             icon: FileX2,
             title: 'No report has been created',
-            body: 'Reports are produced by a measurement run. Nothing has been run for this project yet.',
+            body: 'Reports are produced by a measurement check. Nothing has been measured for this project yet.',
             iconClass: NEUTRAL_ICON,
             action: props.action,
           };
@@ -227,7 +227,7 @@ function contentFor(props: EmptyStateProps): VariantContent {
       return {
         icon: LineChart,
         title: 'First measurement',
-        body: 'A comparison will appear after a comparable run — same metric, same method, same unit. Until then this is a single measurement, not a trend.',
+        body: 'A comparison will appear after a similar period is measured — same metric, same method, same unit. Until then this is a single measurement, not a trend.',
         iconClass: NEUTRAL_ICON,
         action: props.action,
       };
@@ -243,8 +243,9 @@ function contentFor(props: EmptyStateProps): VariantContent {
     case 'source-unmapped':
       return {
         icon: Link2Off,
-        title: 'Choose the site/property for this project',
-        body: `${props.sourceName} is connected, but no site or property has been mapped to this project yet, so nothing can be measured from it.`,
+        // §4.3 keeps Google-property vocabulary inside account-connection steps.
+title: 'Choose the website for this project',
+        body: `${props.sourceName} is connected, but no website has been chosen for this project yet, so nothing can be measured from it.`,
         iconClass: 'bg-warning-subtle text-warning-foreground',
         action: props.action,
       };
@@ -261,13 +262,13 @@ function contentFor(props: EmptyStateProps): VariantContent {
         ? {
             icon: ShieldCheck,
             title: 'No open alerts',
-            body: 'A monitoring run has completed and found nothing that needs attention. Alerts appear here when a tracked condition changes.',
+            body: 'A monitoring check has completed and found nothing that needs attention. Alerts appear here when a tracked condition changes.',
             iconClass: 'bg-success-subtle text-success-foreground',
           }
         : {
             icon: ShieldCheck,
             title: 'Nothing has been checked yet',
-            body: 'No monitoring run has completed for this project, so there is nothing to report either way. An empty feed here is not a clean bill of health.',
+            body: 'No monitoring check has completed for this project, so there is nothing to report either way. An empty feed here is not a clean bill of health.',
             iconClass: NEUTRAL_ICON,
           };
     case 'no-work':
@@ -275,13 +276,13 @@ function contentFor(props: EmptyStateProps): VariantContent {
         ? {
             icon: ClipboardList,
             title: 'Nothing assigned to you',
-            body: 'Work appears here once it is committed to a cycle and assigned. If you expected something, check with the delivery lead who owns the plan.',
+            body: 'Work appears here once it is committed to a work period and assigned. If you expected something, check with the delivery lead who owns the plan.',
             iconClass: NEUTRAL_ICON,
           }
         : {
             icon: ClipboardList,
             title: 'No work items yet',
-            body: 'Work items come from committed cycles. Once a cycle is committed, its deliverables appear here with an owner and a due date.',
+            body: 'Work items come from agreed work periods. Once a work period is agreed, its deliverables appear here with an owner and a due date.',
             iconClass: NEUTRAL_ICON,
           };
     case 'no-messages':

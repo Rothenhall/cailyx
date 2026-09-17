@@ -116,7 +116,7 @@ const PRESENTATION: Record<ApiError['kind'], KindPresentation> = {
   },
   'rate-limited': {
     title: 'Too many requests',
-    body: 'Cailyx throttles repeated requests to keep runs fair for everyone.',
+    body: 'Cailyx limits how often the same request can be repeated, so one account cannot slow the service down for everyone else.',
     tone: 'info',
     icon: Timer,
     retryable: true,
@@ -159,7 +159,7 @@ const NOT_FOUND_BODY: Record<NotFoundReason, string> = {
   missing: 'It may have been deleted. Check the current list before retrying.',
   private: 'It belongs to a client you do not have access to. Ask your delivery lead for access.',
   prerequisite:
-    'A run or connection this depends on has not completed yet. Finish that step first, then return.',
+    'A step or connection this depends on has not been completed yet. Finish that step first, then come back.',
 };
 
 export interface ErrorStateAction {
@@ -201,8 +201,12 @@ export interface ErrorStateProps {
   /** DOM id prefix for invalid fields, so the summary links land on the real
    *  inputs (§3.4). Defaults to `field-`. */
   fieldIdPrefix?: string;
-  /** Show the raw server message under the fixed copy. Defaults to true —
-   *  real server detail is more useful than a paraphrase. */
+  /** Show the raw server message under the fixed copy. Staff surfaces should
+   *  keep the default `true` — real server detail is more useful than a
+   *  paraphrase. Client-facing screens should pass `false` (or use
+   *  `<ClientErrorBoundary>`-style wrappers): a raw backend message can name
+   *  internal fields, operators, or storage paths the reader should never
+   *  need to see. */
   showServerMessage?: boolean;
   className?: string;
 }
@@ -384,6 +388,23 @@ export function ErrorState({
  * A non-`ApiError` becomes `kind: 'unknown'`, which §10.4 keeps context for
  * rather than discarding.
  */
+/**
+ * §4.3: a client screen says what kind of failure happened, in words, and never
+ * echoes the server's own message. A backend message can name internal record
+ * IDs, provider fields, statuses or module names — none of which belong on a
+ * client screen — whereas this returns the same plain-language sentence
+ * `ErrorState` renders for that class of failure.
+ *
+ * `fallback` is used when nothing better is available: an unmapped failure has
+ * no more accurate sentence than the one the caller already wrote, and the
+ * caller's sentence keeps the context of *what* was being attempted.
+ */
+export function clientActionMessage(cause: unknown, fallback: string): string {
+  const error = toApiError(cause);
+  if (error.kind === 'unknown') return fallback;
+  return PRESENTATION[error.kind]?.body ?? fallback;
+}
+
 export function toApiError(cause: unknown): ApiError {
   if (cause instanceof ApiError) return cause;
   if (cause instanceof Error) {

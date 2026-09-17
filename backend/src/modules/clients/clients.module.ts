@@ -31,6 +31,10 @@ import { GrowthExecutionModule } from '../growth-execution/growth-execution.modu
 import { EntityAuditModule } from '../entity-audit/entity-audit.module';
 import { BacklinksModule } from '../backlinks/backlinks.module';
 import { FindingsModule } from '../findings/findings.module';
+// §3.4's client-list delivery columns read DeliveryPlanService's own
+// definitions (frozen cycle denominator, the action queue's sources) rather
+// than re-deriving them in this module.
+import { DeliveryPlanModule } from '../delivery-plan/delivery-plan.module';
 import { ClientsService } from './clients.service';
 import { ClientsOnboardingExecutors } from './clients.onboarding-executors';
 import { ClientsController } from './clients.controller';
@@ -48,6 +52,7 @@ import { ClientsController } from './clients.controller';
     // Free, always-on stages — no external spend, so no opt-in checkbox.
     EntityAuditModule,
     FindingsModule,
+    DeliveryPlanModule,
     // Opt-in Day-1 pipeline stages (checkbox on "Add Client") — real spend
     // per run, so they never run unless the operator explicitly asks.
     AeoAuditModule,

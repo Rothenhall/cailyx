@@ -46,23 +46,19 @@ GEN2=$(curl -s -X POST "$API/projects/$PID/personas/generate" "${AUTH[@]}" -H 'c
 [ "$(echo "$GEN2" | jget personas.0.seed)" = "$PID:12:head-of-growth" ] && ok "regenerate continues at slot 12 (round-robin)" || bad "slot 12 seed = $(echo "$GEN2" | jget personas.0.seed)"
 [ "$(curl -s "$API/projects/$PID/personas" "${AUTH[@]}" | jlen)" = "15" ] && ok "15 personas total after regenerate" || bad "total != 15"
 
-# --- LLM path gated (no ANTHROPIC_API_KEY) — capability check precedes cap ---
-[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/personas/generate" "${AUTH[@]}" -H 'content-type: application/json' -d '{"count":1,"useLlm":true}')" = "503" ] && ok "useLlm without key → 503 (honest gate, not a placeholder)" || bad "useLlm not 503"
+# --- LLM path gated (no provider configured) — capability check precedes cap ---
+# Only actually issued when no provider is configured. With one configured this
+# endpoint does real LLM work, and it *succeeded* here once — which silently
+# created a persona, incremented the count, and made the fan-out cap below
+# compute one fewer slot than it expected. Probing only in the no-provider case
+# removes both the spend and that side effect.
+if llm_provider_configured; then
+  llm_gate_check "useLlm without a provider" "not-called"
+else
+  llm_gate_check "useLlm without a provider" \
+    "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/personas/generate" "${AUTH[@]}" -H 'content-type: application/json' -d '{"count":1,"useLlm":true}')"
+fi
 
-# --- fan-out cap (PERSONA_MAX_PER_PROJECT=100; DTO caps count at 100) --------
-GEN3=$(curl -s -X POST "$API/projects/$PID/personas/generate" "${AUTH[@]}" -H 'content-type: application/json' -d '{"count":100}')
-[ "$(echo "$GEN3" | jget capped)" = "true" ] && [ "$(echo "$GEN3" | jlen personas)" = "85" ] && ok "count=100 with 15 used → capped to 85 (project limit)" || bad "cap: capped=$(echo "$GEN3" | jget capped) made=$(echo "$GEN3" | jlen personas)"
-[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/personas/generate" "${AUTH[@]}" -H 'content-type: application/json' -d '{"count":5}')" = "409" ] && ok "generate at cap → 409" || bad "at-cap generate not 409"
-
-# --- input validation -----------------------------------------------------
-[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/personas/generate" "${AUTH[@]}" -H 'content-type: application/json' -d '{"count":0}')" = "400" ] && ok "count=0 → 400 (DTO @Min)" || bad "count=0 not 400"
-[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/personas" "${AUTH[@]}" -H 'content-type: application/json' -d '{"label":"x","role":"astronaut","primaryGoal":"g","researchObjective":"o"}')" = "400" ] && ok "unknown role → 400 (DTO whitelist)" || bad "bad role not 400"
-
-# --- lifecycle + immutability ------------------------------------------------
-FID=$(curl -s "$API/projects/$PID/personas" "${AUTH[@]}" | jget 0.id)
-[ "$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "$API/projects/$PID/personas/$FID" "${AUTH[@]}" -H 'content-type: application/json' -d '{"primaryGoal":"Edited goal for the smoke test run"}')" = "200" ] && ok "patch draft persona → 200" || bad "patch draft not 200"
-[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/personas/$FID/activate" "${AUTH[@]}")" = "200" ] && ok "activate → 200" || bad "activate not 200"
-[ "$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "$API/projects/$PID/personas/$FID" "${AUTH[@]}" -H 'content-type: application/json' -d '{"primaryGoal":"should be rejected now"}')" = "409" ] && ok "patch active persona → 409 (immutable)" || bad "patch active not 409"
 
 # --- determinism: wipe all, regenerate founder slot 0 → byte-identical ------
 for id in $(curl -s "$API/projects/$PID/personas" "${AUTH[@]}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>JSON.parse(s).forEach(p=>console.log(p.id)))'); do
@@ -77,5 +73,33 @@ else
 fi
 
 echo
+# --- fan-out cap (PERSONA_MAX_PER_PROJECT=100; DTO caps count at 100) --------
+# Deliberately LAST. Proving a cap of 100 means filling the project to 100, and
+# the "wipe all" block above deletes personas one request each — with the global
+# throttle at 100 requests/minute, doing that after this fill tripped the limit
+# and left rows behind, which read as a determinism failure rather than a
+# throttle. Running the fill last means nothing has to delete them one by one;
+# the cleanup below removes the whole project in a single request.
+# Derived from the project's ACTUAL current total rather than a hardcoded 15,
+# so this stays correct whatever happened above and still fails loudly if the
+# cap is not enforced.
+USED=$(curl -s "$API/projects/$PID/personas" "${AUTH[@]}" | jlen)
+GEN3=$(curl -s -X POST "$API/projects/$PID/personas/generate" "${AUTH[@]}" -H 'content-type: application/json' -d '{"count":100}')
+EXPECT=$((100 - USED))
+[ "$(echo "$GEN3" | jget capped)" = "true" ] && [ "$(echo "$GEN3" | jlen personas)" = "$EXPECT" ] && ok "count=100 with $USED used → capped to $EXPECT (project limit)" || bad "cap: capped=$(echo "$GEN3" | jget capped) made=$(echo "$GEN3" | jlen personas) expected=$EXPECT (used=$USED)"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/personas/generate" "${AUTH[@]}" -H 'content-type: application/json' -d '{"count":5}')" = "409" ] && ok "generate at cap → 409" || bad "at-cap generate not 409"
+
+# --- input validation -----------------------------------------------------
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/personas/generate" "${AUTH[@]}" -H 'content-type: application/json' -d '{"count":0}')" = "400" ] && ok "count=0 → 400 (DTO @Min)" || bad "count=0 not 400"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/personas" "${AUTH[@]}" -H 'content-type: application/json' -d '{"label":"x","role":"astronaut","primaryGoal":"g","researchObjective":"o"}')" = "400" ] && ok "unknown role → 400 (DTO whitelist)" || bad "bad role not 400"
+
+# --- lifecycle + immutability ------------------------------------------------
+FID=$(curl -s "$API/projects/$PID/personas" "${AUTH[@]}" | jget 0.id)
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "$API/projects/$PID/personas/$FID" "${AUTH[@]}" -H 'content-type: application/json' -d '{"primaryGoal":"Edited goal for the smoke test run"}')" = "200" ] && ok "patch draft persona → 200" || bad "patch draft not 200"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/personas/$FID/activate" "${AUTH[@]}")" = "200" ] && ok "activate → 200" || bad "activate not 200"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "$API/projects/$PID/personas/$FID" "${AUTH[@]}" -H 'content-type: application/json' -d '{"primaryGoal":"should be rejected now"}')" = "409" ] && ok "patch active persona → 409 (immutable)" || bad "patch active not 409"
+
+
 echo "== $PASS passed, $FAIL failed =="
+
 [ "$FAIL" = "0" ]

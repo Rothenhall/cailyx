@@ -21,6 +21,42 @@ import {
 } from 'class-validator';
 import { ALL_APIFY_PLATFORMS, type ApifyPlatform } from '../presence.apify.service';
 
+const APPLICABILITY_STATUSES = ['relevant', 'optional', 'not-relevant', 'needs-confirmation'] as const;
+
+/** Reject a search candidate as "Not ours" — P05 §11.4. */
+export class RejectCandidateDto {
+  @ApiProperty({
+    description:
+      'Why this is not the client\'s account (e.g. "different company, same name" or "unrelated location"). ' +
+      'Stored verbatim on the tombstone and shown to future reviewers.',
+    example: 'Different company with the same name — wrong city in their bio.',
+  })
+  @IsString()
+  @MaxLength(500)
+  reason: string;
+}
+
+/** Undo a prior "Not ours" — P05 §11.4 allows authorized reconsideration. */
+export class ReconsiderRejectionDto {
+  @ApiPropertyOptional({ description: 'Optional note on why this is being reconsidered.' })
+  @IsString()
+  @IsOptional()
+  @MaxLength(500)
+  note?: string;
+}
+
+/** Staff/client sets an explicit applicability status for one platform — P05 §11.2. */
+export class SetApplicabilityDto {
+  @ApiProperty({ enum: APPLICABILITY_STATUSES })
+  @IsIn(APPLICABILITY_STATUSES)
+  status: (typeof APPLICABILITY_STATUSES)[number];
+
+  @ApiProperty({ description: 'Why this platform is (or is not) relevant for this client, in plain language.' })
+  @IsString()
+  @MaxLength(500)
+  reason: string;
+}
+
 /** Add an account the crawler did not find, or correct one it got wrong. */
 export class AddAccountDto {
   @ApiProperty({

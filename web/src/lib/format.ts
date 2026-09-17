@@ -115,3 +115,69 @@ function trimNumber(value: number): string {
   const rounded = Math.round(value * 10) / 10;
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
+
+/**
+ * §4.3 client vocabulary — the display names for values that arrive as
+ * internal slugs. This is a *label* map only: no API, database or TypeScript
+ * identifier is renamed by it. Both the staff and client screens read the same
+ * business fact (§4.6); only the words differ, and the client-facing words are
+ * the ones in the plan's dictionary.
+ */
+const ARTIFACT_TYPE_LABEL: Record<string, string> = {
+  report: 'Report',
+  content: 'Content',
+  'content-brief': 'Content plan',
+  plan: 'Plan',
+  cycle: 'Work period',
+  roadmap: '30-day plan',
+  claim: 'Fact check',
+  'data-asset': 'Research and data',
+  brief: 'Content plan',
+  asset: 'Content',
+};
+
+/** The client-facing name for an approval's item type. An unknown type is
+ *  described rather than printed as a slug. */
+export function artifactTypeLabel(value: string | null | undefined): string {
+  if (!value) return 'Item';
+  const key = value.trim().toLowerCase();
+  return ARTIFACT_TYPE_LABEL[key] ?? 'Item';
+}
+
+/**
+ * §4.3: an unmapped slug is never printed raw on a client screen. This turns
+ * `awaiting-review` into "Awaiting review" so an unmapped value still reads as
+ * words rather than as an internal identifier.
+ */
+export function humanizeLabel(value: string | null | undefined, fallback = 'Not recorded'): string {
+  if (!value) return fallback;
+  const trimmed = value.trim();
+  if (!trimmed) return fallback;
+  const words = trimmed.replace(/[_-]+/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** §4.3: "Asset → Content. Name the type where useful: article, email, social
+ *  post." The stored type is a slug; the reader gets the words. */
+const CONTENT_TYPE_LABEL: Record<string, string> = {
+  article: 'Article',
+  blog: 'Article',
+  'blog-post': 'Article',
+  post: 'Article',
+  email: 'Email',
+  newsletter: 'Email',
+  'social-post': 'Social post',
+  social: 'Social post',
+  'landing-page': 'Landing page',
+  page: 'Page',
+  'content-brief': 'Content plan',
+  brief: 'Content plan',
+  'case-study': 'Case study',
+  guide: 'Guide',
+};
+
+export function contentTypeLabel(value: string | null | undefined): string {
+  if (!value) return 'Content';
+  const key = value.trim().toLowerCase();
+  return CONTENT_TYPE_LABEL[key] ?? humanizeLabel(value, 'Content');
+}

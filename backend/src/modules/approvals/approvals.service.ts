@@ -40,6 +40,8 @@ import type {
   ApprovalDecisionDto,
   ApprovalRequestDetailDto,
   ApprovalRequestDto,
+  PortalApprovalRequestDetailDto,
+  PortalApprovalRequestDto,
   ApprovalStatus,
   CheckResultDto,
 } from './approvals.types';
@@ -138,15 +140,15 @@ export class ApprovalsService {
 
   // ─── Client portal ───────────────────────────────────────────────
 
-  async portalList(clientId: string) {
+  async portalList(clientId: string): Promise<{ requests: PortalApprovalRequestDto[] }> {
     const rows = await this.prisma.approvalRequest.findMany({
       where: { clientId, reviewerType: 'client' },
       orderBy: { createdAt: 'desc' },
     });
-    return { requests: rows.map((r) => this.toRequestDto(r)) };
+    return { requests: rows.map((r) => this.toPortalRequestDto(r)) };
   }
 
-  async portalGet(clientId: string, id: string): Promise<ApprovalRequestDetailDto> {
+  async portalGet(clientId: string, id: string): Promise<PortalApprovalRequestDetailDto> {
     const row = await this.prisma.approvalRequest.findUnique({ where: { id } });
     if (!row || row.reviewerType !== 'client' || row.clientId !== clientId) {
       // Same 404 for "does not exist" and "belongs to someone else" — never
@@ -154,10 +156,10 @@ export class ApprovalsService {
       throw new NotFoundException(`Approval request ${id} not found`);
     }
     const decisions = await this.prisma.approvalDecision.findMany({ where: { approvalRequestId: id }, orderBy: { createdAt: 'desc' } });
-    return { ...this.toRequestDto(row), decisions: decisions.map((d) => this.toDecisionDto(d)) };
+    return { ...this.toPortalRequestDto(row), decisions: decisions.map((d) => this.toDecisionDto(d)) };
   }
 
-  async portalDecide(clientId: string, id: string, actorUserId: string, dto: DecideApprovalDto): Promise<ApprovalRequestDetailDto> {
+  async portalDecide(clientId: string, id: string, actorUserId: string, dto: DecideApprovalDto): Promise<PortalApprovalRequestDetailDto> {
     const row = await this.prisma.approvalRequest.findUnique({ where: { id } });
     if (!row || row.reviewerType !== 'client' || row.clientId !== clientId) {
       throw new NotFoundException(`Approval request ${id} not found`);
@@ -406,6 +408,49 @@ export class ApprovalsService {
       reviewerType: row.reviewerType as ApprovalRequestDto['reviewerType'],
       requiredReviewerId: row.requiredReviewerId,
       requestedBy: row.requestedBy,
+      dueAt: row.dueAt ? row.dueAt.toISOString() : null,
+      status: row.status as ApprovalStatus,
+      invalidatedAt: row.invalidatedAt ? row.invalidatedAt.toISOString() : null,
+      invalidatedReason: row.invalidatedReason,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  }
+
+  /**
+   * The client-safe projection. Built field by field rather than spread from
+   * the staff DTO, so a later column added to `ApprovalRequestDto` cannot
+   * reach a client by default — it has to be added here deliberately.
+   *
+   * `requiredReviewerId` and `requestedBy` are raw `User.id` values and stay
+   * out (§3.5/§4.6). A client has no use for either: they never need to know
+   * which internal user raised the request, only what it asks of them.
+   */
+  private toPortalRequestDto(row: {
+    id: string;
+    projectId: string;
+    artifactType: string;
+    artifactId: string;
+    artifactRevision: number | null;
+    revisionId: string | null;
+    title: string;
+    detail: string | null;
+    dueAt: Date | null;
+    status: string;
+    invalidatedAt: Date | null;
+    invalidatedReason: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }): PortalApprovalRequestDto {
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      artifactType: row.artifactType as PortalApprovalRequestDto['artifactType'],
+      artifactId: row.artifactId,
+      artifactRevision: row.artifactRevision,
+      revisionId: row.revisionId,
+      title: row.title,
+      detail: row.detail,
       dueAt: row.dueAt ? row.dueAt.toISOString() : null,
       status: row.status as ApprovalStatus,
       invalidatedAt: row.invalidatedAt ? row.invalidatedAt.toISOString() : null,

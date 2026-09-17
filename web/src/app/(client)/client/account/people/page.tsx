@@ -27,7 +27,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ConfirmDialog } from '@/components/patterns/ConfirmDialog';
 import { DataTable, type ColumnDef } from '@/components/patterns/DataTable';
 import { EmptyState } from '@/components/patterns/EmptyState';
-import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
+import { ErrorState, clientActionMessage, toApiError } from '@/components/patterns/ErrorState';
 import { PageHeader } from '@/components/patterns/PageHeader';
 import { StatusPill } from '@/components/patterns/StatusPill';
 import { Timestamp } from '@/components/patterns/Timestamp';
@@ -364,6 +364,7 @@ export default function ClientPeoplePage() {
           onRetry={() => void load()}
           restrictedAction="see who has access to your account"
           permittedPath="Ask your delivery lead, who can manage seats from their side."
+          showServerMessage={false}
         />
       </div>
     );
@@ -706,5 +707,5 @@ function describeFailure(caught: unknown, fallback: string): string {
       return 'Your session has expired. Sign in again to continue.';
     }
   }
-  return caught instanceof Error ? caught.message : fallback;
+  return clientActionMessage(caught, fallback);
 }

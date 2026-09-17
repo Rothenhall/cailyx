@@ -124,7 +124,11 @@ export interface PortalProfilePatch {
   legalName?: string;
   description?: string;
   services?: string[];
+  icp?: { segments?: string[]; roles?: string[]; painPoints?: string[] };
   markets?: string[];
+  languages?: string[];
+  /** `domain` omitted (not null) means "no domain" — matches the server's `CompetitorDto`. */
+  competitors?: Array<{ name: string; domain?: string }>;
   goals?: string[];
   /** Recorded in the audit trail; never stored on the profile row. */
   note?: string;
@@ -157,6 +161,100 @@ export async function confirmPortalBusinessProfile(
     confirmedFrom: PortalProfileVersionRef | null;
     warnings: string[];
   }>(`/portal/projects/${encodeURIComponent(projectId)}/business-profile/confirm`, input);
+}
+
+// ── Business information (P02 — plan §9.1/§9.2) ─────────────────────────
+
+/**
+ * Client-facing "Business information" — replaces the old staff-only Site
+ * Context screen for this audience. Same shape the staff read returns
+ * (`business-profile.service.ts#getBusinessInformation`): four sections, each
+ * split into what is confirmed, what your website suggests, and what is
+ * still missing. Nothing here carries a run id, model name or cost — only a
+ * source page and a date, which plan §4.6 allows on a client screen.
+ */
+export type BusinessInfoField =
+  | 'brandName'
+  | 'legalName'
+  | 'description'
+  | 'services'
+  | 'icp.segments'
+  | 'icp.roles'
+  | 'icp.painPoints'
+  | 'markets'
+  | 'languages'
+  | 'competitors'
+  | 'goals';
+
+export type BusinessInfoSectionKey = 'about' | 'customers' | 'locations' | 'brand';
+
+export interface BusinessInfoConfirmedField {
+  field: BusinessInfoField;
+  label: string;
+  value: string[] | string | null;
+}
+
+export interface BusinessInfoSuggestion {
+  field: BusinessInfoField;
+  section: BusinessInfoSectionKey;
+  label: string;
+  currentValue: string[] | string | null;
+  suggestedValue: string[] | string | null;
+  sourcePage: string | null;
+  sourceDate: string;
+}
+
+export interface BusinessInfoGap {
+  field: BusinessInfoField;
+  section: BusinessInfoSectionKey;
+  label: string;
+}
+
+export interface BusinessInfoSection {
+  key: BusinessInfoSectionKey;
+  label: string;
+  confirmed: BusinessInfoConfirmedField[];
+  suggestions: BusinessInfoSuggestion[];
+  gaps: BusinessInfoGap[];
+}
+
+/** No `confirmedBy` — `overview` is served identically to staff and the
+ *  client portal, so it never carries a raw actor id. */
+export interface BusinessInfoVersionRef {
+  id: string;
+  version: number;
+  state: PortalProfileState;
+  confirmedAt: string | null;
+  createdAt: string;
+}
+
+export interface BusinessInfoOverview {
+  projectId: string;
+  profileState: PortalProfileState | null;
+  confirmedVersion: BusinessInfoVersionRef | null;
+  sections: BusinessInfoSection[];
+  suppressedRejectedCount: number;
+  hasSiteContext: boolean;
+  sourceCheckedAt: string | null;
+}
+
+export async function getBusinessInfoOverview(projectId: string, options?: { signal?: AbortSignal }) {
+  return api.get<BusinessInfoOverview>(
+    `/portal/projects/${encodeURIComponent(projectId)}/business-profile/overview`,
+    options,
+  );
+}
+
+/**
+ * "Keep current" on one field's suggestion. The value being declined is read
+ * from the current site context on the server — this call only names WHICH
+ * field, so a client cannot record a rejection of a value nothing suggested.
+ */
+export async function rejectBusinessInfoSuggestion(projectId: string, field: BusinessInfoField) {
+  return api.post<{ field: string; rejected: boolean; detail: string }>(
+    `/portal/projects/${encodeURIComponent(projectId)}/business-profile/candidates/reject`,
+    { field },
+  );
 }
 
 // ── Welcome checklist ───────────────────────────────────────────────────

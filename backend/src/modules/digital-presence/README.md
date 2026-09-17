@@ -1,7 +1,9 @@
 # Digital Presence Module
 
 > **Status:** ✅ Built
-> **Phase:** Wave 6 — audit pipeline, stage 2 (external presence)
+> **Phase:** Wave 6 — audit pipeline, stage 2 (external presence);
+> P05 — `platform_improvement_plan.md` §11 (applicability policy, candidate
+> validation with rejection memory, the client-safe portal read)
 > **Analysis / build spec:** [`docs/analysis/digital-presence.md`](../../../../docs/analysis/digital-presence.md)
 
 ## Purpose
@@ -21,6 +23,8 @@ digital-presence/
 ├── presence.dataforseo.service.ts  # DataForSEO Business Data (wave-6 D2) — profile + reviews
 ├── presence.apify.service.ts       # Apify social activity (wave-6 D7) — opt-in, spends real credit
 ├── presence.signatures.ts          # URL → platform classification (the false-positive gate)
+├── presence.applicability.service.ts # P05 §11.2 — relevant/optional/not-relevant/needs-confirmation
+├── presence.rejection.service.ts   # P05 §11.4 — "Not ours" tombstones
 ├── presence.types.ts               # PresencePlatform, PresenceState, inventory shapes
 ├── dto/presence.dto.ts             # Validated DTOs
 └── README.md                       # This file
@@ -159,6 +163,59 @@ Before this, the expected set was social-only, which left **four of stage 2's fi
 categories permanently reading "not checked"** — the module could not report a
 missing directory or review presence because it never expected one.
 
+## Applicability — what matters for *this* client (P05, §11.2)
+
+P05 makes that inference structured, and makes it the **single decision point**.
+`presence.applicability.service.ts` returns, for every platform:
+
+| Field | Meaning |
+|---|---|
+| `status` | `relevant` \| `optional` \| `not-relevant` \| `needs-confirmation` |
+| `reason` | Why — plain language, shown to whoever asks the question |
+| `ruleVersion` | `applicability-v1` — the heuristics' own version, so a changed rule is visible in the answer |
+| `overridden` | True when a staff/client override is in force |
+
+This is the exit gate in the service's own words: *"hiding a Google Business
+Profile tab but still subtracting points for its absence is a bug."* So the
+policy is not a second opinion layered on top of `EXPECTED_BY_PROFILE` — that
+table is now the policy's own base signal, and every consumer reads the policy
+instead of re-deriving its opinion:
+
+- **Gaps** — `inventory()` builds the gap list from `status === 'relevant'`
+  platforms only. A `not-relevant` platform can never produce a finding; an
+  `optional` one stays visible without counting as one.
+- **Coverage** (`assessment.coverage`) — the same expected set. A category with
+  nothing expected and nothing held reads `not-checked`, never `absent`.
+- **The collector's SERP sweep** — searches `relevant` + `optional`, and
+  *also* `needs-confirmation` platforms, because not searching them would
+  silently resolve the ambiguity as "irrelevant". `not-relevant` is never
+  searched.
+- **The portal read** — same list, plain-English labels only.
+
+**The defaults**, all heuristics over client-authored text already on file (no
+new structured field is invented):
+
+| Platform class | Default |
+|---|---|
+| Local/listing platforms (`yelp`) | `relevant` when the text shows a physical/local customer presence; `not-relevant` for online-only delivery with none; `needs-confirmation` when the business type is unconfirmed |
+| App stores | `relevant` only when a mobile app is actually described; otherwise `not-relevant` |
+| `scholar`, `orcid` | Always `not-relevant` — personal-identity hosts, not part of a *company* footprint |
+| Business-type expected set | `relevant` |
+| Everything else, unconfirmed business type | `needs-confirmation` when no target market is confirmed, else `optional` — "uncertain classification asks a question; it does not penalize the score" |
+| A consultancy's consumer-social set (Instagram/TikTok/Pinterest) | `optional`, not `not-relevant` — it can still matter |
+
+**Overrides are versioned, not mutated.** `PATCH …/applicability/:platform`
+marks the prior active `PresenceApplicabilityOverride` superseded and inserts a
+new row (actor email recorded); nothing is deleted, so the history of who
+changed their mind, when, and why survives. Because overrides live in their own
+table and discovery only ever writes `PresenceAccount`, an override **survives
+rediscovery**: re-running discovery does not undo the human correction.
+
+One value is currently computed and not yet used: `hasMultipleMarkets` is
+threaded into the default computation and explicitly marked `// reserved for a
+future market-specific directory rule`. Documented here rather than quietly
+described as working.
+
 ## The assessment — stage 2's "analyse" column
 
 `GET /presence` returns an `assessment`: the read on the company's current state
@@ -180,6 +237,60 @@ with an *analyse* step:
   unmeasured rather than implied to be absent. An audit that reports six findings
   while hiding that it never looked at reviews is worse than one that reports five
   and says so.
+
+## "Not ours" — rejection memory (P05, §11.4)
+
+A search candidate is a guess, and the person best placed to settle the guess
+is the client. Rejecting one is not a delete: `POST
+…/accounts/:accountId/reject` writes a `PresenceRejection` tombstone
+(normalized URL + platform + project scope + reason + actor) and *then* removes
+the live candidate row.
+
+The reason is mandatory and the refusal says why:
+
+> `A reason is required to reject a candidate — it is shown on the tombstone and
+> to future reviewers.`
+
+A rejection only applies to a `candidate` row; anything else is a 400:
+
+> `Only a search candidate can be rejected as "Not ours".`
+
+**Why the URL is normalized.** The tombstone is checked on the *normalized*
+URL, so a sweep that returns the same account with a tracking parameter, a
+trailing slash or a locale subdomain still matches the tombstone instead of
+re-proposing the business the client already said was not theirs. Without that
+check the next sweep recreates the identical rejected candidate every run —
+which is exactly the bug the tombstone exists to prevent.
+
+**Undo is authorized, and recorded.** `POST …/rejections/:rejectionId/reconsider`
+clears the tombstone's *effect* (sets `reconsideredAt`/`reconsideredBy`) and
+keeps the row for history — nothing is deleted. `GET …/rejections` lists them
+all, reconsidered ones included, so "we said not ours, then changed our mind"
+is legible afterwards.
+
+## The client's own read — the portal projection (P05, §11.1 / §4.6)
+
+`GET /api/portal/projects/:projectId/presence` — a separate controller
+(`PresencePortalController`, `@ClientPortal()`) behind `ScopeValidationService.assertProjectAccess`,
+so a client token reading another client's project is a 403.
+
+It is deliberately **narrower** than the operator's `GET …/presence`, and the
+narrowing is the feature:
+
+| Operator sees | Client sees |
+|---|---|
+| `candidate` + a confidence score + `foundOn` (the query that found it) | `needs-confirmation`, labelled **"Recommended profile — needs confirmation"** |
+| `confirmed` / `unverified` | "Confirmed account" / "Found; not fully checked" |
+| run ids, SERP query text, `serpCostUsd`, discovery internals | nothing — not in the payload at all |
+| personal (founder) profiles, separately flagged | filtered out |
+
+`counts` reports `total` (confirmed) and `needsConfirmation`; `relevantNotFound`
+is the gap list reduced to platform/label/group. §11.4's rule — never show a
+client a precise unexplained score — is why the confidence number is absent
+rather than translated.
+
+The smoke suite greps the raw response body for `confidence`,
+`foundOn|serpCostUsd|serpQueries|discoveryRunId|runId` and fails if any appears.
 
 ## Discovery sources (precedence order)
 
@@ -219,6 +330,12 @@ Without these, one live Notion sweep produced **20 rows for 16 accounts**.
 | `POST` | `/api/projects/:id/presence/brand-voice` | 5/60s | Synthesize tone/themes/vocabulary/CTAs from stored `PresencePost` captions via `presence.llm.service.ts`. `extraction: "insufficient-data"` with &lt;3 captions or no LLM key |
 | `GET` | `/api/projects/:id/presence/brand-voice` | default | Latest stored brand-voice read; 404 if `/brand-voice` has never been run |
 | `POST` | `/api/projects/:id/presence/directory-ratings` | 5/60s | Read published ratings for the client's own discovered G2/Capterra/Trustpilot/Glassdoor/Yelp/Clutch/Crunchbase/Product Hunt listings — no vendor, free. Stored as `PresenceReview` rows tagged `source: "schema-scrape"` |
+| `POST` | `/api/projects/:id/presence/accounts/:accountId/reject` | default | **(P05 §11.4)** "Not ours" — records a `PresenceRejection` tombstone and removes the candidate row. Body: `{ reason }` (required; 400 without one, 400 on a non-candidate) |
+| `GET` | `/api/projects/:id/presence/rejections` | default | **(P05 §11.4)** Tombstones for the project, newest first, reconsidered ones included |
+| `POST` | `/api/projects/:id/presence/rejections/:rejectionId/reconsider` | default | **(P05 §11.4)** Authorized undo — clears the tombstone's effect, keeps the row |
+| `GET` | `/api/projects/:id/presence/applicability` | default | **(P05 §11.2)** `{ status, reason, ruleVersion, overridden }` per platform — the same list `GET /presence` embeds |
+| `PATCH` | `/api/projects/:id/presence/applicability/:platform` | default | **(P05 §11.2)** Body: `{ status, reason }`. Versioned override: the prior one is superseded, never mutated |
+| `GET` | `/api/portal/projects/:id/presence` | default | **(P05 §11.1)** Client-safe projection — plain-English `statusLabel`, no confidence/run ids/query text/spend. `@ClientPortal()`, 403 for another client's project |
 
 `POST /accounts` takes **only a URL**. The operator already encoded the platform
 when they copied the link; a dropdown would add only a way to disagree with it.
@@ -241,7 +358,11 @@ that never ran and a module that ran and found nothing are different answers.
 
 ## Dependencies
 
-- **Modules:** `DatabaseModule`, `FetcherModule`, `JobsModule`
+- **Modules:** `DatabaseModule`, `FetcherModule`, `JobsModule`,
+  `SerpIntelligenceModule` (the DataForSEO SERP provider), and — for P05 —
+  `BusinessProfileModule` (confirmed profile + `getConfirmedTargetCountries()`,
+  read-only; the applicability policy's `hasMultipleMarkets` signal).
+  `ScopeValidationService` from `common/guards` backs the portal read.
 - **npm:** `cheerio` (already present)
 - **External services:** DataForSEO (optional — the Google sweep only), DataForSEO
   Business Data (optional — business profile + reviews), Apify (optional,
@@ -285,7 +406,11 @@ only reads rows a prior explicit run already stored.
 `PresenceAccount` (unique on `projectId + platform + url`), `PresenceDiscovery`,
 `PresenceProfile` + `PresenceReview` (wave-6 D2 — DataForSEO, append-only
 snapshots), `PresencePost` (wave-6 D7 — Apify, `kind: "profile" | "post"`,
-optionally linked to a `PresenceAccount`).
+optionally linked to a `PresenceAccount`), `PresenceApplicabilityOverride`
+(P05 — one row per change, prior row superseded via `supersededAt`, never
+mutated) and `PresenceRejection` (P05 — `platform` + `normalizedUrl` +
+`reason` + actor, with `reconsideredAt`/`reconsideredBy` for the authorized
+undo; the row is the memory, so it is never deleted).
 
 ## PRD alignment
 
@@ -298,6 +423,14 @@ optionally linked to a `PresenceAccount`).
 | Business profile + review ratings | ⚠️ Built, gated on `SWARM_ALLOW_LIVE` | `POST /business-profile` (wave-6 D2) — credentials are set; the master paid-vendor switch is deliberately not. Fails closed with a 503 naming what is missing, never a fabricated profile |
 | Social activity / followers / cadence | ⚠️ Built, opt-in only | `POST /social-activity` (wave-6 D7) — never called live in this repo; requires `confirmSpend: true` on every call since it spends real Apify account credit |
 | Verify social profiles resolve | ⚠️ Partial | Honest by design — walled platforms report `unverified` with the reason, never a guess |
+| §11.2 — applicability drives gaps/expected/coverage, per client, with a reason | ✅ | `presence.applicability.service.ts`; `not-relevant` never produces a gap, headline or coverage miss |
+| §11.2 — a hidden tab must not still subtract points | ✅ | Gaps and coverage read the same policy; `not-relevant` contributes nothing |
+| §11.2 — uncertain classification asks a question rather than penalizing | ✅ | `needs-confirmation`, still searched by the collector, surfaced as a question |
+| §11.2 — overrides are versioned and survive rediscovery | ✅ | Prior override superseded, never mutated; discovery never writes that table |
+| §11.4 — candidate validation: confirm / not ours / correct link | ✅ | Confirm (`POST …/confirm`), reject (`POST …/reject`), correct link (`PATCH …/accounts/:id`) |
+| §11.4 — rejection memory prevents rediscovery loops | ✅ | `PresenceRejection`, matched on the normalized URL; reconsider is the authorized undo |
+| §11.4 — never show a client a raw confidence score | ✅ | The portal projection has no `confidence` field at all (asserted by the smoke suite) |
+| §11.1 / §4.6 — a client-safe presence read | ✅ | `GET /api/portal/projects/:id/presence`, `@ClientPortal()` + project-scope check |
 
 ## Testing
 
@@ -329,6 +462,37 @@ sources (5 JSON-LD, 3 page-link), correct handles, zero share-widget false
 positives on a site full of them, and the three verifiable platforms
 (App Store, Google Play, YouTube) confirmed while the five walled ones reported
 `unverified` with reasons.
+
+## P05 additions — `backend/smoke/online-presence-unified.smoke.sh`
+
+The P05 exit-gate suite (run with `/opt/homebrew/bin/bash` against
+`http://localhost:3002/api`). It seeds **two** projects to prove the policy is
+per-client rather than global: A is an online-only SaaS, B a local-services
+business. What it asserts:
+
+- category inference lands on `b2b-saas`, and the inventory carries an
+  `applicability` array;
+- **`yelp` reads `not-relevant` for the online-only SaaS**, with a
+  plain-English reason — and then asserts the *consequence* three ways: it is
+  not in `gaps`, not in `assessment.headlines`, not in `coverage[].missing`
+  (the "hidden tab still costs points" bug, tested directly);
+- `app-store` reads `not-relevant` with no app described;
+- a staff override sets `yelp` to `relevant` (`overridden: true`), the next
+  read honors it, the now-missing platform appears as a gap, and **the
+  override survives a rediscovery run**;
+- rejecting a candidate with an empty reason is a 400; with a reason, the
+  tombstone is recorded with a `normalizedUrl`, the candidate disappears from
+  the inventory, and a direct check of the discovery-time guard condition
+  returns "TOMBSTONED" — i.e. a future sweep will genuinely not recreate it;
+- reconsidering sets `reconsideredAt` and clears that guard; rejecting a
+  non-candidate (an operator-supplied account) is a 400;
+- the portal read returns 200 for the owning client, contains no `confidence`
+  and no `foundOn`/`serpCostUsd`/`serpQueries`/`discoveryRunId`/`runId`
+  substring, does contain `statusLabel`, and another client's read is a 403.
+
+**Not re-run during documentation.** This section was written from the script
+while other agents were mid-flight on shared source and the dev database;
+none of the above is a claim that the suite passes right now.
 
 ## SERP provider (2026-09-13)
 

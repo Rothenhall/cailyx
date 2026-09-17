@@ -1,734 +1,556 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
-import { useParams } from 'next/navigation';
-import { AlertTriangle, RefreshCw } from 'lucide-react';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { TechnicalScoreHistory } from '@/components/charts/TechnicalScoreHistory';
-import { DataTable, type ColumnDef } from '@/components/patterns/DataTable';
-import { CoveragePanel } from '@/components/patterns/CoveragePanel';
-import { EmptyState } from '@/components/patterns/EmptyState';
-import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
-import { MetricTile } from '@/components/patterns/MetricTile';
-import { PageHeader } from '@/components/patterns/PageHeader';
-import { RunConfigurator } from '@/components/patterns/RunConfigurator';
-import { RunStatusStrip } from '@/components/patterns/RunStatusStrip';
-import { ScopeBanner } from '@/components/patterns/ScopeBanner';
-import { StatusPill } from '@/components/patterns/StatusPill';
-import { Timestamp } from '@/components/patterns/Timestamp';
-import { useUrlState } from '@/hooks/useUrlState';
-import { formatNumber } from '@/lib/format';
-import type { ApiError } from '@/lib/api';
-import type { ComparableBaseline, CoverageSummary, RunStatus } from '@/types';
-import { getProjectDetail, type ProjectDetailWire } from '@/services/projects';
-import {
-  findingReason,
-  getTechnicalAudit,
-  getTechnicalTrend,
-  listTechnicalAudits,
-  runTechnicalAudit,
-  getTechnicalAuditJob,
-  technicalCheckLabel,
-  type AuditRunSummary,
-  type PipelineJobStatus,
-  type TechnicalAuditDetail,
-  type TechnicalPageRow,
-  type TechnicalTrendPoint,
-} from '@/services/research';
-
 /**
- * TA01 — Website health.
+ * P12 — Website: health, Google visibility, and visitors together (§7.1).
  *
- * design_plan.md §4.3: *"Latest technical score, checks, worst pages, coverage,
- * history, start audit"*, under the audit-hub family contract: *"Source/
- * readiness strip, selected run and freshness, limited headline metrics,
- * chart/table tabs, prioritized evidence; **run configuration is a deliberate
- * drawer/page, never triggered on tab load**."*
+ * Replaces the former three-way split ("Website health" / "Search
+ * performance" / "Traffic & acquisition") with one screen: Overview, Pages,
+ * Google search, Visitors. `/research/search` and `/research/traffic` now
+ * redirect here (§20.3's migration convention) — see their page.tsx files.
  *
- * Three decisions this page is built around:
+ * Every tab reads stored data only — `getWebsiteOverview`/`getWebsitePages`
+ * never trigger a Google call or a new crawl (§7.6). The one live path,
+ * `syncWebsiteGoogleData`, only runs from the explicit "Sync Google data"
+ * action, never from a tab switch or page load.
  *
- *  1. **Nothing runs on load.** Every request here is a read. Starting a run
- *     happens in the "Start audit" drawer, which shows the target, the checks
- *     and the outstanding page-budget gap before anyone commits.
- *  2. **A delta appears only against a comparable run.** The previous run is
- *     passed to `MetricTile` as a `ComparableBaseline` only when it audited the
- *     same target URL — the comparison key for this metric set. Otherwise the
- *     tile shows the value with no change figure at all (§3.5 "No comparison
- *     baseline"), which is the conservative answer.
- *  3. **Coverage is stated, not summarised.** The run's own check results give
- *     expected versus returned; anything that errored or never ran is named with
- *     its reason, so a partial run cannot read as a clean score (§3.5).
- *  4. **The history chart breaks where the runs are not comparable.** The score
- *     series is split at every change of `targetUrl`, on the same comparison
- *     key the tile's delta uses, and each break is named in text (§6.4). Its
- *     values are also carried by a table directly under it, so the chart is
- *     never the only way to read them (§3.4).
+ * §7.1: "Check history" and "Technical details" are staff panels *inside*
+ * this screen — deliberately not first-level navigation entries. §7.4's
+ * no-fabrication limitation travels with the payload rather than being
+ * restated by each tab, so the two extracts can never be presented as a
+ * per-visit link.
  */
 
-/** Stable reference: `useUrlState` decodes only declared keys. */
-const TAB_DEFAULTS = { tab: 'pages' };
+import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { AlertTriangle } from 'lucide-react';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { PageHeader } from '@/components/patterns/PageHeader';
+import { StatusPill, type StatusTone } from '@/components/patterns/StatusPill';
+import { formatNumber } from '@/lib/format';
+import { toApiError } from '@/components/patterns/ErrorState';
+import { Timestamp } from '@/components/patterns/Timestamp';
+import { listTechnicalAudits, type AuditRunSummary } from '@/services/research';
+import {
+  getWebsiteOverview,
+  getWebsitePages,
+  syncWebsiteGoogleData,
+  type FactScope,
+  type HealthState,
+  type JoinedPageFacts,
+  type WebsiteOverview,
+} from '@/services/website';
 
-export default function WebsiteHealthPage() {
-  const { projectId } = useParams<{ projectId: string }>();
-  const [tab, setTab] = useUrlState(TAB_DEFAULTS);
+const HEALTH_TONE: Record<HealthState, StatusTone> = {
+  healthy: 'success',
+  'needs-attention': 'warning',
+  inaccessible: 'danger',
+  unknown: 'unmeasured',
+};
 
-  const [project, setProject] = useState<ProjectDetailWire | null>(null);
-  const [audits, setAudits] = useState<AuditRunSummary[] | null>(null);
-  const [trend, setTrend] = useState<TechnicalTrendPoint[] | null>(null);
-  /** The history read's own failure, kept apart from the page's. */
-  const [trendError, setTrendError] = useState<ApiError | null>(null);
-  const [latest, setLatest] = useState<TechnicalAuditDetail | null>(null);
-  const [error, setError] = useState<ApiError | null>(null);
-  const [startOpen, setStartOpen] = useState(false);
+const HEALTH_LABEL: Record<HealthState, string> = {
+  healthy: 'Healthy',
+  'needs-attention': 'Needs attention',
+  inaccessible: 'Inaccessible',
+  unknown: 'Not yet checked',
+};
 
-  /** The job this page queued, kept in server vocabulary rather than memory. */
-  const [job, setJob] = useState<{ id: string; startedAt: string; status: PipelineJobStatus } | null>(null);
-  const [jobError, setJobError] = useState<string | null>(null);
+const SEVERITY_TONE: Record<string, StatusTone> = { high: 'danger', medium: 'warning', low: 'info' };
 
-  const load = useCallback(
-    async (signal?: AbortSignal) => {
-      try {
-        setError(null);
-        setTrendError(null);
-        const [projectResult, listResult] = await Promise.all([
-          getProjectDetail(projectId, { signal }),
-          listTechnicalAudits(projectId, { signal }),
-        ]);
-        setProject(projectResult);
-        setAudits(listResult.audits);
+function windowLabel(w: { startDate: string; endDate: string; timezoneNote: string } | null): string {
+  if (!w) return 'no data yet';
+  return `${w.startDate} – ${w.endDate} (${w.timezoneNote})`;
+}
 
-        // The score history the chart draws. It is a read of stored runs, so it
-        // can never start one — the whole page stays read-only on load
-        // (§4 audit-hub contract).
-        //
-        // Read separately from the calls above: a failed history read is not a
-        // reason to hide the run tiles, and it is certainly not a reason to
-        // render the chart as "not measured", which would claim the runs do not
-        // exist. It gets its own error state inside its own card.
-        try {
-          setTrend((await getTechnicalTrend(projectId, { signal, limit: 30 })).history);
-        } catch (caught) {
-          if (caught instanceof DOMException && caught.name === 'AbortError') throw caught;
-          setTrend(null);
-          setTrendError(toApiError(caught));
-        }
+/**
+ * §7.3/§7.4: state the scope an extract actually covers, and say so when it
+ * hit its own row limit rather than presenting a short extract as a total.
+ */
+function scopeSummary(scope: FactScope | null): string {
+  if (!scope) return 'scope not recorded for this extract';
+  const parts: string[] = [];
+  parts.push(scope.countries.length ? scope.countries.join(', ') : 'all locations in the extract');
+  parts.push(scope.devices.length ? scope.devices.join(', ') : 'all devices in the extract');
+  if (!scope.complete) parts.push('row limit reached, so more rows may exist than are shown');
+  return parts.join(' · ');
+}
 
-        // The worst-pages inventory is the only thing that needs the detail
-        // call; it is a read of the newest run, never a trigger for a new one.
-        const newest = listResult.audits[0];
-        if (newest) {
-          setLatest(await getTechnicalAudit(projectId, newest.id, { signal }));
-        } else {
-          setLatest(null);
-        }
-      } catch (caught) {
-        if (caught instanceof DOMException && caught.name === 'AbortError') return;
-        setError(toApiError(caught));
-      }
-    },
-    [projectId],
-  );
+export default function WebsitePage() {
+  const params = useParams<{ projectId: string }>();
+  const projectId = params.projectId;
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const tab = searchParams.get('tab') ?? 'overview';
+
+  const [overview, setOverview] = useState<WebsiteOverview | null>(null);
+  const [pages, setPages] = useState<JoinedPageFacts[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [ov, pg] = await Promise.all([getWebsiteOverview(projectId), getWebsitePages(projectId)]);
+      setOverview(ov);
+      setPages(pg);
+    } catch (e) {
+      setError(toApiError(e).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
-    return () => controller.abort();
+    load();
   }, [load]);
 
-  const checkJob = useCallback(async () => {
-    if (!job) return;
+  const setTab = (next: string) => {
+    const qs = new URLSearchParams(searchParams.toString());
+    qs.set('tab', next);
+    router.replace(`?${qs.toString()}`);
+  };
+
+  const handleSync = async () => {
+    setSyncing(true);
     try {
-      setJobError(null);
-      const status = await getTechnicalAuditJob(projectId, job.id);
-      setJob((current) => (current ? { ...current, status } : current));
-      // A finished job means the run row now exists — re-read the history so
-      // the new run appears without the operator reloading the page.
-      if (status.status === 'completed' || status.status === 'failed') await load();
-    } catch (caught) {
-      setJobError(toApiError(caught).message);
+      await syncWebsiteGoogleData(projectId);
+      await load();
+    } catch (e) {
+      setError(toApiError(e).message);
+    } finally {
+      setSyncing(false);
     }
-  }, [job, projectId, load]);
-
-  const newest = audits?.[0] ?? null;
-  const previous = audits?.[1] ?? null;
-
-  /**
-   * The previous run, but only as a baseline when both runs audited the same
-   * target. `targetUrl` is the comparison key for this metric set: a run
-   * against a different host or path is a different measurement, and treating
-   * it as a baseline would turn a scope change into a performance decline.
-   */
-  const baseline = useMemo((): ComparableBaseline | undefined => {
-    if (!newest || !previous) return undefined;
-    if (typeof newest.score !== 'number' || typeof previous.score !== 'number') return undefined;
-    if (!newest.createdAt || !previous.createdAt) return undefined;
-    if (newest.targetUrl !== previous.targetUrl) return undefined;
-    return {
-      comparable: true,
-      value: previous.score,
-      runId: previous.id,
-      runDate: previous.createdAt,
-      label: 'Previous run on the same target',
-    };
-  }, [newest, previous]);
-
-  const coverage = useMemo((): CoverageSummary | null => {
-    if (!latest) return null;
-    const findings = latest.findings;
-    return {
-      expectedCount: findings.length,
-      // `pass` and `fail` both mean the check returned a verdict. `error` and
-      // `not-run` did not, and are named below rather than counted as results.
-      successfulCount: findings.filter((f) => f.status === 'pass' || f.status === 'fail').length,
-      failed: findings
-        .filter((f) => f.status === 'error')
-        .map((f) => ({ name: technicalCheckLabel(f.type), reason: findingReason(f) })),
-      deferred: findings
-        .filter((f) => f.status === 'not-run')
-        .map((f) => ({ name: technicalCheckLabel(f.type), reason: findingReason(f) })),
-    };
-  }, [latest]);
-
-  const pageColumns: ReadonlyArray<ColumnDef<TechnicalPageRow>> = [
-    {
-      key: 'url',
-      header: 'Page',
-      accessor: (row) => row.url,
-      sortable: true,
-      render: (row) => (
-        <span className="block max-w-[32rem] truncate font-mono text-meta" title={row.url}>
-          {row.url}
-        </span>
-      ),
-    },
-    {
-      key: 'score',
-      header: 'Page score',
-      accessor: (row) => row.score,
-      sortable: true,
-      align: 'right',
-      width: 110,
-      // §3.5 — an unscored page is not a page that scored zero.
-      emptyLabel: 'Not scored',
-      render: (row) =>
-        typeof row.score === 'number' ? (
-          <span className="font-semibold tabular-nums">{formatNumber(row.score)}</span>
-        ) : null,
-    },
-    {
-      key: 'issues',
-      header: 'Issues',
-      accessor: (row) => row.issues.join(', '),
-      width: 90,
-      align: 'right',
-      render: (row) =>
-        row.issues.length > 0 ? (
-          <span className="tabular-nums">{formatNumber(row.issues.length)}</span>
-        ) : (
-          <span className="text-muted-foreground">None found</span>
-        ),
-    },
-    {
-      key: 'status',
-      header: 'Fetch',
-      accessor: (row) => row.status,
-      width: 90,
-      render: (row) => (
-        <span className="tabular-nums">
-          {row.status > 0 ? row.status : 'Fetch failed'}
-        </span>
-      ),
-    },
-  ];
-
-  const historyColumns: ReadonlyArray<ColumnDef<AuditRunSummary>> = [
-    {
-      key: 'createdAt',
-      header: 'Run',
-      accessor: (row) => row.createdAt ?? '',
-      sortable: true,
-      width: 220,
-      render: (row) =>
-        row.createdAt ? (
-          <Timestamp value={row.createdAt}  />
-        ) : (
-          <span className="text-muted-foreground">Time not recorded</span>
-        ),
-    },
-    {
-      key: 'score',
-      header: 'Score',
-      accessor: (row) => row.score,
-      sortable: true,
-      align: 'right',
-      width: 100,
-      emptyLabel: 'Not scored',
-      render: (row) =>
-        typeof row.score === 'number' ? (
-          <span className="font-semibold tabular-nums">{formatNumber(row.score)}</span>
-        ) : null,
-    },
-    {
-      key: 'status',
-      header: 'Run status',
-      accessor: (row) => row.status,
-      width: 140,
-      render: (row) => <StatusPill label={runLabel(row.status)} tone={runTone(row.status)} />,
-    },
-    {
-      key: 'open',
-      header: '',
-      width: 120,
-      alwaysVisible: true,
-      render: (row) => (
-        <Link
-          href={`/projects/${projectId}/research/website/runs/${row.id}`}
-          className="text-table text-primary underline-offset-4 hover:underline"
-        >
-          Open run
-        </Link>
-      ),
-    },
-  ];
-
-  if (error) {
-    return (
-      <div className="space-y-6">
-        <PageHeader title="Website health" />
-        <ErrorState error={error} onRetry={() => void load()} />
-      </div>
-    );
-  }
-
-  if (!audits || !project) {
-    return (
-      <div className="space-y-6">
-        <Skeleton className="h-16 rounded-xl" />
-        <Skeleton className="h-9 w-56" />
-        <Skeleton className="h-28 rounded-xl" />
-        <Skeleton className="h-72 rounded-xl" />
-      </div>
-    );
-  }
-
-  /**
-   * A queued job is a run in flight. The strip keeps the last successful run's
-   * results readable underneath it and states which run they came from, so
-   * nothing on this page can be mistaken for the new run's output (§3.5).
-   */
-  const stripRun =
-    job && job.status.status !== 'completed'
-      ? {
-          id: job.id,
-          status: jobStatusToRunStatus(job.status.status),
-          startedAt: job.startedAt,
-        }
-      : null;
+  };
 
   return (
-    <div className="space-y-6">
-      <ScopeBanner
-        scope={{
-          projectName: project.name,
-          domain: project.domain,
-          mode: 'live',
-          runLabel: newest?.createdAt ? `Last run ${newest.createdAt.slice(0, 10)}` : undefined,
-        }}
-      />
-
+    <div className="flex flex-col gap-6">
       <PageHeader
-        title="Website health"
-        context={
-          <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
-            <span className="font-mono text-meta">{project.domain}</span>
-            {newest?.createdAt ? (
-              <span>
-                Latest run <Timestamp value={newest.createdAt}  />
-              </span>
-            ) : (
-              <span className="text-muted-foreground">No run yet</span>
-            )}
-          </span>
-        }
-        status={
-          newest ? <StatusPill label={runLabel(newest.status)} tone={runTone(newest.status)} /> : undefined
-        }
-        primaryAction={{ label: 'Start audit', onClick: () => setStartOpen(true) }}
-        secondaryActions={
-          <>
-            {newest ? (
-              <Button asChild variant="outline" size="sm">
-                <Link href={`/projects/${projectId}/research/website/runs/${newest.id}`}>
-                  Open latest run
-                </Link>
-              </Button>
-            ) : null}
-            {audits.length > 1 && newest ? (
-              <Button asChild variant="outline" size="sm">
-                <Link href={`/projects/${projectId}/research/website/runs/${newest.id}/compare`}>
-                  Compare
-                </Link>
-              </Button>
-            ) : null}
-            <Button variant="outline" size="sm" onClick={() => void load()}>
-              <RefreshCw aria-hidden="true" className="mr-2 h-4 w-4" />
-              Refresh
-            </Button>
-          </>
-        }
+        breadcrumbs={[{ label: 'Research & audits' }, { label: 'Website' }]}
+        title="Website"
+        context="See how your website is performing, what brings people to it, and what to improve next."
+        primaryAction={{ label: syncing ? 'Syncing Google data…' : 'Sync Google data', onClick: handleSync, disabled: syncing }}
       />
 
-      {audits.length === 0 ? (
-        <Card>
-          <CardContent className="pt-6">
-            <EmptyState
-              variant="not-measured"
-              subject="a technical audit"
-              prerequisite="the project needs a domain, and a run has to be started deliberately — nothing here starts one on its own."
-              action={{ label: 'Start the first audit', onClick: () => setStartOpen(true) }}
-            />
-          </CardContent>
-        </Card>
-      ) : (
-        <RunStatusStrip
-          run={
-            stripRun ?? {
-              id: newest!.id,
-              status: runStatus(newest!.status),
-              startedAt: newest!.createdAt ?? new Date().toISOString(),
-              completedAt: newest!.completedAt ?? undefined,
-            }
-          }
-          lastSuccessful={
-            newest?.completedAt
-              ? { id: newest.id, completedAt: newest.completedAt, href: `/projects/${projectId}/research/website/runs/${newest.id}` }
-              : undefined
-          }
-          detail={
-            job ? (
-              <div className="space-y-2">
-                <p className="text-table text-foreground">
-                  Queued job <span className="font-mono">{job.id}</span> — status{' '}
-                  <span className="font-mono">{job.status.status}</span>
-                  {job.status.error ? `: ${job.status.error}` : ''}.
-                </p>
-                {jobError ? <p className="text-table text-danger-foreground">{jobError}</p> : null}
-                <Button variant="outline" size="sm" onClick={() => void checkJob()}>
-                  Check job status
-                </Button>
-              </div>
-            ) : null
-          }
-          expectedMinutes={5}
-          
-        >
-          <div className="space-y-6">
-            {coverage && (coverage.failed?.length ?? 0) + (coverage.deferred?.length ?? 0) > 0 ? (
-              <Alert>
-                <AlertTriangle aria-hidden="true" className="h-4 w-4" />
-                <AlertTitle>Some checks did not return a result</AlertTitle>
-                <AlertDescription>
-                  The successful evidence is shown below, together with every check that errored or
-                  never ran. Treat this run as incomplete rather than healthy.
-                </AlertDescription>
-              </Alert>
-            ) : null}
-
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <MetricTile
-                label="Overall technical score"
-                value={typeof newest!.score === 'number' ? newest!.score : null}
-                unit="/ 100"
-                runLabel={`Run ${newest!.id}`}
-                runHref={`/projects/${projectId}/research/website/runs/${newest!.id}`}
-                sourceDate={
-                  newest!.createdAt ? { date: newest!.createdAt, sourceName: 'Technical audit run' } : undefined
-                }
-                
-                baseline={baseline}
-                direction="higher-is-better"
-                provenance="measured"
-                note={
-                  baseline
-                    ? undefined
-                    : 'No comparable previous run for this target, so no change is shown.'
-                }
-              />
-              <MetricTile
-                label="Pages crawled"
-                value={latest ? latest.pagesCrawled : null}
-                unit="pages"
-                runLabel={`Run ${newest!.id}`}
-                runHref={`/projects/${projectId}/research/website/runs/${newest!.id}`}
-                
-                provenance="measured"
-              />
-              <MetricTile
-                label="Failing checks"
-                value={latest ? latest.findings.filter((f) => f.status === 'fail').length : null}
-                unit="checks"
-                runLabel={`Run ${newest!.id}`}
-                runHref={`/projects/${projectId}/research/website/runs/${newest!.id}`}
-                
-                direction="lower-is-better"
-                provenance="measured"
-              />
-              <MetricTile
-                label="Coverage"
-                value={coverage && coverage.expectedCount > 0 ? coverage.successfulCount : null}
-                unit={`of ${coverage?.expectedCount ?? 0}`}
-                coverage={coverage ?? undefined}
-                
-                provenance="measured"
-              />
-            </div>
-
-            {coverage ? (
-              <CoveragePanel
-                summary={coverage}
-                title="Check coverage for this run"
-                action={
-                  <Button variant="outline" size="sm" onClick={() => setStartOpen(true)}>
-                    Start another run
-                  </Button>
-                }
-                contextNote={
-                  latest && latest.pagesCrawled > 0
-                    ? `The page inventory covers the ${formatNumber(latest.pagesCrawled)} sitemap URLs this run fetched. design_plan G19 lists page-budget forwarding as an open gap — a per-run crawl budget is accepted by the request but is not yet applied.`
-                    : undefined
-                }
-              />
-            ) : null}
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-subsection">Latest run detail</CardTitle>
-              </CardHeader>
-              <CardContent className="pt-2">
-                {/* §3.4: the tab is in the URL so a copied link reproduces it.
-                    Radix owns the roving focus and aria wiring. */}
-                <Tabs value={tab.tab} onValueChange={(value) => setTab({ tab: value })}>
-                  <TabsList>
-                    <TabsTrigger value="pages">Worst pages</TabsTrigger>
-                    <TabsTrigger value="history">History</TabsTrigger>
-                  </TabsList>
-                  <TabsContent value="pages">
-                    {latest && latest.pages.length > 0 ? (
-                      <DataTable
-                        caption="Pages in the newest run, worst score first"
-                        columns={pageColumns}
-                        rows={latest.pages}
-                        getRowId={(row) => row.url}
-                        defaultSort={{ key: 'score', direction: 'asc' }}
-                        minTableWidth="48rem"
-                        emptyState={<EmptyState variant="no-results" />}
-                      />
-                    ) : (
-                      <EmptyState
-                        variant="not-measured"
-                        subject="a per-page inventory"
-                        prerequisite="the run's sitemap crawl must fetch at least one URL."
-                      />
-                    )}
-                  </TabsContent>
-                  <TabsContent value="history">
-                    <DataTable
-                      caption="Technical audit run history"
-                      columns={historyColumns}
-                      rows={audits}
-                      getRowId={(row) => row.id}
-                      defaultSort={{ key: 'createdAt', direction: 'desc' }}
-                      emptyState={<EmptyState variant="no-results" />}
-                    />
-                  </TabsContent>
-                </Tabs>
-              </CardContent>
-            </Card>
-          </div>
-        </RunStatusStrip>
+      {error && (
+        <Alert variant="destructive">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>Could not load Website</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
       )}
 
-      {/*
-        The score history is the one figure on this page that spans runs, so it
-        sits outside the strip describing the newest one. It is broken at every
-        change of `targetUrl` — the same comparison key the tile delta above
-        uses — so the tile and the line cannot disagree about which runs are
-        comparable (§6.4).
-      */}
-      {trendError ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-subsection">Score history</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-2">
-            <ErrorState
-              error={trendError}
-              layout="inline"
-              onRetry={() => void load()}
-              preserveNotice="Everything else on this page was read successfully; only the score history failed."
-            />
-          </CardContent>
-        </Card>
-      ) : trend && trend.length > 0 ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-subsection">Score history</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-2">
-            <TechnicalScoreHistory
-              history={trend}
-              emptyState={
-                <EmptyState
-                  variant="not-measured"
-                  subject="a score history"
-                  prerequisite="at least one technical audit has to finish with a score before a series exists."
-                />
-              }
-              note={`The ${formatNumber(trend.length)} most recent scored run(s). The history tab above lists every run, including any older than this window. Nothing on this page starts a run — use “Start audit” above.`}
-            />
-          </CardContent>
-        </Card>
-      ) : null}
+      {overview && <SourceAvailabilityStrip overview={overview} />}
+      {overview && <WindowAlignmentNote overview={overview} />}
+      <PageAnalysisLink projectId={projectId} />
+      {overview && <StaffPanels projectId={projectId} />}
 
-      {/*
-        Run configuration is a deliberate drawer (§4 audit-hub contract). It is
-        never opened by a tab load, and nothing in it fires until the operator
-        presses the one start button, which owns its own double-submit guard.
-      */}
-      <Sheet open={startOpen} onOpenChange={setStartOpen}>
-        <SheetContent side="right" className="w-full overflow-y-auto bg-surface sm:max-w-xl">
-          <SheetHeader className="space-y-2 text-left">
-            <SheetTitle>Start a technical audit</SheetTitle>
-            <SheetDescription className="text-table text-muted-foreground">
-              Five checks run against this project&rsquo;s own domain. Nothing has been started yet.
-            </SheetDescription>
-          </SheetHeader>
-          <div className="mt-5">
-            <RunConfigurator
-              startLabel="Start technical audit"
-              prerequisites={[
-                {
-                  label: 'Project domain is set',
-                  met: Boolean(project.domain),
-                  detail: project.domain
-                    ? `The audit targets ${project.domain} — resolved by the server, not typed here.`
-                    : 'Set the project domain before running a technical audit.',
-                },
-                {
-                  label: 'Per-run page budget (design_plan G19)',
-                  met: false,
-                  blocking: false,
-                  detail:
-                    'The request accepts a page budget of 1–1000, but it is not yet forwarded to the queued job, so no budget control is offered here.',
-                },
-              ]}
-              parameters={[
-                { key: 'target', label: 'Target URL', value: project.domain },
-                {
-                  key: 'checks',
-                  label: 'Checks',
-                  value: 'robots.txt · CDN probe · JS render · Core Web Vitals · schema · sitemap · page inventory',
-                },
-              ]}
-              scope={
-                <p>
-                  Every sitemap URL found at {project.domain} is fetched and scored, plus the five
-                  site-level checks. Runs are rate-limited to three per minute.
-                </p>
-              }
-              onStart={async () => {
-                const queued = await runTechnicalAudit(projectId);
-                setJob({
-                  id: queued.jobId,
-                  startedAt: new Date().toISOString(),
-                  status: { status: 'waiting' },
-                });
-              }}
-              onStarted={() => setStartOpen(false)}
-              onReconcile={() => void checkJob()}
-              reconcileHref={`/projects/${projectId}/runs`}
-              
-              runInFlight={Boolean(stripRun)}
-            />
-          </div>
-        </SheetContent>
-      </Sheet>
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="pages">Pages</TabsTrigger>
+          <TabsTrigger value="search">Google search</TabsTrigger>
+          <TabsTrigger value="visitors">Visitors</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview" className="flex flex-col gap-6">
+          {loading && <Skeleton className="h-64 w-full" />}
+          {!loading && overview && <OverviewTab projectId={projectId} overview={overview} />}
+        </TabsContent>
+
+        <TabsContent value="pages">
+          {loading && <Skeleton className="h-64 w-full" />}
+          {!loading && pages && <PagesTable projectId={projectId} pages={pages} />}
+        </TabsContent>
+
+        <TabsContent value="search">
+          {loading && <Skeleton className="h-64 w-full" />}
+          {!loading && pages && overview && <SearchTab projectId={projectId} pages={pages} overview={overview} />}
+        </TabsContent>
+
+        <TabsContent value="visitors">
+          {loading && <Skeleton className="h-64 w-full" />}
+          {!loading && pages && overview && <VisitorsTab projectId={projectId} pages={pages} overview={overview} />}
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function SourceAvailabilityStrip({ overview }: { overview: WebsiteOverview }) {
+  const a = overview.sourceAvailability;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap gap-2 text-meta text-muted-foreground">
+        <Badge variant={a.technicalCheck.available ? 'default' : 'outline'}>{a.technicalCheck.label}</Badge>
+        <Badge variant={a.searchConsole.connected && !a.searchConsole.expired ? 'default' : 'outline'}>{a.searchConsole.label}</Badge>
+        <Badge variant={a.analytics.connected && !a.analytics.expired ? 'default' : 'outline'}>{a.analytics.label}</Badge>
+      </div>
+      {/* §7.6: plain English about what connecting each missing source adds —
+          and, on expiry, that the last authorized snapshot is still what is
+          being shown. */}
+      {overview.connectGuidance.map((line) => (
+        <p key={line} className="text-meta text-muted-foreground">{line}</p>
+      ))}
     </div>
   );
 }
 
 /**
- * `TechnicalAudit` has no `status` column — a row is only ever written once
- * the run finishes, so the list endpoint sends none. `AuditRunSummary.status`
- * is typed as required because AEO's row genuinely carries one across its
- * async lifecycle, but a technical-audit row reaching this page always means
- * "a completed run exists"; there is no persisted in-progress or failed state
- * to report here (an in-flight run is tracked separately, through `job`).
- * Treating a missing status as `completed` rather than indexing into it is
- * what keeps that difference from crashing the page.
+ * §7.4: GSC counts in Pacific time, GA in the property timezone. When the two
+ * periods cannot be aligned exactly this is disclosed and the comparison falls
+ * back to whole-window scope — the dates are never relabeled as equal.
  */
-function runTone(
-  status: string | undefined,
-): 'success' | 'warning' | 'danger' | 'info' | 'neutral' | 'unmeasured' {
-  switch (status ?? 'completed') {
-    case 'completed':
-      return 'success';
-    case 'partial':
-      return 'warning';
-    case 'failed':
-      return 'danger';
-    case 'running':
-      return 'info';
-    case 'queued':
-    case 'pending':
-      return 'unmeasured';
-    default:
-      return 'neutral';
-  }
-}
-
-function runLabel(status: string | undefined): string {
-  const value = status ?? 'completed';
-  return value.length > 0 ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+function WindowAlignmentNote({ overview }: { overview: WebsiteOverview }) {
+  const w = overview.windows;
+  return (
+    <p className="text-meta text-muted-foreground">
+      <span className="font-medium text-foreground">{w.aligned ? 'Matching windows. ' : 'Windows differ. '}</span>
+      {w.note}
+    </p>
+  );
 }
 
 /**
- * The audit row's own status vocabulary into `RunStatus`. An unknown string
- * maps to `queued`, which claims the least; a missing one (see above) maps to
- * `completed`, which is the only state a stored row can actually be in.
+ * §7.1: Check history and Technical details are staff panels rendered inside
+ * this screen. They are deliberately not entries in the project navigation.
  */
-function runStatus(status: string | undefined): RunStatus {
-  const value = status ?? 'completed';
-  switch (value) {
-    case 'completed':
-    case 'partial':
-    case 'failed':
-    case 'running':
-    case 'cancelled':
-      return value;
-    default:
-      return 'queued';
-  }
+/**
+ * R33 (§7.2): Page Analysis is part of the Website experience now. It is
+ * reachable from here — and from each page's detail — rather than from a
+ * second, duplicate entry in the Content group.
+ */
+function PageAnalysisLink({ projectId }: { projectId: string }) {
+  return (
+    <div className="rounded-md border px-3 py-2">
+      <Link className="text-meta underline" href={`/projects/${projectId}/research/website/page-analysis`}>
+        Page analysis — analyze a live URL and see its run history
+      </Link>
+    </div>
+  );
 }
 
-/** The pipeline queue's status vocabulary into `RunStatus`. */
-function jobStatusToRunStatus(status: PipelineJobStatus['status']): RunStatus {
-  switch (status) {
-    case 'completed':
-      return 'completed';
-    case 'failed':
-      return 'failed';
-    case 'active':
-      return 'running';
-    case 'not_found':
-      return 'failed';
-    default:
-      return 'queued';
+function StaffPanels({ projectId }: { projectId: string }) {
+  const [open, setOpen] = useState(false);
+  const [runs, setRuns] = useState<AuditRunSummary[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!open || runs) return;
+    listTechnicalAudits(projectId)
+      .then((r) => setRuns(r.audits ?? []))
+      .catch(() => setFailed(true));
+  }, [open, runs, projectId]);
+
+  return (
+    <div className="rounded-md border">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between px-3 py-2 text-left text-meta font-medium"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <span>Staff: check history &amp; technical details</span>
+        <span className="text-muted-foreground">{open ? 'Hide' : 'Show'}</span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-2 border-t px-3 py-3">
+          <p className="text-meta text-muted-foreground">
+            Every website check that has run for this project. Each opens the technical run detail.
+          </p>
+          {failed && <p className="text-meta text-muted-foreground">Could not load check history.</p>}
+          {!failed && runs === null && <Skeleton className="h-10 w-full" />}
+          {!failed && runs?.length === 0 && (
+            <p className="text-meta text-muted-foreground">No website check has run yet.</p>
+          )}
+          {runs?.map((run) => (
+            <div key={run.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-2">
+              <span className="text-meta">
+                {run.createdAt ? <Timestamp value={run.createdAt} /> : run.status}
+                {run.targetUrl ? ` · ${run.targetUrl}` : ''}
+                {typeof run.score === 'number' ? ` · score ${run.score}` : ''}
+              </span>
+              <Link className="text-meta underline" href={`/projects/${projectId}/research/website/runs/${run.id}`}>
+                Technical details
+              </Link>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OverviewTab({ projectId, overview }: { projectId: string; overview: WebsiteOverview }) {
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-meta text-muted-foreground">Website health</CardTitle></CardHeader>
+          <CardContent>
+            <StatusPill label={HEALTH_LABEL[overview.health.state]} tone={HEALTH_TONE[overview.health.state]} />
+            <p className="mt-2 text-meta text-muted-foreground">{overview.health.issueCount} unresolved issue{overview.health.issueCount === 1 ? '' : 's'}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-meta text-muted-foreground">Google clicks / impressions</CardTitle></CardHeader>
+          <CardContent>
+            {overview.google.clicks == null ? (
+              <p className="text-meta text-muted-foreground">Not measured — connect Google Search</p>
+            ) : (
+              <>
+                <p className="text-2xl font-semibold">{formatNumber(overview.google.clicks)} <span className="text-meta text-muted-foreground">/ {formatNumber(overview.google.impressions ?? 0)}</span></p>
+                <p className="text-meta text-muted-foreground">{windowLabel(overview.google.clicksWindow)}</p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-meta text-muted-foreground">Visitor sessions</CardTitle></CardHeader>
+          <CardContent>
+            {overview.google.sessions == null ? (
+              <p className="text-meta text-muted-foreground">Not measured — connect Google Analytics</p>
+            ) : (
+              <>
+                <p className="text-2xl font-semibold">{formatNumber(overview.google.sessions)}</p>
+                <p className="text-meta text-muted-foreground">{windowLabel(overview.google.sessionsWindow)}</p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-meta text-muted-foreground">Average position</CardTitle></CardHeader>
+          <CardContent>
+            {overview.google.position == null ? (
+              <p className="text-meta text-muted-foreground">Not measured</p>
+            ) : (
+              <>
+                <p className="text-2xl font-semibold">{overview.google.position.toFixed(1)}</p>
+                <p className="text-meta text-muted-foreground">weighted by impressions</p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* §7.1 item 2: the two measures carry their own, explicitly stated
+          windows — they are different units and are never merged into one
+          figure. */}
+      <p className="text-meta text-muted-foreground">
+        Google clicks and impressions are Search Console figures; visitor sessions are Analytics figures. They count
+        different things and are never added together.
+      </p>
+      <p className="text-meta text-muted-foreground">{overview.joinLimitation.statement}</p>
+
+      <Card>
+        <CardHeader><CardTitle>Insights</CardTitle></CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          {overview.insights.length === 0 && <p className="text-meta text-muted-foreground">No insights yet — connect Google and sync data to generate them.</p>}
+          {overview.insights.map((ins, i) => (
+            <div key={`${ins.ruleId}-${i}`} className="rounded-md border p-3">
+              <div className="flex items-center gap-2">
+                <StatusPill label={ins.severity} tone={SEVERITY_TONE[ins.severity] ?? 'neutral'} />
+                <span className="font-medium">{ins.message}</span>
+              </div>
+              <p className="mt-1 text-meta text-muted-foreground">{ins.limitations}</p>
+              <p className="mt-1 text-meta">Next: {ins.actionTarget}</p>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Important pages</CardTitle></CardHeader>
+        <CardContent className="overflow-x-auto">
+          <table className="w-full text-body">
+            <thead>
+              <tr className="text-left text-meta text-muted-foreground">
+                <th className="pb-2">Page</th>
+                <th className="pb-2">Health</th>
+                <th className="pb-2">Google clicks</th>
+                <th className="pb-2">Organic landing sessions</th>
+                <th className="pb-2">Next action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {overview.importantPages.map((p) => (
+                <tr key={p.pageIdentityId} className="border-t">
+                  <td className="py-2">
+                    <Link className="underline" href={`/projects/${projectId}/research/website/pages/${p.pageIdentityId}`}>
+                      {p.title ?? p.canonicalUrl}
+                    </Link>
+                    <span className="block text-meta text-muted-foreground">{p.canonicalUrl}</span>
+                  </td>
+                  <td className="py-2"><StatusPill label={HEALTH_LABEL[p.health]} tone={HEALTH_TONE[p.health]} /></td>
+                  <td className="py-2">{p.clicks == null ? 'Not measured' : formatNumber(p.clicks)}</td>
+                  <td className="py-2">{p.organicSessions == null ? 'Not measured' : formatNumber(p.organicSessions)}</td>
+                  <td className="py-2 text-meta text-muted-foreground">{p.nextAction}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function PagesTable({ projectId, pages }: { projectId: string; pages: JoinedPageFacts[] }) {
+  return (
+    <Card>
+      <CardContent className="overflow-x-auto pt-6">
+        <table className="w-full text-body">
+          <thead>
+            <tr className="text-left text-meta text-muted-foreground">
+              <th className="pb-2">Page</th>
+              <th className="pb-2">Health</th>
+              <th className="pb-2">Google clicks</th>
+              <th className="pb-2">Organic landing sessions</th>
+              <th className="pb-2">Scope</th>
+              <th className="pb-2">Next action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pages.map((p) => (
+              <tr key={p.pageIdentityId} className="border-t">
+                <td className="py-2">
+                  <Link className="underline" href={`/projects/${projectId}/research/website/pages/${p.pageIdentityId}`}>
+                    {p.title ?? p.canonicalUrl}
+                  </Link>
+                </td>
+                <td className="py-2"><StatusPill label={HEALTH_LABEL[p.health]} tone={HEALTH_TONE[p.health]} /></td>
+                <td className="py-2">{p.search.available ? formatNumber(p.search.clicks) : 'Not measured'}</td>
+                <td className="py-2">{p.visitors.available ? formatNumber(p.visitors.sessions) : 'Not measured'}</td>
+                <td className="py-2 text-meta text-muted-foreground">{scopeSummary(p.search.scope)}</td>
+                <td className="py-2 text-meta text-muted-foreground">{p.nextAction}</td>
+              </tr>
+            ))}
+            {pages.length === 0 && (
+              <tr><td colSpan={6} className="py-6 text-center text-meta text-muted-foreground">No pages yet — run a technical check or sync Google data.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SearchTab({ projectId, pages, overview }: { projectId: string; pages: JoinedPageFacts[]; overview: WebsiteOverview }) {
+  const withSearch = pages.filter((p) => p.search.available);
+  if (withSearch.length === 0) {
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="text-meta text-muted-foreground">
+          Search Console is not connected, or no data has been synced yet. No query or click figures are shown rather than
+          showing zero.
+        </p>
+        <p className="text-meta text-muted-foreground">{overview.sourceAvailability.searchConsole.addsWhat}</p>
+      </div>
+    );
   }
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-meta text-muted-foreground">
+        &ldquo;{overview.joinLimitation.querySideLabel}&rdquo; — {overview.joinLimitation.statement}
+      </p>
+      <Card>
+        <CardContent className="overflow-x-auto pt-6">
+          <table className="w-full text-body">
+            <thead>
+              <tr className="text-left text-meta text-muted-foreground">
+                <th className="pb-2">Page</th>
+                <th className="pb-2">Clicks</th>
+                <th className="pb-2">Impressions</th>
+                <th className="pb-2">CTR</th>
+                <th className="pb-2">Avg. position</th>
+                <th className="pb-2">Dates &amp; clock</th>
+                <th className="pb-2">Location / device scope</th>
+              </tr>
+            </thead>
+            <tbody>
+              {withSearch.map((p) => (
+                <tr key={p.pageIdentityId} className="border-t">
+                  <td className="py-2">
+                    <Link className="underline" href={`/projects/${projectId}/research/website/pages/${p.pageIdentityId}`}>
+                      {p.title ?? p.canonicalUrl}
+                    </Link>
+                  </td>
+                  <td className="py-2">{formatNumber(p.search.clicks)}</td>
+                  <td className="py-2">{formatNumber(p.search.impressions)}</td>
+                  <td className="py-2">{(p.search.ctr * 100).toFixed(1)}%</td>
+                  <td className="py-2">{p.search.position.toFixed(1)}</td>
+                  <td className="py-2 text-meta text-muted-foreground">{windowLabel(p.search.window)}</td>
+                  <td className="py-2 text-meta text-muted-foreground">{scopeSummary(p.search.scope)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function VisitorsTab({ projectId, pages, overview }: { projectId: string; pages: JoinedPageFacts[]; overview: WebsiteOverview }) {
+  const withVisitors = pages.filter((p) => p.visitors.available);
+  if (withVisitors.length === 0) {
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="text-meta text-muted-foreground">
+          Google Analytics is not connected, or no landing-session data has been synced yet. Visitor figures are absent
+          rather than zero.
+        </p>
+        <p className="text-meta text-muted-foreground">{overview.sourceAvailability.analytics.addsWhat}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-meta text-muted-foreground">
+        &ldquo;{overview.joinLimitation.sessionSideLabel}&rdquo; — {overview.joinLimitation.statement}
+      </p>
+      <Card>
+        <CardContent className="overflow-x-auto pt-6">
+          <table className="w-full text-body">
+            <thead>
+              <tr className="text-left text-meta text-muted-foreground">
+                <th className="pb-2">Landing page</th>
+                <th className="pb-2">Landing sessions</th>
+                <th className="pb-2">Users</th>
+                <th className="pb-2">Engaged sessions</th>
+                <th className="pb-2">Top source / channel</th>
+                <th className="pb-2">Dates &amp; clock</th>
+              </tr>
+            </thead>
+            <tbody>
+              {withVisitors.map((p) => (
+                <tr key={p.pageIdentityId} className="border-t">
+                  <td className="py-2">
+                    <Link className="underline" href={`/projects/${projectId}/research/website/pages/${p.pageIdentityId}`}>
+                      {p.title ?? p.canonicalUrl}
+                    </Link>
+                  </td>
+                  <td className="py-2">{formatNumber(p.visitors.sessions)}</td>
+                  <td className="py-2">{formatNumber(p.visitors.totalUsers)}</td>
+                  <td className="py-2">
+                    {formatNumber(p.visitors.engagedSessions)}
+                    {p.visitors.engagementRate != null && (
+                      <span className="ml-1 text-meta text-muted-foreground">({(p.visitors.engagementRate * 100).toFixed(0)}%)</span>
+                    )}
+                  </td>
+                  <td className="py-2">{p.visitors.bySource[0]?.source ?? '—'}</td>
+                  <td className="py-2 text-meta text-muted-foreground">{windowLabel(p.visitors.window)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+    </div>
+  );
 }

@@ -29,6 +29,8 @@ import { readFileSync } from 'fs';
 import type { Report, ReportRevision } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { ScoringService } from '../scoring/scoring.service';
+import { DigitalPerformanceService } from '../scoring/digital-performance.service';
+import { DeliveryPlanService } from '../delivery-plan/delivery-plan.service';
 import { StrategyService } from '../strategy/strategy.service';
 import { FindingsService } from '../findings/findings.service';
 import { BacklinksService } from '../backlinks/backlinks.service';
@@ -44,10 +46,13 @@ import type {
   GrowthAssetCountsDto,
   ReleasedReportDto,
   ReportData,
+  ReportDigitalPerformanceSection,
   ReportEditorialStatus,
   ReportFindingDto,
+  ReportPlanProgressSection,
   ReportRevisionSnapshot,
   ReportRoadmapDto,
+  ReportScoreBucketSnapshot,
   GrowthPlanDto,
   ScoreSummary,
   SubScore,
@@ -120,6 +125,15 @@ export class ReportingService {
     private readonly competitorsService: CompetitorsService,
     private readonly periods: PeriodService,
     private readonly evidence: EvidenceService,
+    /**
+     * P15 — the Cailyx digital-performance score family. Read-only here: the
+     * freeze calls the same client-safe projection the live Results screen
+     * reads, so the frozen section and the live score can never describe the
+     * same run differently. Nothing in this module ever builds a score.
+     */
+    private readonly digitalPerformance: DigitalPerformanceService,
+    /** P15 — the 30-day plan's progress, from the module that owns commitments. */
+    private readonly deliveryPlan: DeliveryPlanService,
   ) {}
 
   /** Best-effort presence inventory for a report — never throws, never blocks generation. */
@@ -698,6 +712,11 @@ export class ReportingService {
       scoreRunId: snapshot.scoreRunId,
       revision: revision.revision,
       snapshotAt: snapshot.snapshotAt,
+      // P15 — `?? null` because a snapshot JSON written before P15 has no such
+      // key at all. Reading a pre-P15 release must yield "no frozen score
+      // section", never a live lookup and never a guess.
+      digitalPerformance: snapshot.digitalPerformance ?? null,
+      planProgress: snapshot.planProgress ?? null,
     };
   }
 
@@ -766,10 +785,131 @@ export class ReportingService {
       manifestId: record.manifestId,
       periodId: record.periodId,
       cohortId: record.cohortId,
+      digitalPerformance: await this.getDigitalPerformanceSnapshot(record.projectId),
+      planProgress: await this.getPlanProgressSnapshot(record.projectId),
       contentCreatedAt: record.createdAt.toISOString(),
       contentUpdatedAt: record.updatedAt.toISOString(),
       snapshotAt: new Date().toISOString(),
     };
+  }
+
+  // ─── P15 — the two frozen sections ────────────────────────────
+
+  /**
+   * §14.5 item 2 — the Cailyx score family's buckets, copied into the snapshot
+   * so the released report's score can never move again.
+   *
+   * Read through `getClientSafe`, the same projection the live Results screen
+   * shows, for two reasons: it means the frozen section and the live score are
+   * the *same numbers* at freeze time (only the label distinguishes them), and
+   * it means no client-unsafe handle can leak into a report through this path.
+   *
+   * Best-effort like the presence and competitor snapshots above: a project
+   * with no run yet is normal, and a failed read must not block a human's
+   * review. A null section reads as "this report does not carry a score
+   * snapshot" rather than as a score of zero.
+   */
+  private async getDigitalPerformanceSnapshot(projectId: string): Promise<ReportDigitalPerformanceSection | null> {
+    try {
+      const { score } = await this.digitalPerformance.getClientSafe(projectId);
+      const run = score.latest;
+      const buckets: ReportScoreBucketSnapshot[] = (run?.buckets ?? []).map((bucket) => ({
+        key: bucket.key,
+        label: bucket.label,
+        weight: bucket.weight,
+        applicability: bucket.applicability,
+        applicabilityReason: bucket.applicabilityReason,
+        state: bucket.state,
+        stateLabel: bucket.stateLabel,
+        value: bucket.value,
+        windowStart: bucket.windowStart,
+        windowEnd: bucket.windowEnd,
+        missingReasons: bucket.missingReasons,
+        notes: bucket.notes,
+        sources: bucket.sources.map((source) => ({
+          kind: source.kind,
+          label: source.label,
+          observedAt: source.observedAt,
+          ageDays: source.ageDays,
+        })),
+      }));
+
+      const missingAreas = buckets
+        .filter((bucket) => bucket.state !== 'measured' && bucket.applicability !== 'not-applicable')
+        .map((bucket) => `${bucket.label}: ${bucket.missingReasons[0] ?? bucket.stateLabel.toLowerCase()}`);
+      const excludedFromScore = buckets
+        .filter((bucket) => bucket.applicability === 'not-applicable')
+        .map((bucket) => ({ key: bucket.key, label: bucket.label, reason: bucket.applicabilityReason }));
+
+      return {
+        family: score.family,
+        scoreName: score.scoreName,
+        methodology: {
+          version: score.methodology.version,
+          label: score.methodology.label,
+          weightsApproved: score.methodology.weightsApproved,
+          approvalNote: score.methodology.approvalNote,
+        },
+        runId: run?.id ?? null,
+        runAt: run?.createdAt ?? null,
+        status: run ? run.status : 'none',
+        // §5.3 rule 6 carries into the report: an incomplete run has no total
+        // here either. Freezing a partial sum would make the fake total
+        // permanent in a document that can never be corrected.
+        total: run ? run.total : null,
+        evidenceCoverage: run ? run.evidenceCoverage : null,
+        coverageMeaning: run ? run.coverageMeaning : '',
+        // The applicable buckets only. A recorded not-applicable decision is
+        // reported in `excludedFromScore`, never as a scored card.
+        buckets: buckets.filter((bucket) => bucket.applicability !== 'not-applicable'),
+        missingAreas,
+        excludedFromScore,
+        frozenAt: new Date().toISOString(),
+      };
+    } catch (err) {
+      this.logger.warn(
+        `Report: digital-performance snapshot unavailable for ${projectId} — freezing the section as absent: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * §14.5 item 8 — the 30-day plan progress, frozen at release.
+   *
+   * The numbers come from `DeliveryPlanService.getPortalPlanProgress`, the same
+   * read the live Overview footer uses, so the released report cannot disagree
+   * with the page the client was looking at when it was released.
+   */
+  private async getPlanProgressSnapshot(projectId: string): Promise<ReportPlanProgressSection | null> {
+    try {
+      const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { clientId: true } });
+      if (!project?.clientId) return null;
+      const progress = await this.deliveryPlan.getPortalPlanProgress(project.clientId, projectId);
+      return {
+        totalCount: progress.totalCount,
+        completedCount: progress.completedCount,
+        label: progress.label,
+        commitments: progress.commitments
+          .filter((commitment) => commitment.countsTowardTotal)
+          .map((commitment) => ({
+            id: commitment.id,
+            title: commitment.title,
+            workstream: commitment.workstream,
+            status: commitment.status,
+            targetDate: commitment.targetDate,
+            progressLabel: commitment.progressLabel,
+          })),
+        windowStart: progress.window.start,
+        windowEnd: progress.window.end,
+        frozenAt: new Date().toISOString(),
+      };
+    } catch (err) {
+      this.logger.warn(
+        `Report: plan progress unavailable for ${projectId} — freezing the section as absent: ${(err as Error).message}`,
+      );
+      return null;
+    }
   }
 
   // ─── Helpers ──────────────────────────────────────────────────
@@ -805,6 +945,8 @@ export class ReportingService {
       manifestId: null,
       periodId: null,
       cohortId: null,
+      digitalPerformance: null,
+      planProgress: null,
       contentCreatedAt: '',
       contentUpdatedAt: '',
       snapshotAt: '',

@@ -37,9 +37,12 @@ export function ScopeBanner({ scope, actions, sticky = false, className }: Scope
   const fields: Array<{ label: string; value: string | undefined }> = [
     { label: 'Client', value: scope.clientName },
     { label: 'Domain', value: scope.domain },
-    { label: 'Market', value: scope.market },
+    // §4.3: "Geo / markets → Target locations."
+    { label: 'Target location', value: scope.market },
     { label: 'Project', value: scope.projectName },
-    { label: isSnapshot ? 'Version' : 'Run', value: scope.runLabel },
+    // §4.3: "Re-run pipeline → Update results"; a "run" is internal shorthand.
+    // What the reader needs is which period these figures belong to.
+    { label: isSnapshot ? 'Version' : 'Period', value: scope.runLabel },
   ];
   const visibleFields = fields.filter((field): field is { label: string; value: string } => Boolean(field.value));
 
@@ -91,8 +94,8 @@ export function ScopeBanner({ scope, actions, sticky = false, className }: Scope
         <p className="border-t border-warning/30 px-3 py-2 text-meta text-warning-foreground">
           {scope.snapshotLabel ? <span className="font-semibold">{scope.snapshotLabel}. </span> : null}
           This is the released version as it was published, held read-only. Data collected after the
-          release is not included, and later runs do not change these figures. Switch to live scope to
-          see current data.
+          release is not included, and later measurements do not change these figures. Switch to live
+          scope to see current data.
         </p>
       ) : null}
     </section>

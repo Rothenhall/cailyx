@@ -28,6 +28,10 @@ import { ConfigService } from '@nestjs/config';
 import { createHash } from 'crypto';
 import { LlmService } from '../../common/llm/llm.service';
 import { PrismaService } from '../database/prisma.service';
+import { ApprovalsService } from '../approvals/approvals.service';
+// The artifact-type vocabulary is defined where the approval rule lives; the
+// same import `content-calendar` already uses.
+import { CONTENT_ARTIFACT_TYPE } from '../publishing/publishing.service';
 import {
   ALL_ASSET_TYPES,
   GENERATABLE_ASSET_TYPES,
@@ -126,22 +130,29 @@ export class ContentService {
     protected readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly llm: LlmService,
+    /**
+     * §13.10 — saving a new revision supersedes consent for earlier ones.
+     * The rule itself lives in `ApprovalsService`; this module only tells it
+     * that a new revision exists, exactly as `ReportLifecycleService.review()`
+     * does for reports.
+     */
+    private readonly approvals: ApprovalsService,
   ) {}
 
   // ─── Content briefs ──────────────────────────────────────────────
 
   async createBrief(projectId: string, userId: string | undefined, dto: CreateContentBriefDto): Promise<ContentBriefDto> {
     await this.ensureProject(projectId);
-    const existingMax = await this.prisma.contentBrief.findFirst({
-      where: { projectId, title: dto.title },
-      orderBy: { version: 'desc' },
-      select: { version: true },
-    });
-    const version = existingMax ? existingMax.version + 1 : 1;
+    // P08 §13.2: version lineage is keyed by a stable briefFamilyId, never by
+    // `title`. A brand-new POST always starts a brand-new family at v1 — two
+    // briefs that happen to share a title (now or after a rename) are never
+    // silently merged into one version chain. To add a version to an EXISTING
+    // family, use PATCH .../content-briefs/:briefId (updateBrief), which
+    // forks within `existing.briefFamilyId`.
     const row = await this.prisma.contentBrief.create({
       data: {
         projectId,
-        version,
+        version: 1,
         title: dto.title,
         assetType: dto.assetType ?? 'article',
         targetQuery: dto.targetQuery ?? null,
@@ -167,16 +178,18 @@ export class ContentService {
     const where: Record<string, unknown> = { projectId };
     if (query.status) where.status = query.status;
     if (query.assetType) where.assetType = query.assetType;
-    const rows = await this.prisma.contentBrief.findMany({ where, orderBy: [{ title: 'asc' }, { version: 'desc' }] });
+    const rows = await this.prisma.contentBrief.findMany({ where, orderBy: [{ briefFamilyId: 'asc' }, { version: 'desc' }] });
 
     if (!query.latestOnly) {
       return { briefs: rows.map((r) => this.toBriefDto(r)) };
     }
-    const latestByTitle = new Map<string, (typeof rows)[number]>();
+    // P08 §13.2: "latest" is grouped by the stable briefFamilyId, never by
+    // title — a rename must not fork a second "latest" row for the same brief.
+    const latestByFamily = new Map<string, (typeof rows)[number]>();
     for (const r of rows) {
-      if (!latestByTitle.has(r.title)) latestByTitle.set(r.title, r); // rows already ordered version desc within each title
+      if (!latestByFamily.has(r.briefFamilyId)) latestByFamily.set(r.briefFamilyId, r); // rows already ordered version desc within each family
     }
-    return { briefs: [...latestByTitle.values()].map((r) => this.toBriefDto(r)) };
+    return { briefs: [...latestByFamily.values()].map((r) => this.toBriefDto(r)) };
   }
 
   async getBrief(projectId: string, briefId: string): Promise<ContentBriefDto> {
@@ -188,7 +201,7 @@ export class ContentService {
   async listBriefVersions(projectId: string, briefId: string): Promise<{ versions: ContentBriefDto[] }> {
     const row = await this.prisma.contentBrief.findUnique({ where: { id: briefId } });
     if (!row || row.projectId !== projectId) throw new NotFoundException(`Content brief ${briefId} not found for project ${projectId}`);
-    const rows = await this.prisma.contentBrief.findMany({ where: { projectId, title: row.title }, orderBy: { version: 'asc' } });
+    const rows = await this.prisma.contentBrief.findMany({ where: { projectId, briefFamilyId: row.briefFamilyId }, orderBy: { version: 'asc' } });
     return { versions: rows.map((r) => this.toBriefDto(r)) };
   }
 
@@ -239,8 +252,11 @@ export class ContentService {
     if (!changingContent && dto.status === undefined) {
       return this.toBriefDto(existing); // no-op PATCH, nothing to fork for
     }
+    // P08 §13.2: the fork stays in the SAME briefFamilyId regardless of a
+    // title change in this same PATCH — renaming "Product launch article"
+    // must not sever its version history or start a second chain.
     const maxVersion = await this.prisma.contentBrief.findFirst({
-      where: { projectId, title: dto.title ?? existing.title },
+      where: { projectId, briefFamilyId: existing.briefFamilyId },
       orderBy: { version: 'desc' },
       select: { version: true },
     });
@@ -248,6 +264,7 @@ export class ContentService {
     const row = await this.prisma.contentBrief.create({
       data: {
         projectId,
+        briefFamilyId: existing.briefFamilyId,
         version: nextVersion,
         title: dto.title ?? existing.title,
         assetType: dto.assetType ?? existing.assetType,
@@ -273,6 +290,7 @@ export class ContentService {
   private toBriefDto(row: {
     id: string;
     projectId: string;
+    briefFamilyId: string;
     version: number;
     title: string;
     assetType: string;
@@ -298,6 +316,7 @@ export class ContentService {
     return {
       id: row.id,
       projectId: row.projectId,
+      briefFamilyId: row.briefFamilyId,
       version: row.version,
       title: row.title,
       assetType: row.assetType as ContentAssetType,
@@ -441,6 +460,20 @@ export class ContentService {
         contentHash: hash,
       },
     });
+
+    // §13.10 — "a new revision invalidates or supersedes prior revision-specific
+    // approvals". Without this the edit silently left an older revision's
+    // approval standing, and a scheduled publication could ship the pre-edit
+    // body (§21.2 journey 12). Report release has always done this from
+    // `ReportLifecycleService.review()`; content edits did not, which is the
+    // gap this closes. The approvals service owns the rule, so the constant
+    // naming the artifact type is shared rather than re-spelled here.
+    await this.approvals.invalidateStaleRequests(
+      CONTENT_ARTIFACT_TYPE,
+      assetId,
+      row.revision,
+      `Revision ${row.revision} was saved, superseding consent for earlier revisions.`,
+    );
 
     return {
       assetId,

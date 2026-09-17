@@ -49,6 +49,25 @@ export interface ClientSummary {
    */
   latestScore: number | null;
   latestBand: string | null;
+
+  // ── §3.4's client-list columns ────────────────────────────────────────
+  // "A project performance score can be a secondary detail, but never confuse
+  // it with account health or delivery completion." These are the delivery
+  // facts, deliberately kept separate from `latestScore` above.
+  /** Accountable staff member on the most recent engagement. Null = nobody
+   *  recorded one — not "no lead exists". */
+  deliveryLeadName: string | null;
+  /** Current cycle's delivered/committed counts. `committed` is the FROZEN
+   *  denominator, never recomputed into a live count. */
+  planProgress: { delivered: number; committed: number };
+  /** Commitments past their target date that have not settled. */
+  overdueCommitments: number;
+  /** Open asks directed at the client, counted across their projects. */
+  waitingOnClient: number;
+  /** The most recent RELEASED report. Null when nothing has been released;
+   *  drafts are deliberately excluded. */
+  lastReport: { slug: string; releasedAt: string | null } | null;
+
   createdAt: string;
   updatedAt: string;
 }

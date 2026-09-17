@@ -1,92 +1,132 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Skeleton } from '@/components/ui/skeleton';
-import { EmptyState } from '@/components/patterns/EmptyState';
+import {
+  CancelPlacementDialog,
+  ContentCalendar,
+  LinkPublicationDialog,
+  RescheduleDialog,
+} from '@/components/patterns/ContentCalendar';
 import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
 import { FilterBar, FILTER_ALL } from '@/components/patterns/FilterBar';
 import { PageHeader } from '@/components/patterns/PageHeader';
-import { StatusPill, type StatusTone } from '@/components/patterns/StatusPill';
-import { Timestamp } from '@/components/patterns/Timestamp';
 import { useUrlState } from '@/hooks/useUrlState';
-import { formatDate, formatNumber, resolveTimeZone } from '@/lib/format';
+import { resolveTimeZone } from '@/lib/format';
+import { listProjects } from '@/services/projects';
 import {
-  CALENDAR_RANGE_PRESETS,
-  listPortfolioReports,
-  listPortfolioWork,
-  rangeForPreset,
-  toCalendarEntries,
-  undatedWorkCount,
-  type CalendarEntry,
-  type CalendarRangePresetKey,
-} from '@/services/calendar';
-import { updateWorkItem, WORK_ITEM_STATUS_LABEL } from '@/services/delivery-plan';
-import type { WorkRow } from '@/services/operations';
+  CALENDAR_CHANNEL_OPTIONS,
+  CALENDAR_CONTENT_TYPES,
+  CONTENT_TYPE_LABELS,
+  SCHEDULE_STATES,
+  SCHEDULE_STATE_LABELS,
+  cancelPlacement,
+  contentDetailHref,
+  linkPlacementPublication,
+  monthWindow,
+  readPortfolioCalendar,
+  shiftMonth,
+  updatePlacement,
+  type CalendarEvent,
+  type CalendarReadResult,
+} from '@/services/content-calendar';
 
 /**
- * OP13 — Team calendar.
+ * P10 — the portfolio content calendar, and the screen §3.4 names "Content
+ * calendar" in the global navigation.
  *
- * design_plan.md §4.2: *"Work due dates, reviews, releases, automated runs,
- * timezone, drag-to-reschedule alternative form"*, support "N G06/G07; three
- * schedule readers can seed a limited run-only view".
+ * *"Rename the global calendar entry to **Content calendar** and treat it as
+ * the portfolio scope of the same calendar."* That is literally what this file
+ * is: the same `ContentCalendar` component and the same entry contract as the
+ * project screen, reading `GET /content-calendar`, which resolves the permitted
+ * project set from the caller's own access rules instead of from a parameter.
  *
- * What this screen deliberately is **not**: a month grid. §4.2 asks for a
- * schedule, and a grid would have to place undated work somewhere, imply that a
- * date with nothing on it has nothing on it, and pick a first day of week. A
- * single chronological list with the window stated in words says exactly what
- * is known.
+ * ## What it replaced
  *
- * Three rules decide the details:
+ * This route used to render a chronological list of work-item due dates and
+ * released reports, drawn from `/operations/work` and `/operations/reports` —
+ * neither of which takes a date range, so its "windows" were local filters over
+ * whatever page had loaded. §6.4 removes exactly those two things from the
+ * content calendar (work due dates belong to Team work; a report release is not
+ * a content placement, and a report is not content a calendar schedules), and
+ * §6.7 replaces the local window with a server-side one.
  *
- * 1. **Timezone is explicit, not ambient.** Every timestamp goes through
- *    `Timestamp`, which always names its zone, and the page states which zone it
- *    is resolving "today" in. Stored due dates were resolved server-side against
- *    each project's engagement timezone, so the page says that too — a due date
- *    that lands on a different calendar day for the reader is a real possibility
- *    and the reader should know why.
- * 2. **The window is a local filter, and says so.** Neither portfolio endpoint
- *    accepts a date range, so the window applies to the rows loaded on this page.
- *    The count of loaded rows versus the server's total is on screen.
- * 3. **Drag is not the only way, and is not implemented.** §4.2 asks for a
- *    "drag-to-reschedule alternative form" — the *form* is the accessible path
- *    and is what this screen builds: an explicit date field and an explicit save
- *    per work item. Nothing here depends on a pointer gesture, and nothing
- *    reschedules implicitly.
+ * ## Cross-project writes
+ *
+ * Moving a placement from here goes to the *project* that owns it
+ * (`/projects/:projectId/content-schedules/:id`), because a placement belongs to
+ * one project and its version is per-row. There is no portfolio-wide write
+ * route, and there should not be: a bulk portfolio edit would have to invent a
+ * transaction the API does not offer.
  */
-type Filters = {
-  q: string;
-  kind: string;
-  status: string;
-  scope: string;
-  range: string;
-  page: number;
+
+const FILTER_DEFAULTS = {
+  from: '',
+  to: '',
+  tz: '',
+  project: FILTER_ALL,
+  type: FILTER_ALL,
+  channel: FILTER_ALL,
+  state: FILTER_ALL,
+  owner: FILTER_ALL,
+  view: '',
 };
 
-const FILTER_DEFAULTS: Filters = {
-  q: '',
-  kind: FILTER_ALL,
-  status: FILTER_ALL,
-  scope: FILTER_ALL,
-  range: 'all',
-  page: 1,
-};
+interface RefusedTime {
+  error: string;
+  message: string;
+  nextValidLocal?: string | null;
+  candidates?: { disambiguation: 'earlier' | 'later'; utc: string }[];
+}
 
-const PAGE_SIZE = 100;
+function refusedTimeFrom(cause: unknown): RefusedTime | null {
+  const error = toApiError(cause);
+  const body = error.body as
+    | { error?: unknown; message?: unknown; nextValidLocal?: unknown; candidates?: unknown }
+    | undefined;
+  if (!body || typeof body.error !== 'string') return null;
+  if (!['time-nonexistent', 'time-ambiguous', 'invalid-timezone', 'invalid-time'].includes(body.error)) {
+    return null;
+  }
+  return {
+    error: body.error,
+    message: typeof body.message === 'string' ? body.message : error.message,
+    nextValidLocal: typeof body.nextValidLocal === 'string' ? body.nextValidLocal : null,
+    candidates: Array.isArray(body.candidates) ? (body.candidates as RefusedTime['candidates']) : undefined,
+  };
+}
 
-/**
- * `useUrlState` reads `useSearchParams`, which suspends during a static
- * prerender. The boundary sits outside the component that calls the hook, so
- * the route builds as client-rendered rather than failing the export.
- */
-export default function TeamCalendarPage() {
+function addDays(date: string, days: number): string {
+  const shifted = new Date(`${date}T00:00:00Z`);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted.toISOString().slice(0, 10);
+}
+
+function currentMonthKey(timezone: string): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: timezone }).slice(0, 7);
+}
+
+function windowLabel(from: string, to: string, view: string): string {
+  if (view === 'week') {
+    const short = (date: string) =>
+      new Date(`${date}T12:00:00Z`).toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        timeZone: 'UTC',
+      });
+    return `${short(from)} – ${short(to)}`;
+  }
+  return new Date(`${from}T12:00:00Z`).toLocaleDateString('en-GB', {
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+export default function PortfolioContentCalendarPage() {
   return (
     <Suspense fallback={<CalendarSkeleton />}>
-      <TeamCalendarView />
+      <PortfolioCalendarView />
     </Suspense>
   );
 }
@@ -94,44 +134,102 @@ export default function TeamCalendarPage() {
 function CalendarSkeleton() {
   return (
     <div className="space-y-6">
-      <Skeleton className="h-9 w-64" />
-      <Skeleton className="h-28 rounded-xl" />
-      <Skeleton className="h-64 rounded-xl" />
+      <Skeleton className="h-12 rounded-lg" />
+      <Skeleton className="h-20 rounded-lg" />
+      <Skeleton className="h-96 rounded-xl" />
     </div>
   );
 }
 
-function TeamCalendarView() {
-  const [filters, setFilters] = useUrlState<Filters>(FILTER_DEFAULTS);
-
-  const [work, setWork] = useState<WorkRow[]>([]);
-  const [workTotal, setWorkTotal] = useState(0);
-  const [releases, setReleases] = useState<Awaited<ReturnType<typeof listPortfolioReports>>['items']>(
-    [],
-  );
-  const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
+function PortfolioCalendarView() {
+  const [filters, setFilters] = useUrlState(FILTER_DEFAULTS);
+  const [result, setResult] = useState<CalendarReadResult | null>(null);
+  // Only `id` and `name` are used, so the row type is stated here rather than
+  // imported: the project filter is a name lookup, not a project read.
+  const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  /** Resolved after mount: the server's zone is not the viewer's zone. */
-  const [zone, setZone] = useState<string | null>(null);
-  const [rescheduling, setRescheduling] = useState<string | null>(null);
+  const [moving, setMoving] = useState<CalendarEvent | null>(null);
+  const [refusal, setRefusal] = useState<RefusedTime | null>(null);
+  const [cancelling, setCancelling] = useState<CalendarEvent | null>(null);
+  const [linking, setLinking] = useState<CalendarEvent | null>(null);
 
+  const browserZone = useMemo(() => resolveTimeZone(), []);
+  const timezone = filters.tz.trim() || browserZone;
+
+  const window = useMemo(() => {
+    if (filters.from && filters.to) return { from: filters.from, to: filters.to };
+    return monthWindow(currentMonthKey(timezone));
+  }, [filters.from, filters.to, timezone]);
+
+  // The project filter needs names, and names come from the project list — the
+  // calendar read deliberately returns ids. This read is not critical: if it
+  // fails, the filter loses its options and the calendar still works, which is
+  // why its failure is not surfaced as the page's error.
   useEffect(() => {
-    setZone(resolveTimeZone());
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const rows = await listProjects(undefined, { signal: controller.signal });
+        setProjects(rows);
+      } catch (caught) {
+        if (caught instanceof DOMException && caught.name === 'AbortError') return;
+        setProjects([]);
+      }
+    })();
+    return () => controller.abort();
   }, []);
+
+  const [ownerOptions, setOwnerOptions] = useState<{ value: string; label: string }[]>([]);
+  const rememberOwners = useRef(new Map<string, string>());
+  useEffect(() => {
+    if (!result) return;
+    let changed = false;
+    for (const event of result.events) {
+      if (!event.ownerId || rememberOwners.current.has(event.ownerId)) continue;
+      rememberOwners.current.set(event.ownerId, event.ownerLabel ?? event.ownerId);
+      changed = true;
+    }
+    if (changed) {
+      const options = Array.from(rememberOwners.current.entries())
+        .map(([value, label]) => ({ value, label }))
+        .sort((a, b) => a.label.localeCompare(b.label));
+      setOwnerOptions(options);
+    }
+  }, [result]);
+
+  const query = useMemo(
+    () => ({
+      from: window.from,
+      to: window.to,
+      timezone,
+      projectId: filters.project === FILTER_ALL ? undefined : filters.project,
+      type: filters.type === FILTER_ALL ? undefined : filters.type,
+      channel: filters.channel === FILTER_ALL ? undefined : filters.channel,
+      state: filters.state === FILTER_ALL ? undefined : filters.state,
+      ownerId: filters.owner === FILTER_ALL ? undefined : filters.owner,
+    }),
+    [
+      window.from,
+      window.to,
+      timezone,
+      filters.project,
+      filters.type,
+      filters.channel,
+      filters.state,
+      filters.owner,
+    ],
+  );
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
+      setLoading(true);
       try {
         setError(null);
-        setLoading(true);
-        const [workPage, reportPage] = await Promise.all([
-          listPortfolioWork({ page: filters.page, pageSize: PAGE_SIZE }, { signal }),
-          listPortfolioReports({ page: 1, pageSize: PAGE_SIZE }, { signal }),
-        ]);
-        setWork(workPage.items);
-        setWorkTotal(workPage.total);
-        setReleases(reportPage.items);
+        setResult(await readPortfolioCalendar(query, { signal }));
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === 'AbortError') return;
         setError(toApiError(caught));
@@ -139,7 +237,7 @@ function TeamCalendarView() {
         setLoading(false);
       }
     },
-    [filters.page],
+    [query],
   );
 
   useEffect(() => {
@@ -148,527 +246,229 @@ function TeamCalendarView() {
     return () => controller.abort();
   }, [load]);
 
-  const allEntries = useMemo(() => toCalendarEntries(work, releases), [work, releases]);
-
-  const { windowFrom, windowTo } = useMemo(() => {
-    const range = rangeForPreset(filters.range as CalendarRangePresetKey);
-    return {
-      windowFrom: range.from ? new Date(range.from).getTime() : null,
-      windowTo: range.to ? new Date(range.to).getTime() : null,
-    };
-  }, [filters.range]);
-
-  const entries = useMemo(() => {
-    const search = filters.q.trim().toLowerCase();
-    return allEntries.filter((entry) => {
-      if (filters.kind !== FILTER_ALL && entry.kind !== filters.kind) return false;
-      if (filters.status !== FILTER_ALL && entry.status !== filters.status) return false;
-      if (filters.scope !== FILTER_ALL) {
-        const hasClient = Boolean(entry.clientId);
-        if (filters.scope === 'client' && !hasClient) return false;
-        if (filters.scope === 'internal' && hasClient) return false;
-      }
-      const at = new Date(entry.date).getTime();
-      if (windowFrom !== null && at < windowFrom) return false;
-      if (windowTo !== null && at > windowTo) return false;
-      if (search) {
-        const haystack = [
-          entry.title,
-          entry.projectName,
-          entry.clientName ?? '',
-          entry.status,
-        ]
-          .join(' ')
-          .toLowerCase();
-        if (!haystack.includes(search)) return false;
-      }
-      return true;
-    });
-  }, [allEntries, filters, windowFrom, windowTo]);
-
-  const groups = useMemo(() => groupByDay(entries, zone), [entries, zone]);
-
-  const isFiltered =
-    filters.kind !== FILTER_ALL ||
-    filters.status !== FILTER_ALL ||
-    filters.scope !== FILTER_ALL ||
-    filters.range !== 'all' ||
-    filters.q.trim() !== '';
-
-  const undated = undatedWorkCount(work);
-
-  async function onReschedule(row: WorkRow, dueOn: string) {
-    setRescheduling(row.id);
+  const loadMore = useCallback(async () => {
+    const cursor = result?.page.nextCursor;
+    if (!cursor) return;
+    setLoadingMore(true);
     try {
-      await updateWorkItem(row.projectId, row.id, { dueOn });
-      await load();
+      setActionError(null);
+      const next = await readPortfolioCalendar({ ...query, cursor });
+      setResult((current) =>
+        current
+          ? {
+              ...current,
+              events: [...current.events, ...next.events],
+              layout: [...current.layout, ...next.layout],
+              page: next.page,
+              totalInWindow: next.totalInWindow,
+              totalIsExact: next.totalIsExact,
+            }
+          : next,
+      );
+    } catch (caught) {
+      setActionError(toApiError(caught).message);
     } finally {
-      setRescheduling(null);
+      setLoadingMore(false);
+    }
+  }, [query, result?.page.nextCursor]);
+
+  const stepWindow = useCallback(
+    (delta: number) => {
+      if (filters.view === 'week') {
+        setFilters({ from: addDays(window.from, 7 * delta), to: addDays(window.to, 7 * delta) });
+        return;
+      }
+      const target = monthWindow(shiftMonth(window.from.slice(0, 7), delta));
+      setFilters({ from: target.from, to: target.to });
+    },
+    [window, filters.view, setFilters],
+  );
+
+  const refresh = useCallback(async () => {
+    await load();
+  }, [load]);
+
+  async function submitMove(input: {
+    scheduledFor: string;
+    timezone: string;
+    dstDisambiguation?: 'earlier' | 'later';
+  }) {
+    if (!moving) return;
+    setRefusal(null);
+    try {
+      await updatePlacement(moving.projectId, moving.scheduleId, {
+        version: moving.version,
+        scheduledFor: input.scheduledFor,
+        timezone: input.timezone,
+        dstDisambiguation: input.dstDisambiguation,
+      });
+      setMoving(null);
+      await refresh();
+    } catch (caught) {
+      const refused = refusedTimeFrom(caught);
+      if (refused) {
+        setRefusal(refused);
+        return;
+      }
+      throw new Error(toApiError(caught).message);
+    }
+  }
+
+  async function submitCancel(reason: string) {
+    if (!cancelling) return;
+    try {
+      await cancelPlacement(cancelling.projectId, cancelling.scheduleId, reason, cancelling.version);
+      setCancelling(null);
+      await refresh();
+    } catch (caught) {
+      throw new Error(toApiError(caught).message);
+    }
+  }
+
+  async function submitLink(input: { mode: 'draft' | 'publish'; permissions: string[] }) {
+    if (!linking) return;
+    try {
+      await linkPlacementPublication(linking.projectId, linking.scheduleId, {
+        mode: input.mode,
+        permissions: input.permissions,
+      });
+      setLinking(null);
+      await refresh();
+    } catch (caught) {
+      throw new Error(toApiError(caught).message);
     }
   }
 
   return (
     <div className="space-y-6">
       <PageHeader
-        breadcrumbs={[{ label: 'Operator workspace', href: '/ops' }]}
-        title="Calendar"
-        context="Dated commitments across the portfolio: work due dates and report releases."
-        status={
-          zone ? (
-            <span className="text-meta text-muted-foreground">
-              Displayed in {zone}
-            </span>
-          ) : undefined
-        }
+        title="Content calendar"
+        context="Every project you can see, on one calendar. One placement per channel — a piece planned for two channels is two entries."
       />
 
-      <Card>
-        <CardContent className="space-y-2 pt-6 text-table">
-          <p>
-            <strong className="font-medium">Timezone.</strong> Every date and time below is shown
-            with its zone ({zone ?? 'resolving…'}), and &ldquo;today&rdquo; is resolved in that same
-            zone. A work item&apos;s stored due date was resolved server-side against its project&apos;s
-            engagement timezone — never a browser clock — so a date that falls on a different day
-            for you than for the assignee is expected, not a bug.
-          </p>
-          <p className="text-muted-foreground">
-            <strong className="font-medium text-foreground">Window.</strong>{' '}
-            {filters.range === 'all'
-              ? 'No window is applied.'
-              : `The window applies to the rows loaded on this page${
-                  windowFrom ? ` from ${formatDate(new Date(windowFrom).toISOString(), { timeZone: zone ?? undefined })}` : ''
-                }${windowTo ? ` until ${formatDate(new Date(windowTo).toISOString(), { timeZone: zone ?? undefined })}` : ''}.`}{' '}
-            Neither portfolio endpoint accepts a date range, so this is a local filter over{' '}
-            {formatNumber(work.length)} loaded work item{work.length === 1 ? '' : 's'} out of{' '}
-            {formatNumber(workTotal)} matching on the server.
-          </p>
-          {undated > 0 ? (
-            <p className="text-muted-foreground">
-              {formatNumber(undated)} work item{undated === 1 ? '' : 's'} in this read{' '}
-              {undated === 1 ? 'has' : 'have'} no due date, so {undated === 1 ? 'it is' : 'they are'}{' '}
-              not on the calendar below. They are real commitments with no date, not zero-dated
-              ones.
-            </p>
-          ) : null}
-        </CardContent>
-      </Card>
-
       {error ? (
-        <ErrorState
-          error={error}
+        <ErrorState error={error} onRetry={() => void load()} notFoundReason="missing-or-private" />
+      ) : null}
+
+      {actionError ? (
+        <p role="alert" className="rounded-lg border border-danger/30 bg-danger-subtle p-3 text-table text-danger-foreground">
+          {actionError}
+        </p>
+      ) : null}
+
+      {!error ? (
+        <ContentCalendar
+          scope="portfolio"
+          result={result}
+          loading={loading}
+          error={null}
           onRetry={() => void load()}
-          preserveNotice="Nothing on this page modifies a schedule except the explicit reschedule form."
+          onLoadMore={() => void loadMore()}
+          loadingMore={loadingMore}
+          view={filters.view === '' ? undefined : (filters.view as 'month' | 'week' | 'agenda')}
+          onViewChange={(view) => setFilters({ view })}
+          onStepWindow={stepWindow}
+          onToday={() => setFilters({ from: '', to: '' })}
+          windowLabel={windowLabel(window.from, window.to, filters.view)}
+          onClearFilters={() =>
+            setFilters({
+              project: FILTER_ALL,
+              type: FILTER_ALL,
+              channel: FILTER_ALL,
+              state: FILTER_ALL,
+              owner: FILTER_ALL,
+            })
+          }
+          filters={
+            <FilterBar
+              defaults={FILTER_DEFAULTS}
+              value={filters}
+              onChange={setFilters}
+              hideSearch
+              controls={[
+                {
+                  kind: 'select',
+                  key: 'project',
+                  label: 'Project',
+                  options: projects.map((project) => ({ value: project.id, label: project.name })),
+                },
+                {
+                  kind: 'select',
+                  key: 'type',
+                  label: 'Content type',
+                  options: CALENDAR_CONTENT_TYPES.map((value) => ({
+                    value,
+                    label: CONTENT_TYPE_LABELS[value],
+                  })),
+                },
+                { kind: 'select', key: 'channel', label: 'Channel', options: CALENDAR_CHANNEL_OPTIONS },
+                {
+                  kind: 'select',
+                  key: 'state',
+                  label: 'State',
+                  options: SCHEDULE_STATES.map((value) => ({
+                    value,
+                    label: SCHEDULE_STATE_LABELS[value],
+                  })),
+                },
+                { kind: 'select', key: 'owner', label: 'Owner', options: ownerOptions },
+                { kind: 'text', key: 'tz', label: 'Timezone', placeholder: browserZone },
+              ]}
+              summary={
+                result
+                  ? `Across ${result.scope.projectIds.length} project${
+                      result.scope.projectIds.length === 1 ? '' : 's'
+                    }; boundaries read in ${result.window.timezone}.`
+                  : undefined
+              }
+            />
+          }
+          hrefFor={(event) => contentDetailHref(event.projectId, event.assetId, event.scheduleId)}
+          hrefForUnscheduled={(item) => contentDetailHref(item.projectId, item.assetId)}
+          showStaffFields
+          actions={{
+            onReschedule: (event) => {
+              setRefusal(null);
+              setMoving(event);
+            },
+            onCancel: (event) => setCancelling(event),
+            onLinkPublication: (event) => setLinking(event),
+          }}
         />
       ) : null}
 
-      <FilterBar
-        defaults={FILTER_DEFAULTS}
-        value={filters}
-        onChange={setFilters}
-        controls={[
-          {
-            kind: 'select',
-            key: 'kind',
-            label: 'Entry type',
-            allLabel: 'All dated entries',
-            options: [
-              { value: 'work', label: 'Work due dates' },
-              { value: 'release', label: 'Report releases' },
-            ],
-          },
-          {
-            kind: 'select',
-            key: 'status',
-            label: 'Status',
-            allLabel: 'Any status',
-            options: [
-              ...Object.entries(WORK_ITEM_STATUS_LABEL).map(([value, label]) => ({ value, label })),
-              { value: 'draft', label: 'Report: draft' },
-              { value: 'in-review', label: 'Report: in review' },
-              { value: 'approved', label: 'Report: approved' },
-              { value: 'released', label: 'Report: released' },
-              { value: 'withdrawn', label: 'Report: withdrawn' },
-            ],
-          },
-          {
-            kind: 'select',
-            key: 'scope',
-            label: 'Reach',
-            allLabel: 'Client and internal',
-            options: [
-              { value: 'client', label: 'Client-facing' },
-              { value: 'internal', label: 'Internal only' },
-            ],
-          },
-          {
-            kind: 'select',
-            key: 'range',
-            label: 'Window',
-            allLabel: 'Everything on file',
-            options: CALENDAR_RANGE_PRESETS.filter((preset) => preset.key !== 'all').map(
-              (preset) => ({ value: preset.key, label: preset.label }),
-            ),
-          },
-        ]}
-        searchPlaceholder="Search title, project or client…"
-        summary={
-          <>
-            Showing {formatNumber(entries.length)} of {formatNumber(allEntries.length)} dated entries
-            loaded
-            {isFiltered ? ' — filters apply to the rows loaded on this page.' : '.'}
-          </>
-        }
-      />
-
-      {loading && allEntries.length === 0 ? (
-        <div className="space-y-3">
-          <Skeleton className="h-24 rounded-xl" />
-          <Skeleton className="h-24 rounded-xl" />
-          <Skeleton className="h-24 rounded-xl" />
-        </div>
-      ) : entries.length === 0 ? (
-        allEntries.length === 0 ? (
-          <Card>
-            <CardContent className="pt-6">
-              <EmptyState
-                variant="not-measured"
-                subject="dated commitments in this portfolio"
-                prerequisite="work items with a due date, or released reports"
-                layout="panel"
-              >
-                <p>
-                  Neither reader returned a dated entry. That is not the same as an empty calendar:
-                  work without a due date is not on a calendar at all, and the count above says how
-                  many such items this read contains.
-                </p>
-              </EmptyState>
-            </CardContent>
-          </Card>
-        ) : (
-          <Card>
-            <CardContent className="pt-6">
-              <EmptyState
-                variant="no-results"
-                onClearFilters={() =>
-                  setFilters({
-                    q: '',
-                    kind: FILTER_ALL,
-                    status: FILTER_ALL,
-                    scope: FILTER_ALL,
-                    range: 'all',
-                  })
-                }
-                layout="panel"
-              />
-            </CardContent>
-          </Card>
-        )
-      ) : (
-        <div className="space-y-6">
-          {groups.map((group) => (
-            <section key={group.key} aria-labelledby={`day-${group.key}`}>
-              <h2
-                id={`day-${group.key}`}
-                className="mb-2 flex flex-wrap items-baseline gap-3 text-subsection font-semibold"
-              >
-                {group.label}
-                <span className="text-meta font-normal text-muted-foreground">
-                  {formatNumber(group.entries.length)} entr
-                  {group.entries.length === 1 ? 'y' : 'ies'}
-                </span>
-              </h2>
-              <ul className="divide-y divide-border rounded-lg border border-border bg-surface">
-                {group.entries.map((entry) => (
-                  <li key={entry.id} className="p-4">
-                    <CalendarRow
-                      entry={entry}
-                      zone={zone ?? undefined}
-                      rescheduling={rescheduling === entry.work?.id}
-                      onReschedule={onReschedule}
-                    />
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))}
-        </div>
-      )}
-
-      {workTotal > work.length ? (
-        <div className="flex flex-wrap items-center gap-3 text-table">
-          <span className="text-muted-foreground">
-            Showing {formatNumber(work.length)} of {formatNumber(workTotal)} work items — the reader
-            is paginated, so the window applies to this page only.
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={filters.page <= 1}
-            onClick={() => setFilters({ page: Math.max(1, filters.page - 1) }, { push: true })}
-          >
-            Previous page
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={filters.page * PAGE_SIZE >= workTotal}
-            onClick={() => setFilters({ page: filters.page + 1 }, { push: true })}
-          >
-            Next page
-          </Button>
-        </div>
+      {moving ? (
+        <RescheduleDialog
+          event={moving}
+          open
+          onOpenChange={(open) => {
+            if (!open) {
+              setMoving(null);
+              setRefusal(null);
+            }
+          }}
+          onSubmit={submitMove}
+          serverRefusal={refusal}
+        />
       ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-subsection">Review meetings</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <EmptyState
-              variant="not-measured"
-              subject="a dated, cross-project review schedule"
-              prerequisite="a portfolio-level approvals or review-meeting reader (design_plan G06/G14)"
-              layout="panel"
-            >
-              <p>
-                Approvals are readable per project (<code className="text-meta">
-                  /projects/:id/approvals
-                </code>
-                ), each with its own due date, but no endpoint lists them across projects. So this
-                calendar cannot say when reviews fall — which means the schedule above is
-                incomplete by exactly that much.
-              </p>
-              <p>
-                To see the reviews you do own, open a project&apos;s approvals list. Nothing here
-                implies there are none.
-              </p>
-            </EmptyState>
-          </CardContent>
-        </Card>
+      {cancelling ? (
+        <CancelPlacementDialog
+          event={cancelling}
+          open
+          onOpenChange={(open) => !open && setCancelling(null)}
+          onSubmit={submitCancel}
+        />
+      ) : null}
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-subsection">Automated runs</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <EmptyState
-              variant="not-measured"
-              subject="a portfolio-wide automated-run schedule"
-              prerequisite="an aggregate cadence reader (design_plan G07)"
-              layout="panel"
-            >
-              <p>
-                Cadence rules are readable one project at a time (
-                <code className="text-meta">/projects/:id/cadences</code>), each with its own{' '}
-                <code className="text-meta">nextRunAt</code> in its own timezone. Nothing aggregates
-                them, so the plan&apos;s note stands: three separate schedule readers can seed a
-                limited run-only view, and that view does not exist yet.
-              </p>
-              <p>
-                §7.3 also warns against promising a clock time before G07 lands — a saved schedule
-                is not proof of a running worker. Per-project cadence state, last error and last
-                success are on each project&apos;s monitoring screen.
-              </p>
-            </EmptyState>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
-function CalendarRow({
-  entry,
-  zone,
-  rescheduling,
-  onReschedule,
-}: {
-  entry: CalendarEntry;
-  zone?: string;
-  rescheduling: boolean;
-  onReschedule: (row: WorkRow, dueOn: string) => Promise<void>;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [dueOn, setDueOn] = useState(() => (entry.date ? entry.date.slice(0, 10) : ''));
-  const [formError, setFormError] = useState<string | null>(null);
-
-  const tone: StatusTone =
-    entry.kind === 'release'
-      ? entry.status === 'released'
-        ? 'success'
-        : entry.status === 'withdrawn'
-          ? 'warning'
-          : 'neutral'
-      : entry.status === 'verified'
-        ? 'success'
-        : entry.status === 'blocked'
-          ? 'danger'
-          : entry.status === 'review'
-            ? 'warning'
-            : entry.status === 'active'
-              ? 'info'
-              : 'neutral';
-
-  const statusLabel =
-    entry.kind === 'release'
-      ? entry.status.replace(/-/g, ' ').replace(/^./, (c) => c.toUpperCase())
-      : (WORK_ITEM_STATUS_LABEL[entry.status as keyof typeof WORK_ITEM_STATUS_LABEL] ??
-        entry.status);
-
-  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!entry.work) return;
-    setFormError(null);
-    if (!dueOn) {
-      setFormError('Choose a due date, or cancel to leave it unchanged.');
-      return;
-    }
-    try {
-      await onReschedule(entry.work, dueOn);
-      setEditing(false);
-    } catch (caught) {
-      const error = toApiError(caught);
-      setFormError(
-        error.kind === 'conflict'
-          ? error.message
-          : 'The new date was not saved. The item still has its previous due date.',
-      );
-    }
-  }
-
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 space-y-0.5">
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusPill
-              tone={entry.kind === 'release' ? 'info' : 'neutral'}
-              label={entry.kind === 'release' ? 'Report release' : 'Work due'}
-            />
-            <span className="text-table font-medium">{entry.title}</span>
-          </div>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-muted-foreground">
-            <Timestamp value={entry.date} timeZone={zone} />
-            <Link href={`/projects/${entry.projectId}`} className="underline underline-offset-4">
-              {entry.projectName}
-            </Link>
-            {entry.clientName ? <span>{entry.clientName}</span> : <span>Internal project</span>}
-          </div>
-        </div>
-
-        <div className="flex shrink-0 items-center gap-2">
-          {entry.overdue ? <StatusPill tone="danger" label="Overdue" /> : null}
-          <StatusPill tone={tone} label={statusLabel} />
-        </div>
-      </div>
-
-      {entry.work ? (
-        <div className="space-y-2">
-          {editing ? (
-            <form onSubmit={onSubmit} className="flex flex-wrap items-end gap-3" noValidate>
-              <div className="space-y-1.5">
-                <Label htmlFor={`due-${entry.work.id}`}>New due date</Label>
-                <Input
-                  id={`due-${entry.work.id}`}
-                  name={`due-${entry.work.id}`}
-                  type="date"
-                  value={dueOn}
-                  onChange={(event) => setDueOn(event.target.value)}
-                  aria-describedby={`due-${entry.work.id}-help`}
-                />
-              </div>
-              <Button type="submit" size="sm" disabled={rescheduling}>
-                {rescheduling ? 'Saving…' : 'Save due date'}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setEditing(false);
-                  setFormError(null);
-                }}
-                disabled={rescheduling}
-              >
-                Cancel
-              </Button>
-              <p id={`due-${entry.work.id}-help`} className="w-full text-meta text-muted-foreground">
-                The date is resolved end-of-day in the project&apos;s engagement timezone, by the
-                server. This form is the alternative to dragging: it states the value, states where
-                it applies, and only saves when you say so.
-              </p>
-              {formError ? (
-                <p className="w-full text-meta text-danger-foreground" role="alert">
-                  {formError}
-                </p>
-              ) : null}
-            </form>
-          ) : (
-            <div className="flex flex-wrap items-center gap-3">
-              <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
-                Reschedule
-              </Button>
-              <Link
-                href={`/projects/${entry.projectId}/work/${entry.work.id}`}
-                className="text-meta underline underline-offset-4"
-              >
-                Open the work item
-              </Link>
-              <span className="text-meta text-muted-foreground">
-                {entry.discipline ? `${entry.discipline} · ` : ''}
-                {entry.priority ? `${entry.priority} priority` : ''}
-              </span>
-            </div>
-          )}
-        </div>
-      ) : entry.report ? (
-        <Link
-          href={`/projects/${entry.projectId}/reports/${entry.report.slug}`}
-          className="text-meta underline underline-offset-4"
-        >
-          Open the report
-        </Link>
+      {linking ? (
+        <LinkPublicationDialog
+          event={linking}
+          open
+          onOpenChange={(open) => !open && setLinking(null)}
+          onSubmit={submitLink}
+        />
       ) : null}
     </div>
   );
-}
-
-/**
- * Groups dated entries by the calendar day they fall on **in the resolved
- * zone**, so a heading and the timestamps under it cannot disagree.
- */
-function groupByDay(
-  entries: readonly CalendarEntry[],
-  zone: string | null,
-): Array<{ key: string; label: string; entries: CalendarEntry[] }> {
-  const groups = new Map<string, CalendarEntry[]>();
-  for (const entry of entries) {
-    const key = dayKey(entry.date, zone);
-    const bucket = groups.get(key);
-    if (bucket) bucket.push(entry);
-    else groups.set(key, [entry]);
-  }
-  return [...groups.entries()].map(([key, dayEntries]) => ({
-    key,
-    label: formatDate(dayEntries[0].date, { timeZone: zone ?? undefined }),
-    entries: dayEntries,
-  }));
-}
-
-/** `YYYY-MM-DD` for the instant, in the given zone (or the viewer's). */
-function dayKey(iso: string, zone: string | null): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return 'unknown';
-  try {
-    // en-CA yields YYYY-MM-DD, which sorts and keys predictably.
-    return new Intl.DateTimeFormat('en-CA', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      timeZone: zone ?? undefined,
-    }).format(date);
-  } catch {
-    return iso.slice(0, 10);
-  }
 }

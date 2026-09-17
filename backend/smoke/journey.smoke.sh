@@ -76,7 +76,9 @@ JCID=$(echo "$JC" | jget id)
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/journeys/$JCID/execute" "${AUTH[@]}")" = "503" ] && ok "execute claude surface w/ SWARM_ALLOW_LIVE=0 → 503" || bad "live guard not 503"
 
 # --- LLM planning gated ------------------------------------------------
-[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/journeys/plan" "${AUTH[@]}" -H 'content-type: application/json' -d "{\"personaId\":\"$P0\",\"useLlm\":true}")" = "503" ] && ok "useLlm plan without ANTHROPIC_API_KEY → 503" || bad "useLlm plan not 503"
+llm_gate_check "useLlm plan without a provider" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/projects/$PID/journeys/plan" "${AUTH[@]}" -H 'content-type: application/json' -d "{\"personaId\":\"$P0\",\"useLlm\":true}")"
+
 
 # --- campaign fan-out (mock, budget covers all) ------------------------
 CAMP=$(curl -s -X POST "$API/projects/$PID/journey-campaigns" "${AUTH[@]}" -H 'content-type: application/json' -d '{"name":"Smoke Campaign","surface":"mock","journeyTarget":3,"maxDepth":2,"maxBranches":2,"budgetUsd":5}')

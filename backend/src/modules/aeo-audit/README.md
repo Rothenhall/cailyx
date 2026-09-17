@@ -28,6 +28,106 @@ client URL
 Stages 3 and 4 are `measurement`, reused as-is. This module orchestrates; it does
 not re-implement run orchestration, the n≥5 floor, or mention extraction.
 
+Stage 1 is itself a six-stage pipeline since P03 — see
+[The staged context pipeline](#the-staged-context-pipeline-p03-9394) below.
+
+---
+
+## The staged context pipeline (P03, §9.3–§9.4)
+
+Stage 1 above is no longer one crawl plus one synthesis pass. It is six
+persisted stages, driven by `POST /context` and resumable through
+`POST /context/runs/:runId/resume`:
+
+```
+1. DISCOVER    homepage + sitemap + nav-guided crawl; page budget enforced,
+               same-content pages skipped by content fingerprint
+2. INSPECT     title / description / headings / language / page type /
+               duplication — all from the HTML already fetched in stage 1,
+               with no second fetch
+3. SELECT      deterministic ranking PLUS coverage reservation by purpose
+               category (§9.4), so eleven near-duplicate blog posts cannot
+               crowd out the one pricing page
+4. EXTRACT     deterministic per-page facts always; an optional bounded LLM
+               batch adds ICP / pains / outcomes / markets / category
+5. RECONCILE   merge duplicates, drop tier/nav noise, log unresolved conflicts
+6. VALIDATE    every fact checked against its own cited page's text
+```
+
+**Resumability is the exit gate (P03, plan §20.2).** Every stage's output is a
+Prisma row — `SiteContextRun`, `SiteContextRunPage`, `SiteContextFact` — not an
+in-memory array. When the elapsed-time budget runs out the run **pauses**
+rather than truncating silently; `resume()` re-reads those rows, skips pages
+already fetched or extracted, and retries only pages that actually failed, up
+to `maxRetriesPerPage`. A pause is reported as a body field, not a status code:
+
+```json
+{ "paused": true, "runId": "...", "reachedStage": "inspect", "message": "..." }
+```
+
+⚠️ The controller annotates this as `202 Accepted`, but the handler keeps its
+own `@HttpCode` (`201` on `POST /context`, `200` on `/resume`) and no global
+interceptor rewrites it — so the real response is **201/200 with
+`paused: true`**. `aeo-context-staged.smoke.sh` asserts `200` for a paused
+resume, which is what the server actually sends. The annotation is what is
+wrong; the README documents the behaviour.
+
+**Four budgets, tracked separately on the run row** and enforced independently
+— page count, request count, characters handed to the LLM, and elapsed wall
+time. A page that turns out to be a duplicate costs a request but not a page,
+and a failed page cannot eat the successful-page budget.
+
+| Env var | Default | Caps |
+|---|---|---|
+| `AEO_CONTEXT_MAX_PAGES` | `12` | pages fetched |
+| `AEO_CONTEXT_MAX_REQUESTS` | `40` | HTTP requests |
+| `AEO_CONTEXT_MAX_CHARS` | `24000` | characters sent to the LLM |
+| `AEO_CONTEXT_MAX_ELAPSED_MS` | `300000` | wall time before the run pauses |
+
+All four can be overridden per call (that is how the smoke suite pins the
+budget to 0 ms and pauses the pipeline after every single stage,
+deterministically).
+
+**Selection is by coverage, not by top-N score** (§9.4). Each fetched page is
+classified by purpose and fills a reserved slot in priority order:
+
+| Category | `homepage` | `service` | `pricing` | `about` | `industries` | `location` | `case-study` | `other` |
+|---|---|---|---|---|---|---|---|---|
+| Reserved slots | 1 | 4 | 1 | 1 | 2 | 1 | 2 | 1 |
+
+`login`, `cart`, `account`, `search`, `policy` and `blog`/`news` pages are
+never selected — excluded outright, never "excluded by a low score". Every page
+row keeps its `selectionReason` verbatim, in one of three forms:
+`Selected: <category> page, coverage slot filled`, `Excluded: <type> page — not
+a primary business-fact source`, or `Excluded: coverage target for
+"<category>" pages already filled by a higher-ranked page`. When fewer than two
+purpose categories end up represented, the run writes an honest
+**coverage-quality flag**: *"only N purpose categories are represented in the
+selected pages — this business's true offer surface may not be captured."*
+
+**Validation is what keeps an unsupported fact out of the candidate profile.**
+Stage 6 looks for each fact's excerpt verbatim (whitespace-normalized,
+case-folded) in *its own cited page's* cached text and marks it
+`validated: false` when it isn't there — `Excerpt not found verbatim in the
+cited page's text.` A fact with no cached text for its cited page is dropped
+too (`No cached text for the cited page.`). Only `validated: true` facts are
+compiled into the `SiteContext`, and the run's notes record how many were
+dropped. Stage 5 applies the structural filters that already existed
+(`TIER_AND_STEP_WORDS`, nav/footer noise) to **LLM-proposed** service names as
+well as heading-derived ones, because a model can offer up `Starter` too.
+
+**Per-field citations.** The compiled `SiteContext` carries `fieldSources`:
+for `services`, `icp`, `valueProps`, `painPoints`, `outcomes`, `markets`,
+`category`, `vertical` and `description`, up to five `{ url, excerpt,
+observedAt }` entries each. That is what `business-profile`'s
+`GET …/overview` cites when it shows a field-specific source page for a
+suggestion, instead of the old whole-context fallback.
+
+**Stages 7 and 8 of §9.3 are deliberately not in this service.** Human review
+and "refresh dependants" are `business-profile`'s existing
+candidate → confirm → rebuild flow, which reads the `SiteContext` this service
+keeps producing. The pipeline's job ends at a validated, cited context row.
+
 ---
 
 ## Counted vs judged — the rule that governs this module
@@ -102,7 +202,8 @@ activation, and the client-facing export at `/api/projects/:id/query-sets/export
 aeo-audit/
 ├── aeo-audit.types.ts        Categories, stance enum, verdict shape (counted/judged split)
 ├── aeo-llm.service.ts        Shared constrained-JSON caller (OpenRouter → Anthropic fallback)
-├── aeo-context.service.ts    Site crawl + deterministic extraction + optional LLM synthesis
+├── aeo-context.service.ts    Staged, resumable site-understanding pipeline (P03):
+│                             discover → inspect → select → extract → reconcile → validate
 ├── aeo-matrix.generator.ts   Deterministic cell builder — the coverage contract
 ├── aeo-matrix.service.ts     LLM phrasing pass + persistence as a versioned QuerySet
 ├── aeo-stance.service.ts     The judge (opinion only, evidence-quoted)
@@ -127,8 +228,11 @@ payload/response shape (Cloro) differ.
 
 | Method | Path (under `/api/projects/:projectId/aeo`) | Does |
 |---|---|---|
-| `POST` | `/context` | Crawl the site, build `SiteContext` |
+| `POST` | `/context` | Crawl the site, build `SiteContext` (a budget pause comes back as `{ paused: true, runId, reachedStage }`) |
 | `GET` | `/context` | Latest stored context |
+| `GET` | `/context/runs` | Staged-pipeline run history — stage, budgets, coverage plan (staff) |
+| `GET` | `/context/runs/:runId` | One run in full: every page row with its `selectionReason`, every fact with its citation and `validated` flag (staff) |
+| `POST` | `/context/runs/:runId/resume` | Continue a paused/failed run from its last completed stage (staff) |
 | `POST` | `/matrix` | Generate the categorised prompt matrix |
 | `GET` | `/matrix/:querySetId` | Read a matrix (`?dimension=` to filter) |
 | `POST` | `/audits` | Create an audit row (no spend) |
@@ -445,6 +549,31 @@ Verified 2026-09-11 against a running backend (`MEASUREMENT_ALLOW_MOCK=1`):
 
 `npx tsc --noEmit` and `npx nest build` both clean.
 
+### The staged-pipeline suite (P03)
+
+`backend/smoke/aeo-context-staged.smoke.sh` (279 lines, 30 assertions) is the
+P03 exit gate, and it is deliberately two-part. Part 1 drives a **real**
+`POST /context` against an unresolvable `.example` domain through the real
+fetcher and asserts the honest outcome — a `SiteContext` row is still created,
+empty but valid — rather than a successful crawl. Part 2 seeds a
+`SiteContextRun` plus its `SiteContextRunPage` rows directly (skipping only the
+network fetch itself) and then pauses the pipeline after every stage by pinning
+the elapsed-time budget, resuming four times. Between resumes it asserts that
+`pagesSpent`/`requestsSpent` never increase, that facts created by an earlier
+resume survive the next one with the same ids and count, that case-study pages
+compete for their reserved slots instead of crowding each other out, that a
+pricing-tier heading never becomes a `services` fact, that every surviving fact
+validates against its own cited page, that the final `pageUrls` is the
+*selected* subset rather than every fetched page, and that `business-profile`'s
+overview cites the field-specific source page for the `services` suggestion.
+
+**Not re-run during documentation** (2026-09-17): this module was mid-flight at
+the time, so the assertions above are read from the script and are not a claim
+that it passes today. The script's own header records what it does **not**
+cover: it does not crawl a real multi-page site, and it passes `refine:false`,
+so the LLM batch-extraction path (`extractBatchLlm`) is not exercised by it —
+only the deterministic fallback.
+
 ### What the smoke run deliberately does not do
 
 The smoke harness is **zero-spend by contract**, so it never invokes an LLM
@@ -513,3 +642,9 @@ wrong guess silently corrupts the matrix. The filters here stop at what can be
 decided structurally (sentence shape, single-word tier/step labels, team and
 testimonial blocks). Review `services[]` before activating a matrix on a
 deterministic-only run — `GET /aeo/context` returns it.
+
+The staged pipeline (P03, above) narrows this without pretending to solve it:
+stage 5 runs those same structural filters over LLM-proposed names too, stage 6
+drops any fact whose excerpt is not found verbatim in its own cited page, and
+the run records what it dropped. What comes out is a smaller, cited, validated
+list — not a smarter heuristic.

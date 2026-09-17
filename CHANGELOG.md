@@ -9,6 +9,140 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-17 — P15: Overview / Results / report adoption
+
+`platform_improvement_plan.md` §5.1, §5.5–§5.7, §14.5–§14.6 and the P15 row of
+§20.2. The Overview becomes one composed page instead of a dashboard of
+counters; the client Results screen becomes §3.3's four tabs; and a released
+report is now visibly, structurally a different number from the live score.
+
+**The Overview is composed on the server, not assembled by the page.**
+`GET /portal/projects/:id/overview` (client) and `GET /projects/:id/overview`
+(staff) return five panels — score, actions, upcoming content, plan, report —
+each in its own `ok|empty|unavailable` envelope (§4.5), plus `teamAttention` on
+the staff read only (the key does not exist on the client payload). §5.1's
+limits are applied at the source: one total, applicable buckets only, ≤3 action
+cards, ≤5 upcoming items, and the **true** count whenever it exceeds what is
+shown. Both screens render the same components
+(`web/src/components/patterns/OverviewPanels.tsx`, `ScoreSummary.tsx`), so the
+client's page and the operator's cannot drift into describing the same number
+differently. The staff page puts "Team attention" below the client-equivalent
+information, as §5.1 asks.
+
+**Reading starts nothing (§5.7).** Every panel is a pure storage read. The
+presence tab reuses P05's `portalInventory()`; the website tab reuses the
+website overview's idempotent reconcile and discloses it; the competitor gap
+service is deliberately *not* called (it scans live). "Build a score" remains an
+explicit POST, as before.
+
+**The client Results screen is §3.3's four tabs** — Website, AI visibility,
+Online presence, Competitors — reading the existing portal read models through
+client-safe projections. The fourth tab needed a route that did not exist
+(`GET /portal/projects/:id/results/presence`); it adds **no projection of its
+own**, projecting P05's inventory verbatim, because a second read path for one
+fact is how two screens start disagreeing. A bucket card's drilldown is the
+**stored** `detailPath`/`detailQuery`/`period` (§5.5) — a sub-view becomes a URL
+fragment, the period is preserved through `from`/`to`, and the content bucket
+lands on the calendar. "How this score works" is a plain-English sheet with no
+"rubric" or "methodology version" in its headlines; the version is a details
+line, and staff can inspect the full stored calculation on demand
+(`GET /projects/:id/scores/:runId`) from the same sheet.
+
+**Frozen report sections (the exit gate).** A released report now carries the
+score family and the 30-day plan progress *from `ReportRevision.snapshot`* —
+written once at review-lock, never recomputed at read time — rendered by
+`web/src/components/patterns/FrozenReportSections.tsx`. The live screen says
+"Live score, updated <date>"; the report says "As released in the <Month>
+report", and a report released in September keeps saying September after a new
+live run and after a newer private draft revision. `ReportData` and
+`ReportRevisionSnapshot` in `web/src/services/reports.ts` gained these fields,
+optional by design: `undefined` means the route does not serve the section,
+`null` means the revision predates it — never "zero".
+
+**Verified.** `npx tsc --noEmit -p tsconfig.json` and `npx nest build` clean;
+`npx tsc --noEmit` and `npx next lint` clean on the web. New
+`backend/smoke/overview-results.smoke.sh` drives the real HTTP surface against a
+booted dev server — **138 checks, 0 failures** — proving (a) live/report
+separation after the mutable `Report` columns are seeded to *wrong* values, the
+live score moves to a second run and a newer private draft is opened;
+(b) the full draft → review → approve → release journey; (c) an incomplete run
+renders no numeric total while still listing every bucket; (d) one panel's
+source failing leaves the other four intact on a 200; plus §5.7 read purity by
+row-count comparison, the §5.1/§5.6 limits, the four tabs, and tenant isolation
+on every new route.
+
+**Left for later, deliberately.** The operator's project page no longer carries
+audit counts, a run-history chart, a calendar preview or "not available yet"
+rows (§5.1's list; each figure now links to the screen that owns it) — the
+removed rows had also gone stale, since the priorities/cycles/approvals surfaces
+they called missing now exist. `ContentCalendarPreview` in
+`components/patterns/ContentCalendar.tsx` is now unused outside that file; it
+was left in place rather than deleted because the calendar module was being
+edited concurrently. P16's nav copy rollout and the P10 calendar work in the
+same tree were not touched.
+
+---
+
+## 2026-09-17 — Module documentation for the platform improvement phases (P01–P11)
+
+Documentation-only pass over the `platform_improvement_plan.md` phases that had
+settled enough to describe. No application code, schema, dependency or
+configuration was changed, and no `.ts`/`.tsx` source file was edited.
+
+**READMEs written.** `opportunities/` (P07, §12.5–12.7 — the observed-corpus
+keyword-gap engine, dedup identity, dismiss-with-reason, the idempotent
+convert-to-content contract) and `delivery-plan/` (P01/P11 — §3.5 client-safe
+projections, §5.6 needs-your-action, §6.1–6.3 commitments). Both get their
+first written spec: purpose, the rules the module exists to enforce, endpoint
+tables, dependencies, plan-alignment table, and an explicit "what was
+verified, and what was not".
+
+**READMEs extended.** `business-profile/` (P02/P04 — `confirmed` /
+`suggestions` / `gaps` as three lists that are never merged, value-keyed
+rejections read from stored `SiteContext`, structured target locations, and
+the removal of the silent ccTLD → default-`US` market fallback, §10.2);
+`digital-presence/` (P05 — applicability `relevant`/`optional`/`not-relevant`,
+"not ours" rejection tombstones with a required reason, the client projection);
+`competitors/` (P06 — free-by-default market discovery with `queriesRun: 0`,
+`collectNew` as the only paid path, immutable comparison snapshots with
+provenance).
+
+**Repo-level.** `docs/MODULES-STATUS.md` gains §1.2g — the platform phases, with
+the three still-in-flight modules recorded as such — and loses a stale Wave-0
+claim that all endpoints were unauthenticated (the `auth` checklist item is now
+checked, describing what actually ships). `docs/API.md` gains sections for the
+P01–P11 surfaces (business profile, digital presence applicability/rejections,
+competitor market discovery + snapshots, opportunities, the delivery plan and
+its portal routes), and its header no longer says "Auth: Not yet implemented" —
+a statement its own Auth Module section had contradicted since the auth module
+landed. Following that file's existing convention, the new material is appended
+as dated sections; the file is hand-maintained, not generated.
+
+**Not done, on purpose.** No README and no `docs/API.md` section for
+`content-workspace`, `writing-style` or `website` (P08/P09/P12 were still
+landing while this pass ran), nor a staged-context section for `aeo-audit`
+(P13 in flight). A moving target documented once is wrong twice; each is
+recorded as deferred in `docs/MODULES-STATUS.md` §1.2g instead.
+
+**Discrepancies found and left standing** (documented in the module READMEs,
+not fixed, because they are their owning phases' calls): `competitors/SPEC.md`,
+`REQUIREMENTS.md` and `SETUP-STATUS.md` still describe the worktree-era minimal
+`AeoAudit` mirror the current module no longer is; `opportunities.types.ts`
+documents an `editorial-idea` origin that no code path writes; the
+`digital-presence` portal inventory carries a no-op filter
+(`.filter((a) => a.state !== 'unverified' || true)`); and a client reading
+another client's project gets a 404 from `delivery-plan`'s portal routes but a
+403 from the shared `ScopeValidationService` used by other modules — both
+disclose nothing, but they are not the same answer.
+
+**Verified:** nothing at runtime. Every smoke suite named in the new documents
+(`keyword-gaps`, `portal-plan`, `thirty-day-plan`, `online-presence-unified`,
+`competitors-unified`, `target-markets`) is cited as the exit gate that exists
+— **none was re-run during this pass**, because other agents were mid-flight on
+shared source and the dev database and a result could not have been attributed
+cleanly. The assertions described in each "What was verified" section are read
+from the scripts; they are not a claim that the suites pass today.
+
 ## 2026-09-16 — Platform improvement plan for the current web and backend
 
 Added `platform_improvement_plan.md`, a detailed implementation specification

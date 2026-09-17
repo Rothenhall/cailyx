@@ -32,31 +32,40 @@
  * @module business-profile.service
  */
 
+import { createHash } from 'crypto';
 import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { ActivityService, type RecordActivityInput } from '../activity/activity.service';
 import { normalizeDomain, tryNormalizeDomain } from './lib/domain.util';
 import {
   BUSINESS_PROFILE_PROVENANCE_NOTE,
+  type BusinessInfoField,
+  type BusinessInfoOverview,
+  type BusinessInfoSectionKey,
   type BusinessProfileData,
   type BusinessProfileDto,
   type ChecklistItem,
   type CompetitorShape,
+  type MarketTarget,
   type OnboardingChecklistDto,
   type OnboardingRequestDto,
   type OnboardingRequestStatus,
+  type ProfileState,
   type ProfileVersionRef,
   type ProjectAttachmentDto,
   type ProjectOwnershipDto,
   type RebuildTarget,
   type SiteContextCandidateDto,
+  type TargetLocationsOverview,
   DOWNSTREAM_NOT_TOUCHED,
   ONBOARDING_REQUEST_TRANSITIONS,
   OPEN_REQUEST_STATUSES,
 } from './business-profile.types';
+import { previewProviderSupport } from './market-provider-support';
 import type {
   ConfirmBusinessProfileDto,
   RebuildFromProfileDto,
+  RejectBusinessProfileSuggestionDto,
   SaveBusinessProfileDto,
 } from './dto/business-profile.dto';
 import type { AttachProjectDto, CorrectDomainDto } from './dto/attach.dto';
@@ -74,6 +83,7 @@ interface ProfileRow {
   icp: string;
   markets: string;
   languages: string;
+  targets: string;
   facts: string;
   competitors: string;
   goals: string;
@@ -83,6 +93,26 @@ interface ProfileRow {
   confirmedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** The newest `SiteContext`, reshaped to the fields business-information suggestions can be built from. */
+interface SiteContextSuggestionSource {
+  brand: string | null;
+  description: string | null;
+  services: string[];
+  icp: string[];
+  painPoints: string[];
+  markets: string[];
+  competitors: CompetitorShape[];
+  /**
+   * P03 (plan §9.3 stage 4/6) — per-field source page, when the staged
+   * pipeline built this `SiteContext` and recorded a validated citation for
+   * the field. Keyed the same way as {@link SiteContextSuggestionSource}'s own
+   * fields ("description", "services", "icp", "painPoints", "markets").
+   * Absent (or the field missing) for a pre-P03 row, which falls back to the
+   * whole-context first-page-read behaviour.
+   */
+  fieldSources: Record<string, string>;
 }
 
 /** Result of a profile write: the row, plus anything the caller should know about the input. */
@@ -183,6 +213,22 @@ export class BusinessProfileService {
     return Array.isArray(value) ? value.filter((x): x is string => typeof x === 'string') : [];
   }
 
+  /** Parse the `targets` JSON column. Defensively — a malformed or legacy-empty row parses to `[]`, never throws. */
+  private parseTargets(raw: string | null | undefined): MarketTarget[] {
+    return this.parseRecordArray(raw)
+      .map((t) => ({
+        country: (this.str(t.country) ?? '').toUpperCase(),
+        region: this.str(t.region),
+        city: this.str(t.city),
+        language: this.str(t.language),
+        priority: typeof t.priority === 'number' && Number.isFinite(t.priority) ? t.priority : 0,
+        active: t.active !== false,
+        productApplicability: this.stringArrayOf(t.productApplicability),
+      }))
+      .filter((t) => /^[A-Z]{2}$/.test(t.country))
+      .sort((a, b) => a.priority - b.priority);
+  }
+
   // ── Row → DTO ───────────────────────────────────────────────────────
 
   private toData(row: ProfileRow): BusinessProfileData {
@@ -200,6 +246,7 @@ export class BusinessProfileService {
       },
       markets: this.parseStringArray(row.markets),
       languages: this.parseStringArray(row.languages),
+      targets: this.parseTargets(row.targets),
       facts: this.parseRecordArray(row.facts)
         .map((f) => ({ fact: this.str(f.fact) ?? '', evidenceUrl: this.str(f.evidenceUrl) }))
         .filter((f) => f.fact.length > 0),
@@ -472,6 +519,337 @@ export class BusinessProfileService {
     };
   }
 
+  // ── Business information (P02 — plan §9.1/§9.2) ────────────────────
+
+  /**
+   * Field defs that drive both {@link getBusinessInformation} and
+   * {@link rejectSuggestion}. A field with no `getSuggested` source (legal
+   * name, ICP roles, languages, goals) is confirmed/gap-only — nothing in
+   * `SiteContext` extracts it today, so no suggestion is ever fabricated for
+   * one.
+   */
+  private static readonly BUSINESS_INFO_FIELD_DEFS: ReadonlyArray<{
+    field: BusinessInfoField;
+    section: BusinessInfoSectionKey;
+    label: string;
+    getConfirmed: (data: BusinessProfileData) => string[] | string | null;
+    getSuggested: ((ctx: SiteContextSuggestionSource) => string[] | string | null) | null;
+  }> = [
+    { field: 'brandName', section: 'about', label: 'Business name', getConfirmed: (d) => d.brandName, getSuggested: (c) => c.brand },
+    { field: 'legalName', section: 'about', label: 'Legal name', getConfirmed: (d) => d.legalName, getSuggested: null },
+    { field: 'description', section: 'about', label: 'What you do', getConfirmed: (d) => d.description, getSuggested: (c) => c.description },
+    { field: 'services', section: 'about', label: 'Products / services', getConfirmed: (d) => d.services, getSuggested: (c) => c.services },
+    { field: 'icp.segments', section: 'customers', label: 'Customer types', getConfirmed: (d) => d.icp.segments, getSuggested: (c) => c.icp },
+    { field: 'icp.roles', section: 'customers', label: 'Buyer roles', getConfirmed: (d) => d.icp.roles, getSuggested: null },
+    { field: 'icp.painPoints', section: 'customers', label: 'Problems customers arrive with', getConfirmed: (d) => d.icp.painPoints, getSuggested: (c) => c.painPoints },
+    { field: 'markets', section: 'locations', label: 'Target locations', getConfirmed: (d) => d.markets, getSuggested: (c) => c.markets },
+    { field: 'languages', section: 'locations', label: 'Languages', getConfirmed: (d) => d.languages, getSuggested: null },
+    { field: 'competitors', section: 'brand', label: 'Named competitors', getConfirmed: (d) => d.competitors.map((c) => (c.domain ? `${c.name} (${c.domain})` : c.name)), getSuggested: (c) => c.competitors.map((x) => (x.domain ? `${x.name} (${x.domain})` : x.name)) },
+    { field: 'goals', section: 'brand', label: 'Commercial goals', getConfirmed: (d) => d.goals, getSuggested: null },
+  ];
+
+  private static readonly BUSINESS_INFO_SECTIONS: ReadonlyArray<{ key: BusinessInfoSectionKey; label: string }> = [
+    { key: 'about', label: 'About your business' },
+    { key: 'customers', label: 'Your customers' },
+    { key: 'locations', label: 'Target locations and languages' },
+    { key: 'brand', label: 'Brand details' },
+  ];
+
+  /** Canonical form used for both hashing and equality — sorted/trimmed so
+   *  reordering or whitespace differences do not count as a changed value. */
+  private normalizeForHash(value: string[] | string | null): string {
+    if (value === null) return 'null';
+    if (Array.isArray(value)) {
+      return JSON.stringify(
+        [...value]
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0)
+          .sort(),
+      );
+    }
+    return JSON.stringify(value.trim());
+  }
+
+  private hashValue(value: string[] | string | null): string {
+    return createHash('sha256').update(this.normalizeForHash(value)).digest('hex');
+  }
+
+  private valuesEqual(a: string[] | string | null, b: string[] | string | null): boolean {
+    return this.normalizeForHash(a) === this.normalizeForHash(b);
+  }
+
+  private isEmptyValue(value: string[] | string | null): boolean {
+    if (value === null) return true;
+    if (Array.isArray(value)) return value.filter((v) => v.trim().length > 0).length === 0;
+    return value.trim().length === 0;
+  }
+
+  /** First citation URL per field from a staged-pipeline `SiteContext.fieldSources` column, defensively parsed. */
+  private parseFieldSources(raw: string | null | undefined): Record<string, string> {
+    const v = this.parseUnknown(raw);
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return {};
+    const out: Record<string, string> = {};
+    for (const [field, cites] of Object.entries(v as Record<string, unknown>)) {
+      if (!Array.isArray(cites) || cites.length === 0) continue;
+      const first = cites[0] as unknown;
+      if (first && typeof first === 'object' && typeof (first as { url?: unknown }).url === 'string') {
+        out[field] = (first as { url: string }).url;
+      }
+    }
+    return out;
+  }
+
+  /** The newest `SiteContext` row, reshaped to the fields this module can turn into suggestions. */
+  private async currentSuggestionSource(
+    projectId: string,
+  ): Promise<{ row: { id: string; domain: string; pageUrls: string; createdAt: Date } | null; source: SiteContextSuggestionSource | null }> {
+    const row = await this.prisma.siteContext.findFirst({ where: { projectId }, orderBy: { createdAt: 'desc' } });
+    if (!row) return { row: null, source: null };
+    return {
+      row,
+      source: {
+        brand: this.str(row.brand),
+        description: row.description,
+        services: this.parseStringArray(row.services),
+        icp: this.parseStringArray(row.icp),
+        painPoints: this.parseStringArray(row.painPoints),
+        markets: this.parseStringArray(row.markets),
+        competitors: this.parseRecordArray(row.competitors)
+          .map((c) => ({ name: this.str(c.name) ?? '', domain: this.str(c.domain) }))
+          .filter((c) => c.name.length > 0),
+        fieldSources: this.parseFieldSources((row as { fieldSources?: string }).fieldSources),
+      },
+    };
+  }
+
+  /** §9.1 field → the `SiteContext.fieldSources` key that cites it, when P03's staged pipeline produced one. */
+  private static readonly FIELD_SOURCE_KEY: Partial<Record<BusinessInfoField, string>> = {
+    description: 'description',
+    services: 'services',
+    'icp.segments': 'icp',
+    'icp.painPoints': 'painPoints',
+    markets: 'markets',
+  };
+
+  /**
+   * The §9.1 four-section view: every field grouped as Confirmed / Suggested /
+   * Needs information. Shared, byte-for-byte, between the staff and client
+   * portal reads — the only difference between the two audiences is the
+   * vocabulary the screen wraps this in (§4.3), not the data. Nothing here
+   * carries a run id, model name or cost, so it is client-safe by
+   * construction (§4.6).
+   *
+   * A suggestion that exactly repeats a value already recorded in
+   * `BusinessProfileRejection` for that field is withheld rather than shown —
+   * the resurfacing plan §9.2 says must not happen.
+   */
+  async getBusinessInformation(projectId: string): Promise<BusinessInfoOverview> {
+    await this.requireProject(projectId);
+    const latest = await this.latestRow(projectId);
+    const confirmedRow = await this.latestConfirmedRow(projectId);
+    const data = latest ? this.toData(latest) : this.emptyData();
+    const profileState: ProfileState | null = latest ? (latest.confirmedAt ? 'confirmed' : 'draft') : null;
+
+    const { row: ctxRow, source } = await this.currentSuggestionSource(projectId);
+    const rejections = await this.prisma.businessProfileRejection.findMany({ where: { projectId } });
+    const rejectedSet = new Set(rejections.map((r) => `${r.fieldPath}:${r.valueHash}`));
+
+    const sections = BusinessProfileService.BUSINESS_INFO_SECTIONS.map((def) => ({
+      key: def.key,
+      label: def.label,
+      confirmed: [] as BusinessInfoOverview['sections'][number]['confirmed'],
+      suggestions: [] as BusinessInfoOverview['sections'][number]['suggestions'],
+      gaps: [] as BusinessInfoOverview['sections'][number]['gaps'],
+    }));
+    const byKey = new Map(sections.map((s) => [s.key, s]));
+
+    let suppressed = 0;
+    const sourcePage = ctxRow ? (this.parseStringArray(ctxRow.pageUrls)[0] ?? ctxRow.domain) : null;
+
+    for (const fieldDef of BusinessProfileService.BUSINESS_INFO_FIELD_DEFS) {
+      const current = fieldDef.getConfirmed(data);
+      const section = byKey.get(fieldDef.section)!;
+      section.confirmed.push({ field: fieldDef.field, label: fieldDef.label, value: current });
+
+      const suggested = source && fieldDef.getSuggested ? fieldDef.getSuggested(source) : null;
+      const hasSuggestion = suggested !== null && !this.isEmptyValue(suggested) && !this.valuesEqual(current, suggested);
+
+      if (hasSuggestion && suggested !== null) {
+        const hash = this.hashValue(suggested);
+        if (rejectedSet.has(`${fieldDef.field}:${hash}`)) {
+          suppressed += 1;
+        } else {
+          // P03: prefer the field's own validated citation over the
+          // whole-context "first page read" fallback, when the staged
+          // pipeline recorded one for this exact field.
+          const sourceKey = BusinessProfileService.FIELD_SOURCE_KEY[fieldDef.field];
+          const fieldSourcePage = sourceKey ? source?.fieldSources[sourceKey] : undefined;
+          section.suggestions.push({
+            field: fieldDef.field,
+            section: fieldDef.section,
+            label: fieldDef.label,
+            currentValue: current,
+            suggestedValue: suggested,
+            sourcePage: fieldSourcePage ?? sourcePage,
+            sourceDate: (ctxRow as { createdAt: Date }).createdAt.toISOString(),
+          });
+        }
+      }
+
+      if (this.isEmptyValue(current) && !hasSuggestion) {
+        section.gaps.push({ field: fieldDef.field, section: fieldDef.section, label: fieldDef.label });
+      }
+    }
+
+    return {
+      projectId,
+      profileState,
+      confirmedVersion: confirmedRow
+        ? {
+            id: confirmedRow.id,
+            version: confirmedRow.version,
+            state: 'confirmed' as const,
+            confirmedAt: (confirmedRow.confirmedAt as Date).toISOString(),
+            createdAt: confirmedRow.createdAt.toISOString(),
+          }
+        : null,
+      sections,
+      suppressedRejectedCount: suppressed,
+      hasSiteContext: ctxRow !== null,
+      sourceCheckedAt: ctxRow ? ctxRow.createdAt.toISOString() : null,
+    };
+  }
+
+  /**
+   * Target locations (P04, plan §10.2/§10.4) — the structured confirmed/
+   * drafted targets, the still-open site-evidence suggestions, and a real
+   * per-provider support preview. This is what the Business information →
+   * Target locations screen reads, and what a results screen's "what we
+   * checked" detail can cite alongside a run.
+   *
+   * Suggestions are computed the same way every other §9.1 field's
+   * suggestions are: read live from the newest `SiteContext.markets`
+   * (P03's ranked ISO-3166 alpha-2 service-area evidence), diffed against
+   * the current confirmed-or-drafted targets, and never stored or
+   * auto-applied. A country already an active target (confirmed or
+   * drafted) is not re-suggested.
+   */
+  async getTargetLocations(projectId: string): Promise<TargetLocationsOverview> {
+    await this.requireProject(projectId);
+    const latest = await this.latestRow(projectId);
+    const confirmedRow = await this.latestConfirmedRow(projectId);
+    const data = latest ? this.toData(latest) : this.emptyData();
+    const profileState: ProfileState | null = latest ? (latest.confirmedAt ? 'confirmed' : 'draft') : null;
+
+    const { row: ctxRow, source } = await this.currentSuggestionSource(projectId);
+    const currentCountries = new Set(data.targets.filter((t) => t.active).map((t) => t.country));
+    const suggestedCountries = (source?.markets ?? [])
+      .map((m) => m.trim().toUpperCase())
+      .filter((m) => /^[A-Z]{2}$/.test(m))
+      .filter((m) => !currentCountries.has(m));
+
+    return {
+      projectId,
+      profileState,
+      confirmedVersion: confirmedRow
+        ? {
+            id: confirmedRow.id,
+            version: confirmedRow.version,
+            state: 'confirmed' as const,
+            confirmedAt: (confirmedRow.confirmedAt as Date).toISOString(),
+            createdAt: confirmedRow.createdAt.toISOString(),
+          }
+        : null,
+      targets: data.targets,
+      suggestedCountries,
+      providerSupport: previewProviderSupport(data.targets),
+      hasSiteContext: ctxRow !== null,
+      sourceCheckedAt: ctxRow ? ctxRow.createdAt.toISOString() : null,
+    };
+  }
+
+  /**
+   * The active target countries on the newest CONFIRMED profile, in priority
+   * order — the one method other modules should call for "where is this
+   * project's measurement scope" (plan §10.2 step 5). Returns `[]` when
+   * nothing is confirmed or no confirmed profile has any active target;
+   * callers must not treat an empty array as "no opinion, pick something" —
+   * see `aeo-audit.service.ts`'s `resolveDefaultMarket`, which is the
+   * consumer this exists for.
+   */
+  async getConfirmedTargetCountries(projectId: string): Promise<string[]> {
+    const row = await this.latestConfirmedRow(projectId);
+    if (!row) return [];
+    const data = this.toData(row);
+    return data.targets.filter((t) => t.active).map((t) => t.country);
+  }
+
+  /**
+   * "Keep current" on one field — records that this exact suggested value was
+   * seen and declined, so a later recrawl producing the SAME value does not
+   * present it again. The value rejected is read from the current
+   * `SiteContext`, never trusted from the request body, so a caller cannot
+   * record a rejection of a value nothing ever suggested.
+   */
+  async rejectSuggestion(
+    projectId: string,
+    dto: RejectBusinessProfileSuggestionDto,
+    actor: { type: 'operator' | 'client'; id: string | null },
+  ): Promise<{ field: string; rejected: boolean; detail: string }> {
+    await this.requireProject(projectId);
+    const field = dto.field as BusinessInfoField;
+    const fieldDef = BusinessProfileService.BUSINESS_INFO_FIELD_DEFS.find((f) => f.field === field);
+    if (!fieldDef || !fieldDef.getSuggested) {
+      throw new NotFoundException(`"${dto.field}" has no suggested value to decline.`);
+    }
+
+    const { row: ctxRow, source } = await this.currentSuggestionSource(projectId);
+    if (!ctxRow || !source) {
+      throw new ConflictException(`Project ${projectId} has no extracted site context, so there is no suggestion for "${field}" to decline.`);
+    }
+    const suggested = fieldDef.getSuggested(source);
+    if (suggested === null || this.isEmptyValue(suggested)) {
+      throw new ConflictException(`There is no current suggestion for "${field}" to decline.`);
+    }
+
+    const latest = await this.latestRow(projectId);
+    const currentData = latest ? this.toData(latest) : this.emptyData();
+    const current = fieldDef.getConfirmed(currentData);
+    if (this.valuesEqual(current, suggested)) {
+      throw new ConflictException(`"${field}" already matches the current confirmed/drafted value — there is nothing to decline.`);
+    }
+
+    const hash = this.hashValue(suggested);
+    await this.prisma.businessProfileRejection.upsert({
+      where: { projectId_fieldPath_valueHash: { projectId, fieldPath: field, valueHash: hash } },
+      update: {},
+      create: {
+        projectId,
+        fieldPath: field,
+        valueHash: hash,
+        value: JSON.stringify(suggested),
+        actorType: actor.type,
+        actorId: actor.id,
+      },
+    });
+
+    await this.audit({
+      actor: { type: actor.type === 'client' ? 'user' : actor.id ? 'user' : 'system', id: actor.id, label: null },
+      action: 'updated',
+      resource: { type: 'business-profile', id: projectId, version: null },
+      projectId,
+      summary: `Suggested "${field}" declined — kept the current value`,
+      changes: { field, declinedValue: suggested, actorType: actor.type },
+      origin: 'api',
+    });
+
+    return {
+      field,
+      rejected: true,
+      detail: `Kept the current value for "${field}". This suggestion will not be shown again unless the site's value changes.`,
+    };
+  }
+
   // ── Draft write ─────────────────────────────────────────────────────
 
   /**
@@ -503,6 +881,7 @@ export class BusinessProfileService {
       icp: JSON.stringify(data.icp),
       markets: JSON.stringify(data.markets),
       languages: JSON.stringify(data.languages),
+      targets: JSON.stringify(data.targets),
       facts: JSON.stringify(data.facts),
       competitors: JSON.stringify(data.competitors),
       goals: JSON.stringify(data.goals),
@@ -631,6 +1010,7 @@ export class BusinessProfileService {
         icp: JSON.stringify(data.icp),
         markets: JSON.stringify(data.markets),
         languages: JSON.stringify(data.languages),
+        targets: JSON.stringify(data.targets),
         facts: JSON.stringify(data.facts),
         competitors: JSON.stringify(data.competitors),
         goals: JSON.stringify(data.goals),
@@ -1604,6 +1984,7 @@ export class BusinessProfileService {
       icp: { segments: [], roles: [], painPoints: [] },
       markets: [],
       languages: [],
+      targets: [],
       facts: [],
       competitors: [],
       goals: [],
@@ -1643,6 +2024,24 @@ export class BusinessProfileService {
           : base.icp,
       markets: patch.markets !== undefined ? patch.markets : base.markets,
       languages: patch.languages !== undefined ? patch.languages : base.languages,
+      targets:
+        patch.targets !== undefined
+          ? patch.targets.map((t) => {
+              const country = t.country.trim().toUpperCase();
+              if (!/^[A-Z]{2}$/.test(country)) {
+                warnings.push(`Target "${t.country}" was dropped: not a 2-letter ISO-3166 country code.`);
+              }
+              return {
+                country,
+                region: t.region ?? null,
+                city: t.city ?? null,
+                language: t.language ?? null,
+                priority: t.priority ?? 0,
+                active: t.active ?? true,
+                productApplicability: t.productApplicability ?? [],
+              };
+            }).filter((t) => /^[A-Z]{2}$/.test(t.country))
+          : base.targets,
       facts:
         patch.facts !== undefined
           ? patch.facts.map((f) => ({ fact: f.fact, evidenceUrl: f.evidenceUrl ?? null }))
@@ -1681,6 +2080,7 @@ export class BusinessProfileService {
       data.services.length === 0 &&
       data.icp.segments.length === 0 &&
       data.markets.length === 0 &&
+      data.targets.length === 0 &&
       data.facts.length === 0 &&
       data.competitors.length === 0 &&
       data.goals.length === 0

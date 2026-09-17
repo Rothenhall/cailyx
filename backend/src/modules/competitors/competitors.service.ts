@@ -15,6 +15,7 @@
  */
 
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { createHash } from 'crypto';
 import { PrismaService } from '../database/prisma.service';
 import { FetcherService } from '../fetcher/fetcher.service';
 import { TechStackService, type TechStackScanResult } from '../tech-stack/tech-stack.service';
@@ -27,7 +28,52 @@ import {
 import { extractPageSignals } from '../technical-audit/checks/page-signals';
 import { findPageIssues, scorePage } from '../technical-audit/checks/seo-rubric';
 import { parseCompetitors, hostOf } from '../../common/utils/subject-match';
-import type { CompetitorInputDto, DiscoverCompetitorsDto } from './dto/competitors.dto';
+import { BusinessProfileService } from '../business-profile/business-profile.service';
+import { SerpIntelligenceService } from '../serp-intelligence/serp-intelligence.service';
+import type { CompetitorInputDto, DiscoverByMarketDto, DiscoverCompetitorsDto } from './dto/competitors.dto';
+
+/**
+ * §12.2 exclusion list — registrable domains that are never a "competitor"
+ * even when they legitimately rank/appear for a client's service+market
+ * queries: generic business directories/marketplaces, review platforms,
+ * social/publishing platforms, and reference sites. Grounded, not invented —
+ * every entry here is a well-known non-provider destination, not a guess
+ * about any specific candidate. Extend cautiously; being too aggressive here
+ * silently drops real rivals, which is the opposite failure mode.
+ */
+const EXCLUDED_DOMAINS = new Set<string>([
+  // Directories / marketplaces / review platforms
+  'yelp.com', 'clutch.co', 'g2.com', 'capterra.com', 'trustpilot.com', 'glassdoor.com',
+  'indeed.com', 'crunchbase.com', 'bbb.org', 'yellowpages.com', 'angi.com', 'thumbtack.com',
+  'upcity.com', 'goodfirms.co', 'designrush.com', 'sortlist.com', 'expertise.com', 'trustradius.com',
+  'getapp.com', 'softwareadvice.com', 'houzz.com', 'homeadvisor.com',
+  // Social / publishing platforms (a company's presence there is not itself a rival)
+  'facebook.com', 'linkedin.com', 'instagram.com', 'youtube.com', 'twitter.com', 'x.com',
+  'pinterest.com', 'reddit.com', 'quora.com', 'medium.com', 'wordpress.com', 'blogspot.com',
+  'tumblr.com', 'tiktok.com',
+  // Reference / general knowledge
+  'wikipedia.org', 'wikidata.org',
+  // Search/portal infrastructure that sometimes shows up as a "domain" in a captured result
+  'google.com', 'bing.com', 'duckduckgo.com',
+]);
+
+/** Case/whitespace-normalized identity key for a candidate name. */
+function nameKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/** Canonical registrable-domain identity key, via the same `hostOf()` every other module uses. */
+function domainKeyOf(domain: string): string | null {
+  return hostOf(domain) ?? domain.trim().toLowerCase();
+}
+
+/** One rival name/domain mined from already-stored evidence, before exclusion/dedup. */
+interface RawCandidate {
+  name: string;
+  domain: string | null;
+  evidenceKind: 'aeo-verdict' | 'serp-snapshot' | 'serp-live-search';
+  reason: string;
+}
 
 /** One external profile found on a competitor's own site. */
 export interface CompetitorPresenceAccount {
@@ -143,6 +189,27 @@ export interface DiscoverResult {
   competitors: CompetitorWithProfile[];
 }
 
+/** How many confirmed services to compose queries/consider evidence for, per discovery run. */
+const MAX_SERVICES_CONSIDERED = 5;
+/** How many confirmed target markets to compose queries for, per discovery run. */
+const MAX_MARKETS_CONSIDERED = 3;
+/** Hard cap on bounded searches per `collectNew: true` call — a budget, not a suggestion. */
+const MAX_MARKET_QUERIES = 6;
+
+export interface DiscoverByMarketResult {
+  projectId: string;
+  collectNew: boolean;
+  queriesRun: number;
+  costUsd: number;
+  servicesConsidered: string[];
+  marketsConsidered: string[];
+  candidatesProposed: number;
+  candidatesExcluded: number;
+  exclusionSample: string[];
+  candidates: CompetitorRecord[];
+  note: string;
+}
+
 /** One line of the tech/schema diff table in the gap report. */
 export interface GapDiffLine {
   key: string;
@@ -168,10 +235,23 @@ export interface GapCompetitorRow {
   reviewRatings: CompetitorReviewRating[];
 }
 
+/** §12.3 — exactly which source observations/versions a frozen comparison was derived from. */
+export interface ComparisonProvenance {
+  competitorSetVersion: string;
+  extractionVersion: string;
+  techScanIds: string[];
+  profileIds: string[];
+  aeoAuditIds: string[];
+  serpResultSampleCount: number;
+}
+
 export interface GapResult {
   projectId: string;
   domain: string;
   generatedAt: string;
+  /** §12.3 — the frozen snapshot this exact comparison was persisted as. Re-reading it later via getComparisonSnapshot returns this same result unchanged, even if the competitor set later changes. */
+  snapshotId: string;
+  comparisonMeta: ComparisonProvenance;
   tech: {
     client: string[];
     clientOnly: GapDiffLine[];
@@ -225,6 +305,8 @@ export class CompetitorsService {
     private readonly techStack: TechStackService,
     private readonly presence: PresenceDiscoveryService,
     private readonly directoryRating: PresenceDirectoryRatingService,
+    private readonly businessProfile: BusinessProfileService,
+    private readonly serpIntelligence: SerpIntelligenceService,
   ) {}
 
   private async requireProject(projectId: string): Promise<{ id: string; domain: string; competitors: string | null }> {
@@ -342,10 +424,39 @@ export class CompetitorsService {
    */
   async listCandidates(projectId: string): Promise<CompetitorRecord[]> {
     await this.requireProject(projectId);
-    return this.prisma.competitor.findMany({
+    const rows = await this.prisma.competitor.findMany({
       where: { projectId, status: 'candidate' },
       orderBy: { createdAt: 'desc' },
     });
+    if (rows.length === 0) return rows;
+
+    // Rejection-memory self-heal: a candidate can be written by a producer
+    // this module does not control (AeoStanceService, aeo-audit — off limits
+    // to edit here), so enforcing "a rejected candidate never resurfaces" at
+    // read time, against every candidate regardless of who wrote it, is the
+    // only place this module can honestly guarantee that contract. A match
+    // is deleted outright (never re-shown) rather than merely filtered, so a
+    // second read gives the same answer without redoing this work.
+    const rejections = await this.prisma.competitorRejection.findMany({ where: { projectId } });
+    if (rejections.length === 0) return rows;
+    const rejectedNames = new Set(rejections.map((r) => r.nameKey));
+    const rejectedDomains = new Set(rejections.map((r) => r.domainKey).filter((d): d is string => !!d));
+
+    const kept: CompetitorRecord[] = [];
+    const toDelete: string[] = [];
+    for (const row of rows) {
+      const nk = nameKey(row.name);
+      const dk = row.domain ? domainKeyOf(row.domain) : null;
+      if (rejectedNames.has(nk) || (dk && rejectedDomains.has(dk))) {
+        toDelete.push(row.id);
+      } else {
+        kept.push(row);
+      }
+    }
+    if (toDelete.length > 0) {
+      await this.prisma.competitor.deleteMany({ where: { id: { in: toDelete } } });
+    }
+    return kept;
   }
 
   /**
@@ -374,10 +485,38 @@ export class CompetitorsService {
     return updated;
   }
 
-  /** Discard a candidate — it was a hallucination, a directory site, or not actually a rival. */
-  async rejectCandidate(projectId: string, competitorId: string): Promise<void> {
+  /**
+   * Discard a candidate — it was a hallucination, a directory site, or not
+   * actually a rival. Records a rejection tombstone FIRST (§12.2: "rejection
+   * memory prevents rediscovery loops") so a later discovery pass — from
+   * this module or another producer — does not re-propose the same
+   * name/domain; the row itself is then deleted, matching the existing
+   * "no undo" contract this endpoint already documented.
+   */
+  async rejectCandidate(projectId: string, competitorId: string, reason?: string): Promise<void> {
     const row = await this.requireCandidate(projectId, competitorId);
+    await this.prisma.competitorRejection.upsert({
+      where: { projectId_nameKey: { projectId, nameKey: nameKey(row.name) } },
+      update: { domainKey: row.domain ? domainKeyOf(row.domain) : null, reason: reason ?? null },
+      create: {
+        projectId,
+        nameKey: nameKey(row.name),
+        domainKey: row.domain ? domainKeyOf(row.domain) : null,
+        reason: reason ?? null,
+      },
+    });
     await this.prisma.competitor.delete({ where: { id: row.id } });
+  }
+
+  /**
+   * Reclassify a candidate's relevance (§12.2: direct competitor / adjacent
+   * alternative / not relevant) without confirming or rejecting it — an
+   * operator correcting the discovery heuristic's guess, kept as its own
+   * action so it never silently promotes/deletes anything.
+   */
+  async reclassifyCandidate(projectId: string, competitorId: string, relevance: string): Promise<CompetitorRecord> {
+    const row = await this.requireCandidate(projectId, competitorId);
+    return this.prisma.competitor.update({ where: { id: row.id }, data: { relevance } });
   }
 
   private async requireCandidate(projectId: string, competitorId: string): Promise<CompetitorRecord> {
@@ -389,6 +528,230 @@ export class CompetitorsService {
       throw new NotFoundException(`Competitor ${competitorId} is not a pending candidate`);
     }
     return row;
+  }
+
+  // ─── §12.2: service/market-based discovery ─────────────────────────────
+
+  /**
+   * Compose bounded searches from confirmed services + target markets, and
+   * combine with rival names/domains already observed in stored AEO verdicts
+   * and SERP snapshots. Writes new `status: 'candidate'` rows only — an
+   * existing tracked/candidate competitor is never touched, and the whole
+   * existing list is retained (discovery only proposes additions, per
+   * §12.2's last paragraph).
+   *
+   * Two cost classes, kept explicit and separate (§12.3's other half):
+   *   - Default (`collectNew` false/omitted): reads only what
+   *     `AeoAudit.verdict` and `SerpResult` already have stored. No network
+   *     call, no vendor, free — safe to run from a page load.
+   *   - `collectNew: true`: additionally composes up to
+   *     `MAX_MARKET_QUERIES` "<service> in <market>" searches through the
+   *     gated SERP provider (`serpForDiscovery` — the same gate `capture()`
+   *     uses: SERP_ALLOW_FIXTURE for the offline fixture, SWARM_ALLOW_LIVE +
+   *     credentials for the real, paid DataForSEO call). This is the
+   *     explicit, budgeted "Collect new results" action; it never runs
+   *     implicitly.
+   */
+  async discoverByMarket(projectId: string, dto: DiscoverByMarketDto): Promise<DiscoverByMarketResult> {
+    const project = await this.requireProject(projectId);
+    const clientDomainKey = project.domain ? domainKeyOf(project.domain) : null;
+
+    const existing = await this.prisma.competitor.findMany({ where: { projectId } });
+    const existingNameKeys = new Set(existing.map((c) => nameKey(c.name)));
+    const existingDomainKeys = new Set(existing.filter((c) => c.domain).map((c) => domainKeyOf(c.domain!)));
+
+    const rejections = await this.prisma.competitorRejection.findMany({ where: { projectId } });
+    const rejectedNameKeys = new Set(rejections.map((r) => r.nameKey));
+    const rejectedDomainKeys = new Set(rejections.map((r) => r.domainKey).filter((d): d is string => !!d));
+
+    // Confirmed services/segments (never draft/suggested values) — the same
+    // read `aeo-audit`'s own market resolution uses, business-profile module
+    // untouched.
+    const profile = await this.businessProfile.getConfirmedProfile(projectId);
+    const services = (profile?.data.services ?? []).filter((s) => s && s.trim()).slice(0, MAX_SERVICES_CONSIDERED);
+    const segments = (profile?.data.icp.segments ?? []).filter((s) => s && s.trim());
+    const targetCountries = await this.businessProfile.getConfirmedTargetCountries(projectId);
+
+    const raw: RawCandidate[] = [];
+
+    // ── Free pass: mine already-stored AEO verdict + SERP evidence ────────
+    const audit = await this.prisma.aeoAudit.findFirst({
+      where: { projectId, status: 'completed', verdict: { not: null } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (audit?.verdict) {
+      try {
+        const verdict = JSON.parse(audit.verdict) as {
+          counted?: { competitors?: Array<{ name: string }> };
+        };
+        for (const c of verdict.counted?.competitors ?? []) {
+          if (!c?.name) continue;
+          raw.push({
+            name: c.name,
+            domain: null,
+            evidenceKind: 'aeo-verdict',
+            reason: `Named as a competitor standing in AI-visibility audit ${audit.id}.`,
+          });
+        }
+      } catch {
+        // Best-effort mining — a malformed verdict never blocks discovery.
+      }
+    }
+
+    const trackers = await this.prisma.serpTracker.findMany({ where: { projectId }, select: { id: true } });
+    if (trackers.length > 0) {
+      const results = await this.prisma.serpResult.findMany({
+        where: { snapshot: { trackerId: { in: trackers.map((t) => t.id) } } },
+        orderBy: { capturedAt: 'desc' },
+        take: 300,
+        include: { query: { select: { keyword: true } } },
+      });
+      const seenDomainCounts = new Map<string, number>();
+      for (const r of results) {
+        let topDomains: Array<{ domain: string; rank: number }> = [];
+        try {
+          topDomains = JSON.parse(r.topDomains || '[]');
+        } catch {
+          topDomains = [];
+        }
+        for (const entry of topDomains) {
+          const key = domainKeyOf(entry.domain);
+          if (!key) continue;
+          seenDomainCounts.set(key, (seenDomainCounts.get(key) ?? 0) + 1);
+        }
+      }
+      for (const [domainKey, count] of seenDomainCounts) {
+        raw.push({
+          name: domainKey,
+          domain: domainKey,
+          evidenceKind: 'serp-snapshot',
+          reason: `Appeared in ${count} stored tracked-SERP result(s) for this project.`,
+        });
+      }
+    }
+
+    // ── Paid pass: bounded Google searches, only when explicitly requested ─
+    let queriesRun = 0;
+    let costUsd = 0;
+    if (dto.collectNew) {
+      const markets = targetCountries.length > 0 ? targetCountries.slice(0, MAX_MARKETS_CONSIDERED) : ['United States'];
+      const topics = services.length > 0 ? services : segments.slice(0, MAX_SERVICES_CONSIDERED);
+      const queries: string[] = [];
+      outer: for (const market of markets) {
+        for (const topic of topics.length > 0 ? topics : ['']) {
+          if (queries.length >= MAX_MARKET_QUERIES) break outer;
+          const q = topic ? `${topic} in ${market}` : `best providers in ${market}`;
+          queries.push(q);
+        }
+      }
+      for (const query of queries) {
+        try {
+          const resp = await this.serpIntelligence.serpForDiscovery(
+            query,
+            { locationName: 'United States', languageCode: 'en', device: 'desktop' },
+            dto.provider,
+          );
+          queriesRun++;
+          costUsd += resp.costUsd;
+          for (const item of resp.items) {
+            if (item.type !== 'organic' || !item.domain) continue;
+            const key = domainKeyOf(item.domain);
+            if (!key) continue;
+            raw.push({
+              name: item.title || key,
+              domain: key,
+              evidenceKind: 'serp-live-search',
+              reason: `Ranked organically for the composed search "${query}".`,
+            });
+          }
+        } catch (err) {
+          this.logger.warn(`discoverByMarket: bounded search "${query}" failed: ${(err as Error).message}`);
+        }
+      }
+    }
+
+    // ── Normalize, exclude, dedupe, classify ───────────────────────────────
+    const byIdentity = new Map<string, { candidate: RawCandidate; evidenceKinds: Set<string> }>();
+    let excludedCount = 0;
+    const excludedReasons: string[] = [];
+
+    for (const c of raw) {
+      const dKey = c.domain ? domainKeyOf(c.domain) : null;
+      const nKey = nameKey(c.name);
+
+      if (dKey && clientDomainKey && dKey === clientDomainKey) {
+        excludedCount++;
+        continue;
+      }
+      if (dKey && EXCLUDED_DOMAINS.has(dKey)) {
+        excludedCount++;
+        excludedReasons.push(`${dKey} — known directory/publishing/social platform, not a provider`);
+        continue;
+      }
+      if (existingNameKeys.has(nKey) || (dKey && existingDomainKeys.has(dKey))) {
+        // Already tracked or already a candidate — not a new proposal.
+        continue;
+      }
+      if (rejectedNameKeys.has(nKey) || (dKey && rejectedDomainKeys.has(dKey))) {
+        excludedCount++;
+        excludedReasons.push(`${c.name} — previously rejected by an operator, not re-proposed`);
+        continue;
+      }
+
+      const identity = dKey ?? nKey;
+      const bucket = byIdentity.get(identity);
+      if (bucket) {
+        bucket.evidenceKinds.add(c.evidenceKind);
+      } else {
+        byIdentity.set(identity, { candidate: c, evidenceKinds: new Set([c.evidenceKind]) });
+      }
+    }
+
+    const created: CompetitorRecord[] = [];
+    for (const { candidate, evidenceKinds } of byIdentity.values()) {
+      // Classification (§12.2): grounded in the evidence actually gathered,
+      // never an invented domain and never a promotion to `tracked` — a
+      // candidate mentioned by name in an AI verdict (a market-aware source
+      // reasoning about this project's own competitive set) is treated as a
+      // likely direct competitor; a bare SERP co-occurrence with no other
+      // corroborating evidence is treated as merely adjacent until a human
+      // says otherwise.
+      const relevance = evidenceKinds.has('aeo-verdict')
+        ? 'direct-competitor'
+        : evidenceKinds.size > 1
+          ? 'direct-competitor'
+          : 'adjacent-alternative';
+
+      const row = await this.prisma.competitor.upsert({
+        where: { projectId_name: { projectId, name: candidate.name } },
+        update: {},
+        create: {
+          projectId,
+          name: candidate.name,
+          domain: candidate.domain,
+          source: 'market-discovery',
+          status: 'candidate',
+          relevance,
+          discoveryReason: `${candidate.reason} (${[...evidenceKinds].join(', ')})`,
+        },
+      });
+      if (row.status === 'candidate') created.push(row);
+    }
+
+    return {
+      projectId,
+      collectNew: !!dto.collectNew,
+      queriesRun,
+      costUsd: Number(costUsd.toFixed(6)),
+      servicesConsidered: services,
+      marketsConsidered: targetCountries,
+      candidatesProposed: created.length,
+      candidatesExcluded: excludedCount,
+      exclusionSample: excludedReasons.slice(0, 10),
+      candidates: created,
+      note:
+        'Proposals only — the existing tracked list is never replaced. Partner/directory/publishing-platform domains and the client\'s own domain are excluded before a row is ever created. A candidate previously rejected by an operator is never re-proposed.',
+    };
   }
 
   /**
@@ -507,10 +870,37 @@ export class CompetitorsService {
       });
     }
 
-    return {
+    // §12.3: exactly which source observations/versions this comparison was
+    // derived from, so a later addition of a competitor can be told apart
+    // from a re-derivation over the same evidence.
+    const competitorSetVersion = createHash('sha256')
+      .update([...competitors].map((c) => `${c.id}:${c.status}`).sort().join(','))
+      .digest('hex')
+      .slice(0, 16);
+    const profileIds = competitors.map((c) => c.profiles[0]?.id).filter((id): id is string => !!id);
+    const techScanIds = [...new Set(competitors.map((c) => c.profiles[0]?.techScanId).filter((id): id is string => !!id))];
+    const aeoAuditIds = [
+      ...new Set(
+        rows
+          .map((r) => r.aeoStanding?.auditId)
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    const comparisonMeta: ComparisonProvenance = {
+      competitorSetVersion,
+      extractionVersion: 'gap-v1',
+      techScanIds,
+      profileIds,
+      aeoAuditIds,
+      serpResultSampleCount: rows.filter((r) => r.serpStatus === 'present').length,
+    };
+
+    const result: GapResult = {
       projectId,
       domain: project.domain,
       generatedAt: new Date().toISOString(),
+      snapshotId: '', // filled in below once the snapshot row exists
+      comparisonMeta,
       seo: {
         client: clientSeo,
         note:
@@ -532,6 +922,55 @@ export class CompetitorsService {
       note:
         'Tech/schema/presence are presence diffs, not scores. AEO/SERP rows reflect whatever those modules have already measured — this endpoint never triggers a new AEO or SERP run. The client-side platform list comes from stored digital-presence rows (candidates and personal profiles excluded), so a client who has never had a presence scan shows as having none rather than as having been checked.',
     };
+
+    // Persist as a frozen snapshot (§12.3): "Update comparison" — a read from
+    // already-stored evidence, never a new paid AEO/SERP/tech run — is still
+    // worth keeping a permanent, never-mutated record of, so a later
+    // competitor-set change cannot retroactively alter what an earlier
+    // comparison said. Best-effort: a write failure here must not fail the
+    // read itself.
+    try {
+      const snapshot = await this.prisma.competitorComparisonSnapshot.create({
+        data: {
+          projectId,
+          competitorSetVersion,
+          extractionVersion: 'gap-v1',
+          sourceObservationIds: JSON.stringify({ techScanIds, profileIds, aeoAuditIds }),
+          result: JSON.stringify(result),
+        },
+      });
+      result.snapshotId = snapshot.id;
+    } catch (err) {
+      this.logger.warn(`gap: failed to persist comparison snapshot for ${projectId}: ${(err as Error).message}`);
+    }
+
+    return result;
+  }
+
+  /** Every frozen comparison snapshot for a project, newest first — summary only (no full result body). */
+  async listComparisonSnapshots(projectId: string): Promise<
+    Array<{ id: string; competitorSetVersion: string; extractionVersion: string; generatedAt: Date }>
+  > {
+    await this.requireProject(projectId);
+    return this.prisma.competitorComparisonSnapshot.findMany({
+      where: { projectId },
+      orderBy: { generatedAt: 'desc' },
+      select: { id: true, competitorSetVersion: true, extractionVersion: true, generatedAt: true },
+    });
+  }
+
+  /**
+   * Read one frozen comparison exactly as it was computed (§12.3: "never
+   * retroactively mutate a frozen report/comparison"). Returns the stored
+   * `result` JSON verbatim — never recomputed, even if competitors have since
+   * been added, removed, or reprofiled.
+   */
+  async getComparisonSnapshot(projectId: string, snapshotId: string): Promise<GapResult> {
+    const row = await this.prisma.competitorComparisonSnapshot.findUnique({ where: { id: snapshotId } });
+    if (!row || row.projectId !== projectId) {
+      throw new NotFoundException(`Comparison snapshot ${snapshotId} not found for project ${projectId}`);
+    }
+    return JSON.parse(row.result) as GapResult;
   }
 
   /**

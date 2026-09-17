@@ -40,6 +40,16 @@ import type { AuthedRequestUser } from '../auth/strategies/jwt.strategy';
 import { DeliveryPlanService, type Actor } from './delivery-plan.service';
 import { CreateCapacityAllocationDto, CreateMilestoneDto, UpdateCapacityAllocationDto, UpdateMilestoneDto } from './dto/capacity.dto';
 import { CommitCycleDto, CreateCycleDto, SetCycleStatusDto, UpdateCycleDto } from './dto/cycle.dto';
+import {
+  AgreeCommitmentDto,
+  CancelCommitmentDto,
+  CommitmentScopeChangeDto,
+  CompleteCommitmentDto,
+  CreateCommitmentDto,
+  RecordOutcomeMetricDto,
+  SetCommitmentStatusDto,
+  UpdateCommitmentDto,
+} from './dto/commitment.dto';
 import { CreateEngagementDto, SetEngagementStatusDto, UpdateEngagementDto } from './dto/engagement.dto';
 import {
   AddAcceptanceCheckDto,
@@ -199,6 +209,115 @@ export class CyclesController {
     @Body() dto: CommitCycleDto,
   ) {
     return this.service.commitCycle(projectId, id, user.userId, dto);
+  }
+}
+
+// ── Commitments (P11 — 30-day plan) ───────────────────────────────────────
+
+@ApiTags('delivery-plan: commitments')
+@ApiBearerAuth()
+@Controller('projects/:projectId/commitments')
+export class CommitmentsController {
+  constructor(private readonly service: DeliveryPlanService) {}
+
+  @Get()
+  @ApiOperation({ summary: "A project's plan commitments" })
+  async list(@Param('projectId') projectId: string, @Query('cycleId') cycleId?: string, @Query('status') status?: string) {
+    return { commitments: await this.service.listCommitments(projectId, { cycleId, status }) };
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'One commitment with derived progress' })
+  async get(@Param('projectId') projectId: string, @Param('id') id: string) {
+    return this.service.getCommitment(projectId, id);
+  }
+
+  @Post()
+  @Roles('admin', 'delivery-lead')
+  @ApiOperation({ summary: 'Create a plan commitment under a cycle' })
+  @ApiBody({ type: CreateCommitmentDto })
+  async create(@Param('projectId') projectId: string, @CurrentUser() user: AuthedRequestUser, @Body() dto: CreateCommitmentDto) {
+    return this.service.createCommitment(projectId, dto, user.userId);
+  }
+
+  @Patch(':id')
+  @Roles('admin', 'delivery-lead')
+  @ApiOperation({ summary: 'Edit a commitment (not yet completed/closed/cancelled/superseded)' })
+  async update(@Param('projectId') projectId: string, @Param('id') id: string, @Body() dto: UpdateCommitmentDto) {
+    return this.service.updateCommitment(projectId, id, dto);
+  }
+
+  @Patch(':id/status')
+  @Roles('admin', 'delivery-lead')
+  @ApiOperation({ summary: 'Forward-biased status transition (never "agreed" or "completed" — use the dedicated actions)' })
+  async setStatus(@Param('projectId') projectId: string, @Param('id') id: string, @Body() dto: SetCommitmentStatusDto) {
+    return this.service.setCommitmentStatus(projectId, id, dto);
+  }
+
+  @Post(':id/agree')
+  @Roles('admin', 'delivery-lead')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Record client agreement',
+    description: 'An operator writing the plan is not client agreement — this is the one path to "agreed", requiring an explicit confirm.',
+  })
+  @ApiBody({ type: AgreeCommitmentDto })
+  async agree(@Param('projectId') projectId: string, @Param('id') id: string, @CurrentUser() user: AuthedRequestUser, @Body() dto: AgreeCommitmentDto) {
+    return this.service.agreeCommitment(projectId, id, actorOf(user), dto);
+  }
+
+  @Post(':id/scope-change')
+  @Roles('admin', 'delivery-lead')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Record a scope change: previous/new target+date, reason, whether reconfirmation is required' })
+  @ApiBody({ type: CommitmentScopeChangeDto })
+  async scopeChange(@Param('projectId') projectId: string, @Param('id') id: string, @CurrentUser() user: AuthedRequestUser, @Body() dto: CommitmentScopeChangeDto) {
+    return this.service.recordCommitmentScopeChange(projectId, id, actorOf(user), dto);
+  }
+
+  @Post(':id/outcome-metric')
+  @Roles('admin', 'delivery-lead')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Record an observed value for an outcome-style commitment' })
+  @ApiBody({ type: RecordOutcomeMetricDto })
+  async recordOutcome(@Param('projectId') projectId: string, @Param('id') id: string, @Body() dto: RecordOutcomeMetricDto) {
+    return this.service.recordOutcomeMetric(projectId, id, dto);
+  }
+
+  @Post(':id/complete')
+  @Roles('admin', 'delivery-lead')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Mark a commitment completed',
+    description: 'Countable commitments require verified >= target (or an explicit force+forceReason). Outcome commitments require their own metric observation, never just closed tasks.',
+  })
+  @ApiBody({ type: CompleteCommitmentDto })
+  async complete(@Param('projectId') projectId: string, @Param('id') id: string, @CurrentUser() user: AuthedRequestUser, @Body() dto: CompleteCommitmentDto) {
+    return this.service.completeCommitment(projectId, id, actorOf(user), dto);
+  }
+
+  @Post(':id/cancel')
+  @Roles('admin', 'delivery-lead')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Cancel a commitment' })
+  @ApiBody({ type: CancelCommitmentDto })
+  async cancel(@Param('projectId') projectId: string, @Param('id') id: string, @Body() dto: CancelCommitmentDto) {
+    return this.service.cancelCommitment(projectId, id, dto);
+  }
+}
+
+// ── Needs-your-action queue (P11 — §5.6) ───────────────────────────────────
+
+@ApiTags('delivery-plan: actions')
+@ApiBearerAuth()
+@Controller('projects/:projectId/actions')
+export class ActionsController {
+  constructor(private readonly service: DeliveryPlanService) {}
+
+  @Get()
+  @ApiOperation({ summary: 'Full staff-scoped needs-your-action queue for this project' })
+  async list(@Param('projectId') projectId: string, @CurrentUser() user: AuthedRequestUser) {
+    return this.service.getStaffActions(projectId, actorOf(user));
   }
 }
 
@@ -526,6 +645,32 @@ export class DeliveryPlanPortalController {
       user.userId,
       dto,
     );
+  }
+
+  @Get('plan/commitments')
+  @ApiOperation({
+    summary: "This client's 30-day plan commitments",
+    description: 'Served separately from GET .../plan so that response shape never changes.',
+  })
+  async commitments(@Param('projectId') projectId: string, @CurrentUser() user: AuthedRequestUser) {
+    return this.service.getPortalCommitments(this.requireClientId(user), projectId);
+  }
+
+  @Get('actions')
+  @ApiOperation({ summary: 'This client\'s full needs-your-action queue for one project' })
+  async actions(@Param('projectId') projectId: string, @CurrentUser() user: AuthedRequestUser) {
+    return this.service.getPortalActions(this.requireClientId(user), projectId);
+  }
+
+  @Get('actions/overview')
+  @ApiOperation({ summary: 'Capped needs-your-action summary (default 3 cards) with the true total count' })
+  async actionsOverview(
+    @Param('projectId') projectId: string,
+    @CurrentUser() user: AuthedRequestUser,
+    @Query('limit') limit?: string,
+  ) {
+    const parsed = limit ? Number.parseInt(limit, 10) : 3;
+    return this.service.getPortalActionsOverview(this.requireClientId(user), projectId, Number.isFinite(parsed) && parsed > 0 ? parsed : 3);
   }
 
   /**

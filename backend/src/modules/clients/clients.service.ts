@@ -42,6 +42,7 @@ import { GrowthExecutionService } from '../growth-execution/growth-execution.ser
 import { EntityAuditService } from '../entity-audit/entity-audit.service';
 import { BacklinksService } from '../backlinks/backlinks.service';
 import { FindingsService } from '../findings/findings.service';
+import { DeliveryPlanService } from '../delivery-plan/delivery-plan.service';
 import type { UserType } from '../auth/auth.types';
 import type {
   ClientDto,
@@ -83,6 +84,13 @@ export class ClientsService {
     private readonly entityAudit: EntityAuditService,
     private readonly backlinksService: BacklinksService,
     private readonly findingsService: FindingsService,
+    /**
+     * §3.4's delivery columns (delivery lead, plan progress, waiting on
+     * client) reuse DeliveryPlanService's own definitions rather than
+     * re-deriving them here, so the portfolio list and the per-project plan /
+     * action screens can never disagree.
+     */
+    private readonly deliveryPlan: DeliveryPlanService,
   ) {}
 
   // ─── Client CRUD ───────────────────────────────────────────────────
@@ -570,6 +578,24 @@ export class ClientsService {
         ? await this.prisma.gap.count({ where: { gapAnalysis: { projectId: { in: projectIds } }, status: 'open' } })
         : 0;
 
+    // §3.4's delivery columns. The most recent RELEASED report is fetched
+    // separately from `latestScore` above: that field reports the newest
+    // report row for the score readout, whereas "last report" is a delivery
+    // fact about what the client has actually been sent, so a draft must not
+    // appear here.
+    const [deliveryLeadName, planProgress, waitingOnClient, lastReleased] = await Promise.all([
+      this.deliveryPlan.getClientDeliveryLeadName(row.id),
+      this.deliveryPlan.getClientPlanProgress(row.id),
+      this.deliveryPlan.countWaitingOnClient(row.id),
+      projectIds.length > 0
+        ? this.prisma.report.findFirst({
+            where: { projectId: { in: projectIds }, status: 'released', releasedAt: { not: null } },
+            orderBy: { releasedAt: 'desc' },
+            select: { slug: true, releasedAt: true },
+          })
+        : Promise.resolve(null),
+    ]);
+
     return {
       ...this.toClientDto(row),
       projectCount: projects.length,
@@ -577,6 +603,13 @@ export class ClientsService {
       latestBand,
       openGapCount,
       hasProjectOnboarding: projects.some((p) => p.onboardingStatus === 'running'),
+      deliveryLeadName,
+      planProgress: { delivered: planProgress.delivered, committed: planProgress.committed },
+      overdueCommitments: planProgress.overdueCommitments,
+      waitingOnClient,
+      lastReport: lastReleased
+        ? { slug: lastReleased.slug, releasedAt: lastReleased.releasedAt?.toISOString() ?? null }
+        : null,
     };
   }
 

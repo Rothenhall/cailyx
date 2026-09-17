@@ -162,7 +162,7 @@ export default function AdminRubricsPage() {
   if (error?.kind === 'forbidden') {
     return (
       <div className="space-y-6">
-        <PageHeader title="Rubrics" />
+        <PageHeader title="Score settings" />
         <EmptyState
           variant="insufficient-role"
           restrictedAction="read or change scoring rubrics"
@@ -175,7 +175,7 @@ export default function AdminRubricsPage() {
   if (error) {
     return (
       <div className="space-y-6">
-        <PageHeader title="Rubrics" />
+        <PageHeader title="Score settings" />
         <ErrorState error={error} onRetry={() => void load()} />
       </div>
     );
@@ -194,7 +194,7 @@ export default function AdminRubricsPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Rubrics"
+        title="Score settings"
         context={
           active
             ? `Version ${active.version} is active. ${rubrics.length} version${rubrics.length === 1 ? '' : 's'} on record.`

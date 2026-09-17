@@ -10,12 +10,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ApprovalCard } from '@/components/patterns/ApprovalCard';
 import { EmptyState } from '@/components/patterns/EmptyState';
+import { artifactTypeLabel } from '@/lib/format';
 import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
 import { PageHeader } from '@/components/patterns/PageHeader';
 import { ScopeBanner } from '@/components/patterns/ScopeBanner';
 import { StatusPill, approvalDecisionTone } from '@/components/patterns/StatusPill';
 import { Timestamp } from '@/components/patterns/Timestamp';
-import { getPortalApproval, type ApprovalRequestDetail } from '@/services/approvals';
+import { getPortalApproval, type PortalApprovalRequestDetail } from '@/services/approvals';
 import { listPortalProjectSummaries, type PortalProjectSummary } from '@/services/portal';
 import type { ApprovalItem } from '@/types';
 
@@ -49,7 +50,7 @@ export default function ClientApprovalDetailPage() {
   const params = useParams<{ approvalId: string }>();
   const approvalId = params.approvalId;
 
-  const [request, setRequest] = useState<ApprovalRequestDetail | null>(null);
+  const [request, setRequest] = useState<PortalApprovalRequestDetail | null>(null);
   const [project, setProject] = useState<PortalProjectSummary | null>(null);
   const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
 
@@ -83,7 +84,7 @@ export default function ClientApprovalDetailPage() {
         <PageHeader title="Approval request" />
         {/* A request that is not this client's returns 404, the same as one that
             does not exist — so both render the same copy. */}
-        <ErrorState error={error} onRetry={() => void load()} notFoundReason="missing-or-private" />
+        <ErrorState error={error} onRetry={() => void load()} notFoundReason="missing-or-private" showServerMessage={false} />
       </div>
     );
   }
@@ -124,11 +125,11 @@ export default function ClientApprovalDetailPage() {
         title={request.title}
         context={
           <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span>{humanize(request.artifactType)}</span>
-            <span className="font-mono text-meta">
+            <span>{artifactTypeLabel(request.artifactType)}</span>
+            <span className="text-meta text-muted-foreground">
               {request.artifactRevision !== null
-                ? `revision ${request.artifactRevision}`
-                : 'version not recorded'}
+                ? `Version ${request.artifactRevision}`
+                : 'Version not recorded'}
             </span>
             {request.dueAt ? (
               <span>
@@ -161,7 +162,7 @@ export default function ClientApprovalDetailPage() {
           <AlertTitle>This request was superseded</AlertTitle>
           <AlertDescription>
             {request.invalidatedReason ??
-              'A newer version of this artifact was created after this request, so a decision on it would no longer apply.'}
+              'A newer version of this item was created after this request, so a decision on it would no longer apply.'}
             {request.invalidatedAt ? (
               <>
                 {' '}
@@ -186,12 +187,12 @@ export default function ClientApprovalDetailPage() {
             over and a new request is sent.
           </p>
           {request.revisionId ? (
-            <p className="font-mono text-meta text-muted-foreground">
-              Revision record: {request.revisionId}
+            <p className="text-meta text-muted-foreground">
+              Tied to the exact version that was sent to you.
             </p>
           ) : (
             <p className="text-meta text-muted-foreground">
-              No separate revision record was stored for this request.
+              This request was not recorded against a specific version.
             </p>
           )}
         </div>
@@ -205,7 +206,7 @@ export default function ClientApprovalDetailPage() {
         <CardContent className="space-y-3">
           <p className="whitespace-pre-wrap text-body">
             {request.detail ??
-              `Review this ${request.artifactType} and either approve it or ask for changes.`}
+              `Review this ${artifactTypeLabel(request.artifactType).toLowerCase()} and either approve it or ask for changes.`}
           </p>
 
           <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
@@ -230,20 +231,20 @@ export default function ClientApprovalDetailPage() {
               <p>
                 This request carries the version under review and its decision
                 history, but no field-level diff of what changed since the last
-                version, and no separate evidence bundle. Where the artifact
-                lives is below — that is where its content is.
+                version, and no separate evidence bundle. Where the item lives
+                is below — that is where its content is.
               </p>
               {artifactHref ? (
                 <p className="mt-2">
                   <Button asChild size="sm" variant="outline">
-                    <Link href={artifactHref}>Open the {request.artifactType}</Link>
+                    <Link href={artifactHref}>Open the {artifactTypeLabel(request.artifactType)}</Link>
                   </Button>
                 </p>
               ) : (
                 <p className="mt-2">
                   {request.artifactType === 'claim'
-                    ? 'A claim has no client-facing screen in this build, so its text is only available through the request above or by asking your delivery team.'
-                    : 'This artifact type has no client-facing screen in this build.'}
+                    ? 'Fact checks do not have their own screen yet, so the wording is only available through the request above or by asking your delivery team.'
+                    : 'This kind of item does not have its own screen yet, so its content is only available through the request above or by asking your delivery team.'}
                 </p>
               )}
             </AlertDescription>
@@ -408,18 +409,19 @@ function mapDecision(status: string): ApprovalItem['decision'] {
  * backend recorded none this says so — a fabricated "v1" is exactly what would
  * let somebody approve the wrong thing.
  */
-function toApprovalItem(request: ApprovalRequestDetail): ApprovalItem {
+function toApprovalItem(request: PortalApprovalRequestDetail): ApprovalItem {
   return {
     id: request.id,
     version:
       request.artifactRevision !== null
-        ? `${humanize(request.artifactType)} · revision ${request.artifactRevision}`
-        : `${humanize(request.artifactType)} · version not recorded`,
+        ? `${artifactTypeLabel(request.artifactType)} · version ${request.artifactRevision}`
+        : `${artifactTypeLabel(request.artifactType)} · version not recorded`,
     requestor: 'Your delivery team',
     reviewer: undefined,
     dueDate: request.dueAt ?? undefined,
     decisionRequested:
-      request.detail ?? `Review this ${request.artifactType} and either approve it or ask for changes.`,
+      request.detail ??
+        `Review this ${artifactTypeLabel(request.artifactType).toLowerCase()} and either approve it or ask for changes.`,
     delayConsequence: request.dueAt
       ? 'If this is not decided by the due date, the work it blocks may slip.'
       : 'No deadline has been set for this decision.',
@@ -427,6 +429,3 @@ function toApprovalItem(request: ApprovalRequestDetail): ApprovalItem {
   };
 }
 
-function humanize(value: string): string {
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}

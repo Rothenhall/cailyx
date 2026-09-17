@@ -68,6 +68,28 @@ export class ClientPortalController {
     return this.portal.getReport(this.clientId(req), slug);
   }
 
+  @Get('projects/:projectId/content')
+  @ApiOperation({ summary: 'This client\'s shared content for one project — only pieces with an explicitly shared revision (§13.5)' })
+  @ApiResponse({ status: 200, description: '{ items }' })
+  @ApiResponse({ status: 403, description: 'projectId does not belong to this client' })
+  async listContent(@Param('projectId') projectId: string, @Req() req: Request) {
+    return this.portal.listContent(this.clientId(req), projectId);
+  }
+
+  @Get('projects/:projectId/content/:assetId')
+  @ApiOperation({ summary: 'One shared content piece — the explicitly shared revision only, never the latest internal draft' })
+  @ApiResponse({ status: 404, description: 'Not found, wrong project, or never shared with this client' })
+  async getContent(@Param('projectId') projectId: string, @Param('assetId') assetId: string, @Req() req: Request) {
+    return this.portal.getContent(this.clientId(req), projectId, assetId);
+  }
+
+  @Get('projects/:projectId/writing-style')
+  @ApiOperation({ summary: 'This client\'s active confirmed writing style, read-only (§13.8)' })
+  @ApiResponse({ status: 403, description: 'projectId does not belong to this client' })
+  async getWritingStyle(@Param('projectId') projectId: string, @Req() req: Request) {
+    return this.portal.getWritingStyle(this.clientId(req), projectId);
+  }
+
   @Get('messages')
   @ApiOperation({ summary: 'This client\'s message thread with the operator' })
   @ApiResponse({ status: 200, description: '{ messages: PortalMessageDto[] }' })

@@ -211,7 +211,7 @@ export default function LeadDetailPage() {
         secondaryActions={
           <div className="flex gap-2">
             <Button variant="outline" size="sm" asChild>
-              <Link href={`/ops/projects/${projectId}`}>Open the project</Link>
+              <Link href={`/projects/${projectId}`}>Open the project</Link>
             </Button>
             <Button variant="outline" size="sm" onClick={() => void load()}>
               <RefreshCw aria-hidden="true" className="mr-2 h-4 w-4" />
@@ -338,7 +338,7 @@ export default function LeadDetailPage() {
                       ? {
                           action: {
                             label: 'Open the most recent scorecard',
-                            href: `/ops/projects/${projectId}/scorecards/${scorecards[0].id}`,
+                            href: `/projects/${projectId}/scorecards/${scorecards[0].id}`,
                           },
                         }
                       : {})}
@@ -383,7 +383,7 @@ export default function LeadDetailPage() {
                     {linkedScorecard.id === lead.scorecardRunId ? ' · linked to this lead' : ''}
                   </p>
                   <Button variant="outline" size="sm" asChild>
-                    <Link href={`/ops/projects/${projectId}/scorecards/${linkedScorecard.id}`}>
+                    <Link href={`/projects/${projectId}/scorecards/${linkedScorecard.id}`}>
                       Open the scorecard
                       <ArrowRight aria-hidden="true" className="ml-2 h-3.5 w-3.5" />
                     </Link>
@@ -432,7 +432,7 @@ export default function LeadDetailPage() {
                     />
                   </dl>
                   <Button variant="outline" size="sm" asChild>
-                    <Link href={`/ops/projects/${projectId}/qualification`}>
+                    <Link href={`/projects/${projectId}/qualification`}>
                       Open the qualification screen
                       <ArrowRight aria-hidden="true" className="ml-2 h-3.5 w-3.5" />
                     </Link>
@@ -450,7 +450,7 @@ export default function LeadDetailPage() {
                   layout="inline"
                   action={{
                     label: 'Open qualification',
-                    href: `/ops/projects/${projectId}/qualification`,
+                    href: `/projects/${projectId}/qualification`,
                   }}
                 />
               )}
@@ -474,7 +474,7 @@ export default function LeadDetailPage() {
                   layout="inline"
                   action={{
                     label: 'Open upgrades',
-                    href: `/ops/projects/${projectId}/upgrades`,
+                    href: `/projects/${projectId}/upgrades`,
                   }}
                 />
               ) : (
@@ -499,7 +499,7 @@ export default function LeadDetailPage() {
                 </ul>
               )}
               <Button variant="outline" size="sm" asChild>
-                <Link href={`/ops/projects/${projectId}/upgrades`}>
+                <Link href={`/projects/${projectId}/upgrades`}>
                   <Target aria-hidden="true" className="mr-2 h-3.5 w-3.5" />
                   Open the checkout ledger
                 </Link>

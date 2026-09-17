@@ -12,16 +12,16 @@ import { api, unwrap } from '@/lib/api';
  *
  * ## What is deliberately not in these types
  *
- * `toWorkItemDto(w, { includeInternal: false })` strips `internalNotes` — and
- * that is the only field it strips. The row still carries `assigneeId`,
- * `reviewerId`, `createdBy`, `estimateHours` and `actualHours`. Those are raw
- * user identifiers and internal effort figures, and design_plan §4.5's client
- * rules (and the G06 portal contract) keep operator identifiers and commercial
- * internals off the client surface. They are **absent from the interfaces
- * below**, so a screen cannot render one by accident: reading `item.assigneeId`
- * does not compile.
+ * `toPortalWorkItemDto` on the backend (`delivery-plan.service.ts`) is an
+ * explicit allowlist, not a row spread with fields subtracted: internal
+ * notes, hours, assignee/reviewer/creator ids, source/dependency ids, cycle
+ * linkage and the raw `category`/`discipline`/`priority` vocabulary never
+ * leave the server. They are **absent from the interfaces below**, so a
+ * screen cannot render one by accident: reading `item.assigneeId` or
+ * `item.dependsOn` does not compile.
  *
- * `Cycle.scopeChanges[].by` is left out for the same reason.
+ * `Cycle.scopeChanges[].by`/`added`/`removed` (actor and item ids) are left
+ * out for the same reason — only `reason` survives.
  *
  * @module services/portal-plan
  */
@@ -38,6 +38,9 @@ export type PortalWorkStatus =
 export type PortalCycleStatus = 'planning' | 'committed' | 'active' | 'review' | 'closed';
 export type PortalMilestoneStatus = 'planned' | 'at-risk' | 'met' | 'missed';
 
+/** Normalized, client-safe blocker category — never the raw operational text. */
+export type PortalBlockedReason = 'client-action' | 'approval' | 'dependency' | 'other';
+
 /**
  * One work item as the client may see it — `WorkItem` rows flagged
  * `clientVisible` only. An internal work item is never in this list, so there
@@ -46,50 +49,38 @@ export type PortalMilestoneStatus = 'planned' | 'at-risk' | 'met' | 'missed';
 export interface PortalWorkItem {
   id: string;
   projectId: string;
-  cycleId: string | null;
   title: string;
   /**
    * Implementation guidance, plus any evidence entries appended to it (see
-   * {@link splitWorkDescription}). Those entries embed the submitting user's
-   * id inside the text — the screen must render them through the parser, never
-   * raw.
+   * {@link splitWorkDescription}). The server already strips the submitting
+   * user's id out of these entries before this ever reaches the browser.
    */
   description: string | null;
-  category: string;
-  discipline: string;
   status: string;
-  priority: string;
-  dueAt: string | null;
-  sourceType: string | null;
-  sourceId: string | null;
-  /** Ids of work items this one waits on. */
-  dependsOn: string[];
-  blockedReason: string | null;
+  /** A coarser, verification-only view of `status`: "verified" | "pending" | "unverified". */
+  verifyState: string;
+  dueOn: string | null;
+  /** Client-facing "area of work" label (design_plan §4.3), or null when the
+   * underlying discipline has no mapped label. */
+  capabilityLabel: string | null;
   /** Free text: who/what the item is waiting on (a client-caused blocker is distinguished from an internal one). */
   blockedOn: string | null;
-  clientVisible: boolean;
-  createdAt: string;
-  updatedAt: string;
+  blockedReason: PortalBlockedReason | null;
 }
 
 /** One appended line of `Cycle.scopeChanges` — never rewritten after commit. */
 export interface PortalScopeChange {
   at: string;
   reason: string;
-  /** Ids added to the committed scope. Counts are rendered; ids are not. */
-  added: string[];
-  /** Ids removed from the committed scope. */
-  removed: string[];
+  requiresReconfirmation: boolean;
 }
 
 export interface PortalCycle {
   id: string;
-  projectId: string;
-  engagementId: string | null;
   name: string;
+  status: string;
   startsOn: string;
   endsOn: string;
-  status: string;
   goal: string | null;
   committedAt: string | null;
   /**
@@ -98,26 +89,18 @@ export interface PortalCycle {
    */
   committedCount: number;
   scopeChanges: PortalScopeChange[];
-  closedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-  /** Work items in this cycle with status `verified`. */
+  /** Work items in this cycle with status `verified` — a full-cycle aggregate,
+   * counting hidden/internal items too, not just the ones shared with this client. */
   deliveredCount: number;
-  /** Work items in this cycle that are not cancelled. */
+  /** Work items in this cycle that are not cancelled — same full-cycle aggregate. */
   currentCount: number;
 }
 
 export interface PortalMilestone {
   id: string;
-  projectId: string;
-  engagementId: string | null;
   title: string;
-  description: string | null;
-  dueAt: string | null;
+  dueOn: string | null;
   status: string;
-  clientVisible: boolean;
-  createdAt: string;
-  updatedAt: string;
 }
 
 /** The commercial container, in the reduced form the portal serves. */
@@ -126,9 +109,73 @@ export interface PortalEngagement {
   name: string;
   serviceTier: string;
   status: string;
-  timezone: string;
-  startsOn: string | null;
   endsOn: string | null;
+}
+
+/** P11 — a "plan commitment": what the team intends to accomplish in the
+ * period, distinct from a WorkItem (a step) and a content-schedule entry
+ * (when a piece publishes). Progress is always derived server-side from
+ * linked verified deliverables or a recorded outcome metric — never a
+ * fabricated percentage. */
+export type CommitmentStatus =
+  | 'draft'
+  | 'proposed'
+  | 'agreed'
+  | 'active'
+  | 'needs-attention'
+  | 'completed'
+  | 'closed'
+  | 'cancelled'
+  | 'superseded';
+
+export interface PortalCommitmentScopeChange {
+  at: string;
+  reason: string;
+  previousTarget: number | null;
+  newTarget: number | null;
+  previousDate: string | null;
+  newDate: string | null;
+  requiresReconfirmation: boolean;
+}
+
+export interface CommitmentProgress {
+  kind: 'countable' | 'outcome' | 'none';
+  verifiedCount: number;
+  linkedCount: number;
+  targetCount: number | null;
+  targetUnit: string | null;
+  /** Pre-formatted, e.g. "3 of 10 articles" — render this directly rather
+   * than computing a percentage from the parts. */
+  label: string;
+  outcomeMetricLabel: string | null;
+  outcomeMetricUnit: string | null;
+  outcomeMetricBaseline: number | null;
+  outcomeMetricTarget: number | null;
+  outcomeMetricCurrent: number | null;
+  outcomeMetricObservedAt: string | null;
+}
+
+export interface PortalActionSummary {
+  sourceType: 'approval-request' | 'onboarding-request' | 'review-task' | 'delivery-blocker';
+  sourceId: string;
+  title: string;
+  destination: string;
+}
+
+export interface PortalCommitment {
+  id: string;
+  cycleId: string;
+  title: string;
+  reason: string | null;
+  workstream: string;
+  status: CommitmentStatus;
+  progress: CommitmentProgress;
+  /** "Your Cailyx team" unless the lead deliberately opted to be named. */
+  accountableLead: string;
+  targetDate: string | null;
+  contentRef: string | null;
+  nextClientAction: PortalActionSummary | null;
+  scopeChanges: PortalCommitmentScopeChange[];
 }
 
 export interface PortalPlan {
@@ -137,6 +184,58 @@ export interface PortalPlan {
   cycles: PortalCycle[];
   milestones: PortalMilestone[];
   workItems: PortalWorkItem[];
+}
+
+/** Served from a separate route so `/plan`'s response shape never changes
+ * (an existing smoke test allowlists it exactly). */
+export async function getPortalCommitments(projectId: string, options?: { signal?: AbortSignal }) {
+  const payload = await api.get<{ commitments: PortalCommitment[] }>(
+    `/portal/projects/${encodeURIComponent(projectId)}/plan/commitments`,
+    options,
+  );
+  return unwrap<PortalCommitment[]>(payload, 'commitments');
+}
+
+/** §5.6 needs-your-action queue, client-scoped to one project. Derived
+ * server-side from source records (approvals, onboarding requests) — never a
+ * duplicate task row, and an item disappears when its source resolves. */
+export interface PortalActionItem {
+  sourceType: 'approval-request' | 'onboarding-request' | 'review-task' | 'delivery-blocker';
+  sourceId: string;
+  audience: 'client' | 'staff';
+  eligibleActorId: string | null;
+  title: string;
+  reason: string;
+  deadline: string | null;
+  severity: 'overdue' | 'blocking' | 'normal';
+  projectId: string;
+  destination: string;
+  currentVersion: string;
+  completionCondition: string;
+  createdAt: string;
+}
+
+export interface PortalActionQueue {
+  items: PortalActionItem[];
+  total: number;
+}
+
+export async function getPortalActionsOverview(
+  projectId: string,
+  options?: { signal?: AbortSignal; limit?: number },
+) {
+  const limit = options?.limit ?? 3;
+  return api.get<PortalActionQueue>(
+    `/portal/projects/${encodeURIComponent(projectId)}/actions/overview?limit=${limit}`,
+    { signal: options?.signal },
+  );
+}
+
+export async function getPortalActions(projectId: string, options?: { signal?: AbortSignal }) {
+  return api.get<PortalActionQueue>(
+    `/portal/projects/${encodeURIComponent(projectId)}/actions`,
+    options,
+  );
 }
 
 export async function getPortalPlan(projectId: string, options?: { signal?: AbortSignal }) {
@@ -189,44 +288,37 @@ export interface ParsedWorkDescription {
   guidance: string;
   /** Evidence entries, newest last (they are appended in order). */
   entries: WorkDescriptionEntry[];
-  /**
-   * True when at least one entry carried a `by <user id>` token that was
-   * dropped. The screen says so in words rather than silently editing the
-   * server's text.
-   */
-  redactedActor: boolean;
 }
 
 /**
  * Splits a portal work item's `description` into guidance and evidence entries.
  *
  * `DeliveryPlanService.formatEvidenceEntry` writes entries as
- * `[<label> <iso timestamp> by <actorId>] <note> — <url>`, and `actorId` is a
- * raw `User.id` — an operator or a client user identifier that §4.5 keeps off
- * the client surface. The portal projection does not strip it, so this parser
- * is where it is removed, and it reports that it removed something so the
- * screen can disclose the edit instead of quietly rewriting the field.
+ * `[<label> <iso timestamp> by <actorId>] <note> — <url>`, but the portal
+ * projection's `toPortalText` strips the `by <actorId>` token server-side
+ * before the response is ever built — a raw `User.id` must never reach the
+ * client. What arrives here is always the already-redacted
+ * `[<label> <iso timestamp>] <note> — <url>` form, so this parser matches
+ * that shape directly rather than removing anything itself.
  *
  * Everything that is not an entry line is returned untouched as guidance.
  */
 export function splitWorkDescription(description: string | null | undefined): ParsedWorkDescription {
   const text = (description ?? '').trim();
-  if (!text) return { guidance: '', entries: [], redactedActor: false };
+  if (!text) return { guidance: '', entries: [] };
 
   const chunks = text.split(/\n{2,}/);
   const guidanceParts: string[] = [];
   const entries: WorkDescriptionEntry[] = [];
-  let redactedActor = false;
 
   for (const chunk of chunks) {
-    const match = /^\[(?<label>[^\]]*?)\s+(?<at>\d{4}-\d{2}-\d{2}T[\d:+.]+Z?)\s+by\s+(?<actor>[^\]]+)\]\s*(?<rest>[\s\S]*)$/.exec(
+    const match = /^\[(?<label>[^\]]*?)\s+(?<at>\d{4}-\d{2}-\d{2}T[\d:.]+Z)\]\s*(?<rest>[\s\S]*)$/.exec(
       chunk.trim(),
     );
     if (!match?.groups) {
       guidanceParts.push(chunk.trim());
       continue;
     }
-    redactedActor = true;
     const rest = (match.groups.rest ?? '').trim();
     const urlMatch = /(https?:\/\/\S+)\s*$/.exec(rest);
     const sourceUrl = urlMatch ? urlMatch[1] : null;
@@ -241,5 +333,5 @@ export function splitWorkDescription(description: string | null | undefined): Pa
     });
   }
 
-  return { guidance: guidanceParts.join('\n\n').trim(), entries, redactedActor };
+  return { guidance: guidanceParts.join('\n\n').trim(), entries };
 }
