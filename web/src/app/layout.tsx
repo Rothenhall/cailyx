@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { FeedbackProvider } from '@fasterfixes/react';
 import { Toaster } from '@/components/ui/sonner';
 import './globals.css';
 
@@ -24,7 +25,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <a href="#main" className="skip-link">
           Skip to main content
         </a>
-        {children}
+        {/* Feedback widget. Wraps only the page content so the skip link stays
+            the first focusable element and the toaster keeps its own layer. */}
+        <FeedbackProvider projectId="proj_86a1389afe7b24b311188627">
+          {children}
+        </FeedbackProvider>
         <Toaster position="bottom-right" />
       </body>
     </html>
