@@ -9,6 +9,65 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-20 — Rothenhall brand applied to the Cailyx web app
+
+The Rothenhall Partners Brand Kit **v1.1.0** (`Brand/tokens/brand.css`) is now the
+source of Cailyx's visual values. `design_plan.md` §3.1 keeps ownership of the token
+*roles*; the kit supplies what they resolve to. Neo-classical editorial replaces the
+cool blue workspace: warm paper `#f7f3ea`, ink `#1a1712`, brass and cognac accents,
+Jost over Instrument Sans, and 2px corners with pill controls in place of 8/12/16.
+
+**One file carried the theme.** `web/` was already token-driven — 262 source files
+contain exactly one raw hex (an input placeholder) and zero `bg-white`/`text-black`
+bypasses, and Recharts reads the same CSS variables through `charts/tokens.ts`, so
+charts and reports re-skinned themselves. The kit's `tailwind-theme.css` could not be
+pasted in: it is a Tailwind v4 `@theme` block and `web/` is v3.4 with different
+utility names, so brand primitives were mapped onto §3.1's roles instead. Triplets
+are written to one decimal because integer rounding moves `#f7f3ea` to `#f7f2e9`;
+every token round-trips to its source hex and carries it in a comment.
+
+**Three deviations, each measured rather than copied.** The kit's `cognac-soft` focus
+ring is 2.97:1 on canvas, under the 3:1 non-text floor, so `--ring` takes
+`cognac-deep` (6.14:1). `line-strong` at 1.63:1 cannot carry an input boundary, so
+`--border-strong` takes `ink-45` (3.68:1) — which §3.1 already asked for and the kit
+itself sanctions by labelling `line` "decorative only, never the sole affordance".
+And lining tabular figures stay global: the kit's `onum` old-style figures are a
+legibility cost in a table of measurements. Status colours keep their functional
+hues, because the kit specifies only an alert colour and these four carry verdicts a
+client acts on; `danger` does move to the kit's `#9d3b2f`.
+
+**A latent bug surfaced on the way.** All 25 opacity-modifier classes in `web/src`
+were compiling to nothing — an `hsl(var(--x))` mapping cannot take a `/30` modifier
+in Tailwind v3 without the `<alpha-value>` placeholder. Every tinted status border
+(`border-danger/30`, `border-warning/40`), every alpha hover state, and the old
+button's `hover:bg-primary/90` have been silently absent until all 45 mappings were
+rewritten as `hsl(var(--x) / <alpha-value>)`. The new modal scrim is what exposed it:
+`bg-night/80` rendered no background at all.
+
+**Identity rule closed.** The kit requires that Cailyx never appear without
+Rothenhall in the same view; no surface previously mentioned Rothenhall. An
+`AppShell` `Wordmark` now carries "A Rothenhall product" in the desktop nav and the
+mobile drawer, `PublicShell`'s footer credits Rothenhall with a link, and the sign-in
+page — which owns its own wordmark — carries the credit in both its form and its
+Suspense fallback.
+
+Verified: `npx tsc --noEmit` clean; `npm run build` clean, with `next/font`
+self-hosting both faces; and in Chrome via Playwright, computed body background
+`rgb(247,243,234)` = `#f7f3ea` exactly, headings `Jost`, body `Instrument Sans`,
+primary button `rgb(26,23,18)` at `border-radius: 9999px`, cards `2px`, both faces
+present in `document.fonts`. Every text pairing measures AA (16.14:1 body text down
+to 5.4:1 warning on its fill). Analysis: `docs/analysis/rothenhall-brand.md`.
+
+Left for later: heading weight renders 600 where components set `font-semibold`
+against the kit's Jost 400 (a component sweep, not a token change); `web/` still has
+no `public/` directory or favicon, blocked on the kit having no SVG of any mark;
+`/ops` and `/client` were not visually verified because the local schema is freshly
+pushed and empty; G20's `primaryColor` is still stored but never applied to the DOM;
+and nothing yet enforces that these triplets keep matching the kit, whose own
+governance notes its token files do not auto-sync.
+
+---
+
 ## 2026-09-17 — P15: Overview / Results / report adoption
 
 `platform_improvement_plan.md` §5.1, §5.5–§5.7, §14.5–§14.6 and the P15 row of

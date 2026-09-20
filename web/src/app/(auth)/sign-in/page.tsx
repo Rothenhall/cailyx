@@ -40,6 +40,7 @@ function SignInFallback() {
     <div className="flex min-h-screen items-center justify-center bg-canvas px-4 py-12">
       <div className="w-full max-w-sm">
         <div className="text-subsection font-semibold tracking-tight">Cailyx</div>
+        <div className="mt-1 text-meta text-muted-foreground">A Rothenhall product</div>
         <div className="mt-6 h-8 w-32 animate-pulse rounded-md bg-surface-sunken" />
         <div className="mt-6 space-y-4">
           <div className="h-16 animate-pulse rounded-md bg-surface-sunken" />
@@ -124,6 +125,18 @@ function SignInForm() {
       <div className="w-full max-w-sm">
         <div className="mb-8">
           <div className="text-subsection font-semibold tracking-tight">Cailyx</div>
+          {/* Brand kit identity rule: Cailyx never appears without Rothenhall in
+              the same view. This page owns its own wordmark, so it carries the
+              credit too. */}
+          <div className="mt-1 text-meta text-muted-foreground">
+            A Rothenhall product ·{' '}
+            <Link
+              href="https://rothenhall.com"
+              className="text-link underline-offset-4 hover:underline"
+            >
+              rothenhall.com
+            </Link>
+          </div>
           <h1 className="mt-6 text-title font-semibold tracking-tight">Sign in</h1>
           <p className="mt-1.5 text-table text-muted-foreground">
             Search and AI-answer visibility for your clients.

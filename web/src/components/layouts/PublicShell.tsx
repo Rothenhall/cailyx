@@ -43,9 +43,23 @@ export function PublicShell({ contextLabel, children }: PublicShellProps) {
         {children}
       </main>
       <footer className="border-t border-border py-6">
-        <div className="mx-auto max-w-content px-4 text-meta text-muted-foreground sm:px-6">
-          This page shows a snapshot taken when it was published. Figures it
-          contains are not updated after that date.
+        <div className="mx-auto max-w-content space-y-1 px-4 text-meta text-muted-foreground sm:px-6">
+          <p>
+            This page shows a snapshot taken when it was published. Figures it
+            contains are not updated after that date.
+          </p>
+          {/* Brand kit identity rule: Cailyx never appears without Rothenhall in
+              the same view, at minimum in the footer. */}
+          <p>
+            Cailyx is built and run by{' '}
+            <Link
+              href="https://rothenhall.com"
+              className="text-link underline-offset-4 hover:underline"
+            >
+              Rothenhall
+            </Link>
+            .
+          </p>
         </div>
       </footer>
     </div>

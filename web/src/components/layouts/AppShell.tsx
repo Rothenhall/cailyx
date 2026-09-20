@@ -45,6 +45,29 @@ export interface AppShellProps {
   children: React.ReactNode;
 }
 
+/**
+ * The wordmark plus its parent credit.
+ *
+ * Rothenhall brand kit v1.1.0, identity rule: "Cailyx never appears without
+ * Rothenhall in the same view, at minimum in the footer." The nav column is
+ * present in every signed-in view, so it carries the attribution rather than
+ * asking each page for a footer. Naming follows the kit: Cailyx with a capital
+ * C and no article, Rothenhall one word with capitals R and H.
+ */
+function Wordmark({ href }: { href: string }) {
+  return (
+    <Link
+      href={href}
+      className="flex h-topbar flex-col justify-center gap-0.5 border-b border-border px-5"
+    >
+      <span className="text-subsection font-semibold tracking-tight">Cailyx</span>
+      <span className="text-meta font-normal text-muted-foreground">
+        A Rothenhall product
+      </span>
+    </Link>
+  );
+}
+
 export function AppShell({
   sections,
   topbarStart,
@@ -73,12 +96,7 @@ export function AppShell({
         {/* Fixed desktop navigation, hidden below the wide breakpoint. */}
         <aside className="hidden w-nav shrink-0 border-r border-border bg-surface min-[1200px]:block">
           <div className="sticky top-0 h-screen overflow-y-auto">
-            <Link
-              href={brandHref}
-              className="flex h-topbar items-center border-b border-border px-5 text-subsection font-semibold tracking-tight"
-            >
-              Cailyx
-            </Link>
+            <Wordmark href={brandHref} />
             {nav}
           </div>
         </aside>
@@ -101,6 +119,11 @@ export function AppShell({
                 <SheetTitle className="flex h-topbar items-center border-b border-border px-5 text-subsection font-semibold">
                   Cailyx
                 </SheetTitle>
+                {/* Same identity rule as the desktop wordmark: the drawer is a
+                    view where Cailyx appears on its own. */}
+                <p className="border-b border-border px-5 py-2 text-meta text-muted-foreground">
+                  A Rothenhall product
+                </p>
                 {nav}
               </SheetContent>
             </Sheet>

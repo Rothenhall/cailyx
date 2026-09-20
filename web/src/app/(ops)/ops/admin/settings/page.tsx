@@ -429,7 +429,7 @@ export default function AdminSettingsPage() {
               <Label htmlFor="org-settings-primaryColor">Primary colour</Label>
               <Input
                 id="org-settings-primaryColor"
-                placeholder="#2449C7"
+                placeholder="#8a4a26"
                 value={draft.primaryColor}
                 onChange={(event) =>
                   setDraft({ ...draft, primaryColor: event.target.value })

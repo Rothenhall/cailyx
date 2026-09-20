@@ -26,3 +26,6 @@ Thumbs.db
 # Redis snapshot written to the repo root when a local redis-server is
 # started here; a dev artifact, never source.
 dump.rdb
+
+# Throwaway theme screenshots (not source)
+brand-theme-preview/

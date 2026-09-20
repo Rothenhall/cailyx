@@ -3,81 +3,139 @@
 @tailwind utilities;
 
 /**
- * design_plan.md §3.1 visual tokens.
+ * Cailyx visual tokens.
+ *
+ * Two layers live in this file, and only in this file:
+ *
+ *   1. design_plan.md §3.1's token table, which defines the ROLES (canvas,
+ *      surface, foreground, primary, success/warning/danger/info/unmeasured).
+ *   2. The Rothenhall Partners brand kit v1.1.0, which defines the VALUES.
+ *      Source: `Brand/tokens/brand.css` (`--rh-*`), itself a mirror of
+ *      `millbrook/src/styles.css`'s `@theme` block. Per the kit's own
+ *      precedence rule, the website stylesheet wins if the two ever disagree.
  *
  * Values are HSL triplets (no `hsl()` wrapper) so Tailwind can compose them
- * with an alpha channel. The plan's table gives hex; the conversions are
- * noted alongside each token so the source value stays auditable.
+ * with an alpha channel — `web/tailwind.config.ts` maps every colour as
+ * `hsl(var(--token))`. The kit publishes hex, so each triplet below carries
+ * its source hex in a comment. They are written to one decimal place because
+ * integer rounding of H/S/L shifts the resulting hex by ±1 per channel.
  *
- * §3.1 defers dark mode explicitly: "Dark mode can follow after the core
- * experience; initial design must work without it." Only the light theme is
- * defined here. The token indirection is what will make adding it later a
- * change to this file rather than to every component.
+ * Cailyx is Tailwind v3, so the kit's `tokens/tailwind-theme.css` `@theme`
+ * block cannot simply be pasted in — it is a v4 construct, and adopting its
+ * utility names would rename every class the app already uses. Mapping the
+ * brand primitives onto the existing role tokens is what keeps 262 source
+ * files untouched.
+ *
+ * Components must still never write a raw hex value: that discipline is what
+ * makes this the only file a re-skin needs, and what keeps a future G20
+ * per-organisation override possible without touching component source.
  */
 
 @layer base {
   :root {
-    /* Canvas #F5F7FA */
-    --canvas: 214 33% 97%;
-    /* Surface #FFFFFF */
-    --surface: 0 0% 100%;
-    --surface-raised: 0 0% 100%;
-    /* A slightly recessed fill for table headers and inset panels. */
-    --surface-sunken: 214 30% 95%;
+    /* Paper & ink — kit --rh-canvas / --rh-canvas-2 / --rh-paper */
+    --canvas: 41.5 44.8% 94.3%; /* #f7f3ea */
+    --surface: 45 50% 96.9%; /* #fbf9f3 */
+    /* The kit's lightest surface is paper, already the DEFAULT surface here,
+       so "raised" stays pure white for overlays that must read above it. */
+    --surface-raised: 0 0% 100%; /* #ffffff */
+    /* Recessed fill for table headers and inset panels — kit canvas-2. */
+    --surface-sunken: 41.1 37.3% 90%; /* #efe9dc */
 
-    /* Main text #172033 */
-    --foreground: 220 38% 15%;
-    /* Secondary text #526075 */
-    --muted-foreground: 215 18% 39%;
-    --muted: 214 30% 95%;
+    /* Main text ink, secondary ink-60. The kit's ink-45 measures 3.68:1 on
+       canvas and is marked "large type only", so muted copy stays on ink-60
+       (6.58:1) and never drops to ink-45. */
+    --foreground: 37.5 18.2% 8.6%; /* #1a1712 */
+    --muted-foreground: 42 12.2% 32.2%; /* #5c5648 */
+    --muted: 41.1 37.3% 90%; /* #efe9dc */
 
-    /* Borders #DCE3EC */
-    --border: 213 27% 89%;
-    /* §3.1: "use stronger contrast for essential input boundaries" */
-    --border-strong: 214 20% 76%;
+    /* Hairlines — kit --rh-line, 1.32:1 on canvas. The kit labels it
+       "decorative only, never the sole affordance", which is why the input
+       boundary below takes a stronger value instead of this one. */
+    --border: 40.8 26.9% 81.8%; /* #ddd5c4 */
+    /* §3.1: "use stronger contrast for essential input boundaries".
+       Kit line-strong is 1.63:1 against canvas, under the 3:1 non-text floor
+       for a control boundary, so this role takes ink-45 at 3.68:1 — a
+       kit-approved colour used in a role the kit does not itself specify. */
+    --border-strong: 40.8 10.4% 47.3%; /* #857d6c */
 
-    /* Primary action #2449C7 */
-    --primary: 224 69% 46%;
-    --primary-hover: 224 69% 39%;
-    --primary-foreground: 0 0% 100%;
-    --primary-subtle: 224 70% 96%;
+    /* Primary action. The kit renders the primary button as ink on paper with
+       a brass-deep hover (millbrook/src/styles.css, `.btn-primary`); cognac is
+       reserved as the single spotlight accent. "One accent per moment." */
+    --primary: 37.5 18.2% 8.6%; /* #1a1712 */
+    --primary-hover: 37.1 37.8% 35.3%; /* #7c6238 */
+    --primary-foreground: 41.5 44.8% 94.3%; /* #f7f3ea */
+    /* The kit defines no pale primary fill; canvas-2 is its panel tone. */
+    --primary-subtle: 41.1 37.3% 90%; /* #efe9dc */
 
-    /* Success #176B46 with pale green fill */
-    --success: 158 65% 25%;
-    --success-foreground: 158 65% 20%;
-    --success-subtle: 152 52% 94%;
+    /* Status hues are NOT in the brand kit, which specifies only an alert
+       colour. Cailyx's success/warning/info/unmeasured carry data meaning — a
+       verdict a client acts on — so they keep functional hues rather than
+       being derived from a warm palette, and every pairing is measured AA. */
+    --success: 153.6 64.6% 25.5%; /* #176b46 */
+    --success-foreground: 153.6 64.6% 25.5%; /* #176b46 */
+    --success-subtle: 144 31.3% 93.7%; /* #eaf4ee */
 
-    /* Warning #855A00 with pale amber fill */
-    --warning: 41 100% 26%;
-    --warning-foreground: 41 100% 22%;
-    --warning-subtle: 45 90% 94%;
+    --warning: 40.6 100% 26.1%; /* #855a00 */
+    --warning-foreground: 40.6 100% 26.1%; /* #855a00 */
+    --warning-subtle: 41.8 80.5% 92%; /* #fbf1da */
 
-    /* Error / risk #AD2838 with pale red fill */
-    --danger: 353 62% 42%;
-    --danger-foreground: 353 62% 36%;
-    --danger-subtle: 353 75% 96%;
+    /* Error/risk takes the kit's single red, chosen to sit in the cognac
+       family so it "never reads as a stock UI danger". */
+    --danger: 6.5 53.9% 40%; /* #9d3b2f */
+    --danger-foreground: 6.5 53.9% 40%; /* #9d3b2f */
+    --danger-subtle: 22.1 42.2% 91.2%; /* #f2e6df — alert at 10% over paper */
 
-    /* Informational */
-    --info: 214 84% 42%;
-    --info-foreground: 214 84% 34%;
-    --info-subtle: 214 85% 96%;
+    /* Informational takes brass-deep, the kit's quiet accent, so warm-on-warm
+       information no longer reads as a link. Its foreground is ink-80 (9.88:1
+       on the fill) rather than brass itself, for the same reason. */
+    --info: 37.1 37.8% 35.3%; /* #7c6238 */
+    --info-foreground: 38.6 13.7% 20%; /* #3a352c */
+    --info-subtle: 40 33.3% 89.4%; /* #ede7db — brass at 14% over paper */
 
-    /* Unmeasured — neutral gray. NOT a pass and NOT a failure. */
-    --unmeasured: 215 14% 50%;
-    --unmeasured-foreground: 215 16% 38%;
-    --unmeasured-subtle: 214 20% 96%;
+    /* Unmeasured — neutral warm. NOT a pass and NOT a failure. The indicator
+       may be ink-45; its text is ink-60, because ink-45 fails AA at body. */
+    --unmeasured: 40.8 10.4% 47.3%; /* #857d6c */
+    --unmeasured-foreground: 42 12.2% 32.2%; /* #5c5648 */
+    --unmeasured-subtle: 41.1 37.3% 90%; /* #efe9dc */
 
-    --ring: 224 69% 46%;
-    --shadow: 220 38% 15%;
+    /* Focus ring. The kit's global rule uses cognac-soft, which measures
+       2.97:1 against canvas — just under the 3:1 non-text floor for a focus
+       indicator. Cailyx takes cognac-deep (6.14:1), the same hue one step
+       deeper, so keyboard focus stays legible without leaving the brand. */
+    --ring: 21.6 56.8% 34.5%; /* #8a4a26 */
+    --shadow: 37.5 18.2% 8.6%; /* #1a1712 */
 
-    /* §3.1: 8 inputs, 12 cards, 16 dialogs */
-    --radius-input: 8px;
-    --radius-card: 12px;
-    --radius-dialog: 16px;
+    /* Links need their own role now that --primary is an ink button fill
+       rather than a blue accent. cognac-deep is the kit's readable form of the
+       spotlight accent (6.14:1 on canvas); plain cognac is 4.47:1 and the kit
+       restricts it to large text, so it stays a highlight colour and never a
+       run of link copy. */
+    --link: 21.6 56.8% 34.5%; /* #8a4a26 */
 
-    /* §3.1: system sans-serif initially; system monospace for raw evidence */
-    --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
-      'Helvetica Neue', Arial, sans-serif;
+    /* Night — the kit's dark bands. Cailyx uses it for modal scrims, replacing
+       the previous bg-black, and for any deliberately dark surface. */
+    --night: 42.9 21.2% 6.5%; /* #14120d */
+    --night-2: 38.2 20.8% 10.4%; /* #201c15 */
+    --night-line: 46.4 26.2% 16.5%; /* #35301f */
+
+    /* Neo-classical editorial: crisp 2px corners, pills only for controls.
+       §3.1's 8/12/16 was a softer system; the kit is deliberately flatter.
+       Buttons opt into the pill in components/ui/button.tsx. */
+    --radius-input: 2px;
+    --radius-card: 2px;
+    --radius-dialog: 4px;
+
+    /* Jost (display) over Instrument Sans (body), both variable with roman
+     * and italic, loaded by next/font in app/layout.tsx. The kit retired
+     * Poppins and Inter because a second geometric sans rhymed with the
+     * display face — do not substitute either. The system fallbacks keep the
+     * app rendering if a font request ever fails.
+     */
+    --font-sans: var(--font-instrument-sans), ui-sans-serif, system-ui,
+      -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --font-display: var(--font-jost), ui-sans-serif, system-ui, -apple-system,
+      'Segoe UI', sans-serif;
     --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
       'Liberation Mono', monospace;
   }
@@ -86,11 +144,39 @@
     @apply border-border;
   }
 
+  html {
+    /* The sticky top bar is 64px (--spacing-topbar). Set once, globally, so no
+       section needs its own scroll-mt. */
+    scroll-padding-top: 4.5rem;
+  }
+
   body {
     @apply bg-canvas text-foreground font-sans text-body antialiased;
     /* §3.1: tabular numerals for metrics. Applied globally so a number never
-       shifts width between polling updates. */
+       shifts width between polling updates.
+       Deliberate deviation: the kit asks for `onum` (old-style figures) in
+       prose. Cailyx renders measurements, dates and deltas, where digits of
+       varying height are a legibility cost, so lining tabular figures stay. */
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Display face on real headings — Jost at weight 400 with the kit's tight
+     negative tracking (display-md: -0.012em, lh 1.06) and balanced wrapping.
+     KPI numerals deliberately stay in the body face: they are read as data. */
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-display;
+    font-weight: 400;
+    letter-spacing: -0.012em;
+    line-height: 1.1;
+    text-wrap: balance;
+  }
+
+  ::selection {
+    background: #9a7a4a; /* kit --rh-brass */
+    color: #fff;
   }
 
   /* §3.4: visible focus for every interactive element. */
@@ -122,6 +208,15 @@
   /* §3.4: a horizontally scrolling table must be a labeled, focusable region. */
   .table-scroll-region {
     @apply overflow-x-auto focus-visible:outline-none;
+  }
+
+  /* The kit's eyebrow — the label that opens a Rothenhall section:
+     Instrument Sans medium, 0.7rem, uppercase, 0.24em, brass-deep. */
+  .eyebrow {
+    @apply font-sans font-medium uppercase text-info;
+    font-size: 0.7rem;
+    letter-spacing: 0.24em;
+    line-height: 1.45;
   }
 }
 
