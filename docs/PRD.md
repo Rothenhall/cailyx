@@ -133,9 +133,13 @@ Rothenhall delivery and sales. Runs diagnostics in bulk for outbound, reviews fi
 
 #### The admin
 
-Configures scoring weights, query-set templates, surfaces, branding, pricing, and claims-discipline rules. Owns methodology.
+Configures scoring weights, query-set templates, surfaces, branding, pricing, and claims-discipline rules. Owns methodology. Also runs client lifecycle (create, invite, plan, suspend) and engagement/timeline authoring. As of 2026-09-20, admin and operator are a deliberately simple two-tier permission model — the auth system's other named roles (delivery-lead, content, technical, outreach, sales) exist as labels but are not yet permission-differentiated.
 
-A later persona is the white-label partner: an agency that runs the engine under its own brand. Architecture should not preclude multi-tenant branding.
+#### The client
+
+A paying, onboarded Rothenhall customer with portal access — distinct from the prospect above, who has not yet converted. Signs in only via an admin-issued invite (no public self-serve signup). Sees their AI Visibility Score and reports, an engagement timeline with items needing their approval, a message thread with their operator, and their own billing/plan. Can invite their own teammates as additional seats. Does not self-serve the deep diagnostic/remediation work — that stays operator-run, per the site's own "Rothenhall sets up your workspace on onboarding" positioning. See `docs/analysis/client-portal.md` for the full decided scope and current build state.
+
+White-labeling (a partner agency running the engine under its own brand) was considered and deliberately dropped on 2026-09-20 in favor of a single-tenant, Rothenhall-branded design — see §17.
 
 ## 05 Core concepts (domain model)
 
@@ -567,11 +571,11 @@ Sequence for build order, not feature-gating. Each phase is shippable and each e
 
 - Headless fidelity mode: build it now for exact-surface capture, or defer and rely on APIs plus SERP providers?
 
-- Self-serve public free tier from day one, or operator-only outbound first to protect quality and cost?
+- Self-serve public free tier from day one, or operator-only outbound first to protect quality and cost? **Resolved 2026-09-20 for the main Cailyx app: operator/admin-only, no public self-serve signup** — see `docs/analysis/client-portal.md` §0. This does not resolve the separate question of whether the free `scorecard` diagnostic funnel itself should be public — that funnel is explicitly out of scope of and disconnected from the authenticated app, and its own public-vs-operator-only status remains open (tracked in `docs/MODULES-STATUS.md` §5 item 6).
 
-- Product name: Beacon, or something else. Trademark and domain check needed.
+- ~~Product name: Beacon, or something else. Trademark and domain check needed.~~ **Resolved 2026-09-20: Cailyx is final.**
 
-- White-label: in the core data model now, or a later concern?
+- ~~White-label: in the core data model now, or a later concern?~~ **Resolved 2026-09-20: dropped.** Single-tenant, Rothenhall-branded design only.
 
 - Cost ceiling per free run, and the abuse model for the public form.
 

@@ -102,6 +102,27 @@ Verification for the five documented phases: `backend/smoke/keyword-gaps.smoke.s
 `target-markets.smoke.sh`. **None was re-run during the documentation pass** —
 they are cited as the exit gates that exist, not as a pass claimed here.
 
+### 1.2h Built — client/admin platform layer (never previously tracked in this file)
+
+> These modules were built directly from verbal asks ("we should be able to create clients and
+> see their status/progress") rather than through the Wave process above, and were never added
+> to this file. `docs/analysis/client-portal.md` (rewritten 2026-09-20) is now the accurate
+> spec: it documents what each module below actually does, what decisions were made
+> 2026-09-20 about client/admin scope going forward, and the one real gap (§10 of that doc: a
+> richer engagement/timeline model, not yet built). Each module's own README also states,
+> explicitly, that it bypassed the original `client-portal.md` v0.1 draft's larger plan
+> (multi-seat `Account`, `Engagement`/`Phase`/`Milestone`/`Approval`).
+
+| Module | What it does | Status |
+|---|---|---|
+| `clients` | Admin CRUD for clients + projects, the Day-1 onboarding pipeline orchestrator, client-login creation (temp-password variant), operator-side message thread | ✅ Built 2026-09-13 |
+| `client-access` | Client seats + 7-day single-use invite links (public accept-and-set-password), plus the client-scoped delegated-Google-access surface | ✅ Built (HTTP layer 2026-09-16; services pre-existing) |
+| `client-portal` | The client-facing read surface: own projects/status, own reports, message thread | ✅ Built 2026-09-13 |
+| `organization` | Branding/layout-as-a-pinned-fact for published documents; enforces "no public share links" server-side, not just in the UI | ✅ Built |
+| `billing` | Real signature-verified Stripe webhook billing: offers, entitlements, subscriptions, ledger, plus public diagnostic-intake and scorecard-CTA capture | ✅ Built |
+| `users` | Admin-only operator account CRUD (login/registration/refresh stay in `auth`) | ✅ Built 2026-08-30, e2e 17/17 |
+| `operations` | Operator-only portfolio surface: overview counts, per-client health, paginated work/report/lead lists, saved views | ✅ HTTP layer built 2026-09-16 (service pre-existing) |
+
 ### 1.3 Not started (required by PRD / PLAN)
 
 Individual frontend feature UIs beyond the shell (query-set builder, measurement runs, reports with react-pdf, swarm-layer UIs, etc.) — each lands with its module's UI work in `PLAN.md` §3.2 order. No backend module from the PRD/PLAN remains unbuilt.
@@ -217,8 +238,8 @@ Copied from `AGENTS.md`, non-negotiable before starting the next module:
 | 6 | Self-serve public scorecard vs operator-only first, free-run cost ceiling, abuse model | Wave 5 `scorecard` | PRD §17 |
 | 7 | CRM: internal pipeline vs Attio/HubSpot; email: Postmark vs Resend | Wave 5 `delivery` | PRD §11 |
 | 8 | Deployment target (Vercel + Railway/Render/Fly.io assumed, unconfirmed) | all waves at deploy time | PLAN §6.5 |
-| 9 | Product name: PRD still says "working name Beacon", repo and all module docs say Cailyx. Confirm Cailyx is final so reports/branding are consistent | `reporting`, `scorecard` | PRD header |
-| 10 | White-label branding in the data model now or later | `reporting` schema | PRD §17 |
+| 9 | ~~Product name: PRD still says "working name Beacon", repo and all module docs say Cailyx.~~ ✅ **Resolved 2026-09-20: Cailyx is final.** | `reporting`, `scorecard` | PRD header |
+| 10 | ~~White-label branding in the data model now or later~~ ✅ **Resolved 2026-09-20: dropped, single-tenant only.** See `docs/analysis/client-portal.md` §0. | `reporting` schema | PRD §17 |
 
 ---
 
