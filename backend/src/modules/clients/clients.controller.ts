@@ -17,6 +17,7 @@ import {
   CreateClientProjectDto,
   CreateClientLoginDto,
   PostClientMessageDto,
+  WaiveOnboardingWizardDto,
 } from './dto/clients.dto';
 
 @ApiTags('Clients')
@@ -82,13 +83,60 @@ export class ClientsController {
     return this.clients.createProject(clientId, body);
   }
 
+  @Get(':clientId/projects/:projectId/onboarding-wizard')
+  @ApiOperation({
+    summary: "A project's onboarding-wizard gate state",
+    description:
+      'C1 (docs/analysis/client-portal.md §16). One of not-started | confirming-details | connecting-gsc | connecting-ga4 | done | waived. The wizard UI that transitions through these states is Phase C2 — this route only reads the current state.',
+  })
+  @ApiResponse({ status: 200, description: '{ projectId, state }' })
+  @ApiResponse({ status: 404, description: 'Client not found, or project does not belong to this client' })
+  async getOnboardingWizardState(@Param('clientId') clientId: string, @Param('projectId') projectId: string) {
+    return this.clients.getOnboardingWizardState(clientId, projectId);
+  }
+
+  @Post(':clientId/projects/:projectId/onboarding-wizard/waive')
+  @Roles('admin')
+  @ApiOperation({
+    summary: 'Waive the Google-connect onboarding gate for this project (admin only)',
+    description:
+      'C1 (docs/analysis/client-portal.md §15). Sets the onboarding-wizard state straight to "waived" — a real, visibly distinct terminal state, never silently rendered as "done" — and writes an audit event (GET /api/activity, action "waived") recording who waived it, when, and for which client/project. Use when a client cannot complete Google Search Console/Analytics access on day one (agency handoff pending, IT ticket open) so they are not permanently locked out of a portal they are paying for.',
+  })
+  @ApiBody({ type: WaiveOnboardingWizardDto })
+  @ApiResponse({ status: 200, description: 'The updated ClientProjectSummaryDto, onboardingWizardState: "waived"' })
+  @ApiResponse({ status: 403, description: 'Caller is not admin' })
+  @ApiResponse({ status: 404, description: 'Client not found, or project does not belong to this client' })
+  async waiveOnboardingWizard(
+    @Param('clientId') clientId: string,
+    @Param('projectId') projectId: string,
+    @Body() body: WaiveOnboardingWizardDto,
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthedRequestUser;
+    return this.clients.waiveOnboardingWizard(clientId, projectId, user.userId, body.reason);
+  }
+
+  /**
+   * @deprecated Superseded by `POST /clients/:clientId/invites` (`client-access`
+   * module) per `docs/analysis/client-portal.md` §2 and `docs/PLAN.md` §11.0
+   * (Stage-1 cleanup, 2026-09-20). The invite-link flow is now canonical: a
+   * single-use 7-day link where the client sets their own password, instead of
+   * a plaintext temporary password generated server-side and relayed by hand
+   * (over email or by an operator copy/pasting it — real exposure). This
+   * endpoint is kept, not removed — it still works, for the rare escape-hatch
+   * case where the invite-link flow cannot be used — but it must not be treated
+   * as a live parallel path: new integrations, UI, and automation (e.g. the
+   * Phase-C2 auto-email-on-pipeline-completion work) must call
+   * `POST /clients/:clientId/invites` instead. See `ClientsService.createClientLogin`
+   * for the same note on the implementation.
+   */
   @Post(':clientId/login')
   @Roles('delivery-lead')
   @Throttle({ default: { ttl: 60000, limit: 10 } })
   @ApiOperation({
-    summary: 'Create a client-portal login for this client',
+    summary: '[Deprecated] Create a client-portal login for this client (temp password)',
     description:
-      'Generates a temporary password, creates a type="client" User row, and best-effort emails it via Plunk. The password is returned exactly once in the response — relay it by hand if emailSent is false.',
+      'DEPRECATED — use POST /clients/:clientId/invites instead (invite-link, client sets their own password). Kept as a non-default escape hatch, not removed. Generates a temporary password, creates a type="client" User row, and best-effort emails it via Plunk. The password is returned exactly once in the response — relay it by hand if emailSent is false.',
   })
   @ApiBody({ type: CreateClientLoginDto })
   @ApiResponse({ status: 201, description: 'The created login, including the one-time temporary password' })

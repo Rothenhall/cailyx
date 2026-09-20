@@ -43,6 +43,7 @@ import { EntityAuditService } from '../entity-audit/entity-audit.service';
 import { BacklinksService } from '../backlinks/backlinks.service';
 import { FindingsService } from '../findings/findings.service';
 import { DeliveryPlanService } from '../delivery-plan/delivery-plan.service';
+import { ActivityService } from '../activity/activity.service';
 import type { UserType } from '../auth/auth.types';
 import type {
   ClientDto,
@@ -51,6 +52,7 @@ import type {
   ClientProjectSummaryDto,
   ClientLoginCreatedDto,
   ClientMessageDto,
+  OnboardingWizardState,
 } from './clients.types';
 import type { CreateClientDto, UpdateClientDto, CreateClientProjectDto, CreateClientLoginDto } from './dto/clients.dto';
 
@@ -91,6 +93,12 @@ export class ClientsService {
      * action screens can never disagree.
      */
     private readonly deliveryPlan: DeliveryPlanService,
+    /**
+     * C1 (`docs/analysis/client-portal.md` §15/§33) — the shared admin-action
+     * audit log. `record()` writes the "waive Google-connect gate" event;
+     * nothing else in this module writes to it (that's out of scope for C1).
+     */
+    private readonly activity: ActivityService,
   ) {}
 
   // ─── Client CRUD ───────────────────────────────────────────────────
@@ -173,6 +181,71 @@ export class ClientsService {
       });
 
     return this.toProjectSummary(project);
+  }
+
+  // ─── Onboarding wizard gate (C1 — client-portal.md §15/§16) ────────
+
+  /**
+   * Admin-only "waive Google-connect for this project" action (§15). Sets the
+   * per-project onboarding-wizard gate straight to `waived` — a real, visibly
+   * distinct terminal state, never silently rendered as `done`  — and writes
+   * an audit event recording who waived it, when, and for which client/project
+   * (§33). Idempotent: waiving an already-waived project just re-records the
+   * event (useful as a paper trail if it's waived more than once) rather than
+   * rejecting the call.
+   *
+   * The actual sequential onboarding wizard UI that reads/writes the other
+   * states (`confirming-details`, `connecting-gsc`, `connecting-ga4`, `done`)
+   * is Phase C2, not built here — this method only needs to know how to reach
+   * the terminal `waived` state and log it.
+   */
+  async waiveOnboardingWizard(
+    clientId: string,
+    projectId: string,
+    actorUserId: string,
+    reason?: string,
+  ): Promise<ClientProjectSummaryDto> {
+    await this.requireClient(clientId);
+    const project = await this.requireProjectOfClient(clientId, projectId);
+
+    const previousState = project.onboardingWizardState;
+    const updated = await this.prisma.project.update({
+      where: { id: projectId },
+      data: { onboardingWizardState: 'waived' satisfies OnboardingWizardState },
+    });
+
+    await this.activity.record({
+      actor: { type: 'user', id: actorUserId },
+      action: 'waived',
+      resource: { type: 'project', id: projectId },
+      clientId,
+      projectId,
+      summary: `Waived the Google-connect onboarding gate for project ${projectId}${reason ? `: ${reason}` : ''}`,
+      changes: { onboardingWizardState: { before: previousState, after: 'waived' } },
+      origin: 'api',
+      // Not client-visible: the client-facing surface for this state lives in
+      // C2's wizard UI, not the operator audit trail.
+      clientVisible: false,
+    });
+
+    this.logger.log(`Onboarding wizard gate waived for project ${projectId} (client ${clientId}) by ${actorUserId}`);
+    return this.toProjectSummary(updated);
+  }
+
+  /** Reads the current onboarding-wizard gate state for one project of this client. */
+  async getOnboardingWizardState(clientId: string, projectId: string): Promise<{ projectId: string; state: OnboardingWizardState }> {
+    await this.requireClient(clientId);
+    const project = await this.requireProjectOfClient(clientId, projectId);
+    return { projectId, state: project.onboardingWizardState as OnboardingWizardState };
+  }
+
+  /** Loads a Project and 404s unless it exists AND belongs to this client — mirrors postMessage's ownership check. */
+  private async requireProjectOfClient(clientId: string, projectId: string) {
+    const project = await this.prisma.project.findUnique({ where: { id: projectId } });
+    if (!project || project.clientId !== clientId) {
+      throw new NotFoundException(`Project ${projectId} not found for client ${clientId}`);
+    }
+    return project;
   }
 
   private async runDayOnePipeline(
@@ -417,6 +490,16 @@ export class ClientsService {
   // ─── Client login (client-portal credentials) ─────────────────────
 
   /**
+   * @deprecated Not the canonical client-login path as of 2026-09-20 — see
+   * `docs/analysis/client-portal.md` §2 and `docs/PLAN.md` §11.0. `client-access`'s
+   * `createInvite()` (`POST /clients/:clientId/invites`) is canonical: a single-use,
+   * 7-day invite link where the client sets their own password, never a plaintext
+   * credential generated server-side and relayed by hand. This method is kept — not
+   * removed, still fully functional — as a non-default escape hatch only; no new
+   * caller (UI, automation, or another module) should be wired to it. In particular,
+   * Phase C2's "auto-email on Day-1 pipeline completion" must use the invite-link
+   * flow, not this method.
+   *
    * Create a client-portal login for this client. Generates a random
    * temporary password (never emailed or logged in the clear beyond this one
    * response), hashes it the same way operator registration does, and
@@ -621,6 +704,7 @@ export class ClientsService {
     onboardingStatus: string;
     onboardingStep: string | null;
     onboardingError: string | null;
+    onboardingWizardState: string;
     createdAt: Date;
   }): Promise<ClientProjectSummaryDto> {
     const latestReport = await this.prisma.report.findFirst({
@@ -639,6 +723,7 @@ export class ClientsService {
       onboardingStatus: project.onboardingStatus as ClientProjectSummaryDto['onboardingStatus'],
       onboardingStep: project.onboardingStep,
       onboardingError: project.onboardingError,
+      onboardingWizardState: project.onboardingWizardState as OnboardingWizardState,
       latestScore: latestReport?.scoreTotal ?? null,
       latestBand: latestReport?.scoreBand ?? null,
       latestReportSlug: latestReport?.slug ?? null,

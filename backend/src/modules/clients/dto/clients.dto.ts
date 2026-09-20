@@ -132,6 +132,17 @@ export class CreateClientLoginDto {
   name?: string;
 }
 
+/** C1 — §15's admin "waive Google-connect gate" action. */
+export class WaiveOnboardingWizardDto {
+  @ApiPropertyOptional({
+    description: 'Free-text reason recorded on the audit event (e.g. "agency handoff pending, IT ticket open").',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  reason?: string;
+}
+
 export class PostClientMessageDto {
   @ApiPropertyOptional({
     description:

@@ -124,6 +124,20 @@ for a multi-user server.
 5. Replace `prisma db push` with real migrations: `npx prisma migrate dev`
    locally to generate `prisma/migrations/`, commit them, run
    `npx prisma migrate deploy` in the release pipeline.
+   > **2026-09-20 finding:** this is currently blocked, not just pending. The
+   > datasource in `schema.prisma`/`schema.production.prisma` was switched to
+   > `postgresql` on 2026-09-16, but `prisma/migrations/migration_lock.toml`
+   > still says `provider = "sqlite"` and the existing migration `.sql` files
+   > are SQLite-dialect (`DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`, etc.).
+   > `npx prisma migrate dev` fails immediately with **P3019** ("provider
+   > mismatch"). Every schema change since the cutover (including this stage's
+   > C1 work — `docs/analysis/client-portal.md` §§15/16/33) has had to use
+   > `prisma db push` instead, which works but keeps no migration history.
+   > Fixing this for real means regenerating the migration history against
+   > Postgres (likely `prisma migrate diff`/reset against a scratch DB, or
+   > deleting `prisma/migrations/` and re-baselining) — a deliberate,
+   > reviewed action, not a side effect of an unrelated schema change, so it
+   > was left for whoever does the real §4 migration-run item.
 6. Backups: enable automated daily snapshots + PITR on the managed instance.
    **Test a restore before launch.**
 

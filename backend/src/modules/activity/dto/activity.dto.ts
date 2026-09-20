@@ -22,6 +22,12 @@ export const ACTIVITY_ACTIONS = [
   'granted',
   'revoked',
   'logged-in',
+  // C1 (2026-09-20, docs/analysis/client-portal.md §15) — the admin
+  // "waive Google-connect onboarding gate" action. A distinct verb rather than
+  // reusing "updated" so the audit trail (and any future admin-facing filter
+  // UI) can find every waive event directly, since §33 names the waive action
+  // explicitly as one of the sensitive actions this shared log must cover.
+  'waived',
 ] as const;
 
 export class ListActivityQueryDto {

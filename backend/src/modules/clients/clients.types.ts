@@ -8,6 +8,25 @@
 export type ClientStatus = 'active' | 'paused' | 'churned';
 export type OnboardingStatus = 'pending' | 'running' | 'completed' | 'failed';
 
+/**
+ * C1 (`docs/analysis/client-portal.md` §16, `docs/PLAN.md` §11.1) — state of the
+ * per-project client-facing onboarding-WIZARD gate. Distinct from
+ * `OnboardingStatus` above (the Day-1 bootstrapping pipeline) — see the doc
+ * comment on `Project.onboardingWizardState` in `schema.prisma`.
+ *
+ * `waived` is deliberately its own value, not folded into `done`: a DTO or UI
+ * that only distinguishes "onboarded vs not" would render a waived gate as
+ * silently identical to a real Google connection, which §15 explicitly says
+ * must never happen.
+ */
+export type OnboardingWizardState =
+  | 'not-started'
+  | 'confirming-details'
+  | 'connecting-gsc'
+  | 'connecting-ga4'
+  | 'done'
+  | 'waived';
+
 export interface ClientDto {
   id: string;
   name: string;
@@ -57,6 +76,9 @@ export interface ClientProjectSummaryDto {
   onboardingStatus: OnboardingStatus;
   onboardingStep: string | null;
   onboardingError: string | null;
+  /** C1/§16 — the onboarding-WIZARD gate state, always the literal string (never
+   *  collapsed to a boolean), so `waived` is never indistinguishable from `done`. */
+  onboardingWizardState: OnboardingWizardState;
   latestScore: number | null;
   latestBand: string | null;
   latestReportSlug: string | null;

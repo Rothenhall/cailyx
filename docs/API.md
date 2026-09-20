@@ -1357,6 +1357,76 @@ See `delivery-plan/README.md`, `backend/smoke/portal-plan.smoke.sh`,
 
 ---
 
+## Client Portal & Admin Console — Stage 1 (C1: audit trail + onboarding-gate foundation, added 2026-09-20)
+
+> Full decision record: `docs/analysis/client-portal.md` §§15/16/33. Build order:
+> `docs/PLAN.md` §11.0 (cleanup) / §11.1 (Phase C1). See `backend/src/modules/clients/README.md`
+> and `backend/src/modules/activity/README.md` for the full write-up — this section is
+> the endpoint reference only.
+
+### Clients Module — onboarding-wizard gate (new endpoints)
+
+| Method | Path | Roles | Description |
+|---|---|---|---|
+| `GET` | `/api/clients/:clientId/projects/:projectId/onboarding-wizard` | any operator | Read the onboarding-wizard gate state for one project |
+| `POST` | `/api/clients/:clientId/projects/:projectId/onboarding-wizard/waive` | **admin only** | §15 — waive the Google-connect gate for this project |
+
+**`GET .../onboarding-wizard`** — response `{ projectId: string, state: OnboardingWizardState }`,
+where `OnboardingWizardState` is one of `not-started | confirming-details | connecting-gsc |
+connecting-ga4 | done | waived`. 404 if the client doesn't exist or the project doesn't belong
+to it.
+
+Example:
+```
+GET /api/clients/cmua.../projects/cmua.../onboarding-wizard
+→ 200 { "projectId": "cmua51yb6001hskw5y6u3s1am", "state": "not-started" }
+```
+
+**`POST .../onboarding-wizard/waive`** — body `{ reason?: string }` (free text, recorded on the
+audit event). Sets the gate straight to `"waived"` — a real, visibly distinct terminal state,
+never collapsed into a boolean "is onboarded" anywhere it's read — and writes an
+`ActivityEvent` (`action: "waived"`, `resourceType: "project"`) recording the acting admin,
+timestamp, and before/after state. Returns the updated `ClientProjectSummaryDto` (same shape as
+`GET /api/clients/:clientId`'s per-project rows, now including `onboardingWizardState`). 403 if
+the caller is not `admin`; 404 if the client/project pairing doesn't resolve.
+
+Example:
+```
+POST /api/clients/cmua.../projects/cmua.../onboarding-wizard/waive
+{ "reason": "Agency handoff pending, IT ticket open" }
+→ 200 {
+    "id": "cmua51yb6001hskw5y6u3s1am",
+    "name": "C1 Verification Project",
+    "domain": "c1-verify-example.com",
+    "status": "diagnostic",
+    "onboardingStatus": "running",
+    "onboardingStep": "entity-audit",
+    "onboardingError": null,
+    "onboardingWizardState": "waived",
+    "latestScore": null, "latestBand": null, "latestReportSlug": null,
+    "openGapCount": 0,
+    "createdAt": "2026-09-20T18:17:11.154Z"
+  }
+```
+
+**Deprecated (kept, not removed):** `POST /api/clients/:clientId/login` (temp-password login) is
+superseded by `POST /api/clients/:clientId/invites` (`client-access` module, invite-link flow)
+as of this stage — see `docs/analysis/client-portal.md` §2 and `docs/PLAN.md` §11.0. The
+endpoint still works (unchanged response shape); it is marked `@deprecated` in its JSDoc and no
+longer treated as the default path. No request/response shape changed, so it is not re-documented
+here — see the existing Clients module write-up above.
+
+### Activity Module — new action value
+
+`ActivityAction` / `ACTIVITY_ACTIONS` gained `'waived'` (previously: `created`, `updated`,
+`deleted`, `released`, `approved`, `rejected`, `published`, `sent`, `started`, `cancelled`,
+`granted`, `revoked`, `logged-in`). No endpoint shape changed — this only affects the `action`
+value on rows written via the waive action above and the `action` filter/enum on the existing
+`GET /api/activity` family of routes (unchanged endpoints, already documented in
+`backend/src/modules/activity/README.md`).
+
+---
+
 ## Planned Modules (not yet built)
 
 | Module | Type | Endpoints |

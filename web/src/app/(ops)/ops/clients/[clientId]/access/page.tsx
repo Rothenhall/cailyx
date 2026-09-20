@@ -44,6 +44,16 @@ import type { ClientDetail } from '@/services/types';
  * That is G01/G02, and it is stated here rather than implied by an empty list,
  * because "this client has no logins" and "this page cannot see the logins" are
  * different facts and only one of them is true.
+ *
+ * DEPRECATED FLOW (2026-09-20, `docs/analysis/client-portal.md` §2, `docs/PLAN.md`
+ * §11.0): `POST /clients/:clientId/login` — the temp-password endpoint this page
+ * calls — is no longer the canonical way to grant portal access. The invite-link
+ * flow (`POST /clients/:clientId/invites`, `client-access` module — single-use
+ * 7-day link, client sets their own password) is canonical now. This page is kept
+ * working as a non-default escape hatch (there is no ops-side invite UI yet — G02's
+ * invite/seat management screens are a separate, not-yet-built piece of work), but
+ * it must not be presented or used as the default path. See the in-page warning
+ * banner below.
  */
 export default function ClientAccessPage() {
   const params = useParams<{ clientId: string }>();
@@ -185,6 +195,19 @@ export default function ClientAccessPage() {
         title="Client access"
         context={`Portal logins for ${client.name}`}
       />
+
+      <Alert>
+        <AlertTitle>This temporary-password flow is deprecated</AlertTitle>
+        <AlertDescription className="space-y-1">
+          <p>
+            The invite-link flow (single-use link, client sets their own password) is now the
+            canonical way to grant portal access — see `docs/analysis/client-portal.md` §2. This
+            page is kept working as a non-default escape hatch only, because there is no ops-side
+            invite UI yet. Prefer creating an invite via the API (
+            <code className="text-meta">POST /clients/:clientId/invites</code>) when possible.
+          </p>
+        </AlertDescription>
+      </Alert>
 
       {created ? (
         <CreatedPanel

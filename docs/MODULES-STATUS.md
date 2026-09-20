@@ -206,7 +206,7 @@ Order reconciles `PLAN.md` phases, PRD §16 build sequence, and the dependency g
 - [x] **`scorecard`** — Rung 0, PRD §13 + §17. Analysis resolved §17 as option B (`docs/analysis/wave-5.md` §2): engine + operator API now, public funnel behind `SCORECARD_PUBLIC=1` (a flag, not a rebuild). Built: fresh technical audit (probe failure → partial dimensions with reasons, never blocks the run) → versioned-rubric scoring → exactly **3 named problems** derived deterministically from the run's evidence (no LLM key required — the free funnel never blocks on a paid key) → `nonObvious` flag from probe-only evidence (blocked/render/`schema audit: fail`) → `ScorecardRun` with unguessable public share token. e2e: run 201 (score 33/invisible, 3 named problems), public 403 with flag off → 200 with flag on, bad token 404, list newest-first.
 - [x] **`delivery`** — PRD 6.11. Built per analysis choices: Plunk email (pre-approved; 503 `email-unconfigured` / `email-send-failed` guards, subject operator-editable, link-first — react-pdf PDF is frontend scope), internal Lead CRM (sources bulk/api/form/scorecard, `new → reached → booked | won/lost`) with **append-only** CTA event log (`book-call`/`review-ask`/`upgrade-click`) + CSV export for any external CRM (Attio/HubSpot = later), Stripe Checkout ledger (option A): links from `STRIPE_CHECKOUT_URL_*` env, click flips the lead's log, @Public completion = webhook stand-in (SDK + signature verification = documented next iteration). e2e: all guards + click/complete chain + lead event log verified.
 
-### Wave 7 — Client Portal & Admin Console revamp (2026-09-20, not started)
+### Wave 7 — Client Portal & Admin Console revamp (2026-09-20, C1 + §11.0 cleanup done, C2–C7 not started)
 
 Full decision record: `docs/analysis/client-portal.md` v1.3 (35 sections). Build order,
 dependencies, and the required-before-code note on the engagement/timeline model: `docs/PLAN.md`
@@ -215,6 +215,45 @@ retiring CP04 as the onboarding gate in favor of the new wizard, and formalizing
 `frontend`/`client-portal` directory removal). Not sequenced into Waves 0–6 above because it's a
 separate track (admin/client platform layer, §1.2h) from the engine-pipeline waves — see
 `docs/PLAN.md` §11 for its own phase-by-phase checklist.
+
+- [x] **§11.0 cleanup** — four of the five items done (the fifth, `frontend`/`client-portal`
+  removal, is deliberately out of scope for this pass — a separate, isolated commit the user
+  does themselves):
+  - Collapsed to one client-login mechanism: `POST /clients/:clientId/login` (temp-password)
+    marked `@deprecated` in both `ClientsController` and `ClientsService` (kept working, not
+    removed); its only known caller, `web/.../ops/clients/[clientId]/access/page.tsx`, now shows
+    an in-page deprecation banner. `POST /clients/:clientId/invites` (`client-access`) confirmed
+    canonical.
+  - CP04 (`web/.../welcome/page.tsx`) retained as-is with an inline comment documenting the
+    Phase-C2 transition plan (first-visit gate today → post-onboarding "manage connections"
+    surface once C2's real wizard ships). No UI restructuring, per the stage's own scope limit.
+  - `Project.onboardingStatus`/`onboardingStep` (pipeline-internal) now carry an explicit
+    doc-comment safeguard, in both `schema.prisma` and `schema.production.prisma`, against being
+    repurposed for the future engagement Phase/Milestone model (Phase C3).
+  - `frontend`/`client-portal` directories: untouched, as instructed.
+  - `sleeper-refresh`'s GSC-OAuth gap: untouched, as instructed (already flagged in its own Wave-4 row above).
+- [x] **C1 — audit trail + onboarding-gate foundation.** Reused the existing `activity` (G15)
+  module as the shared admin-action audit log §33 asked for (it already matched the spec —
+  actor/action/target/timestamp/redacted metadata, plus admin-only reads/export; no new module
+  built) — added `'waived'` as a new `ActivityAction`. Added `Project.onboardingWizardState`
+  (`not-started | confirming-details | connecting-gsc | connecting-ga4 | done | waived`), scoped
+  per-project per §16, plus `ClientsService.getOnboardingWizardState()`/`waiveOnboardingWizard()`.
+  Added `POST /api/clients/:clientId/projects/:projectId/onboarding-wizard/waive`
+  (`@Roles('admin')`), writing an `ActivityEvent` on every waive (§15/§33). `waived` is always
+  returned as the literal state string, never collapsed to a boolean. e2e-verified against a live
+  backend + real Postgres: create client/project → `GET .../onboarding-wizard` → `"not-started"`
+  → `POST .../waive` → `"waived"` (persisted, re-read confirmed) → `GET
+  /api/activity?action=waived&clientId=...` returned the matching audit row with actorId,
+  resourceId and before/after `changes`. `npx tsc --noEmit` clean. Full write-up:
+  `backend/src/modules/clients/README.md` (C1 section + PRD alignment table),
+  `backend/src/modules/activity/README.md` (C1 addendum), `docs/API.md` (new endpoint reference).
+  DB migration note: `prisma migrate dev` fails in this repo today with `P3019` — the migration
+  history's `migration_lock.toml` still says `provider = "sqlite"` (pre-existing, from before the
+  2026-09-16 Postgres cutover; the migration SQL files themselves are SQLite-dialect too) even
+  though `schema.prisma` has said `postgresql` since that cutover. Not this stage's bug to fix —
+  used `prisma db push` instead (confirmed schema-in-sync against the running Postgres container),
+  matching what a broken `migrate dev` leaves as the only working option today. Flagging here so
+  whoever picks up C2+ doesn't hit the same P3019 surprise cold.
 
 ### Standing item (not a module)
 
