@@ -16,6 +16,7 @@ import { PageHeader } from '@/components/patterns/PageHeader';
 import { ScopeBanner } from '@/components/patterns/ScopeBanner';
 import { StatusPill, type StatusTone } from '@/components/patterns/StatusPill';
 import { Timestamp } from '@/components/patterns/Timestamp';
+import { useSession } from '@/hooks/useSession';
 import { useUrlState } from '@/hooks/useUrlState';
 import { formatNumber, formatPercent, notMeasuredLabel } from '@/lib/format';
 import type { ApiError } from '@/lib/api';
@@ -67,6 +68,8 @@ export default function AiVisibilityPage() {
   const params = useParams<{ projectId: string }>();
   const projectId = params.projectId;
   const [tab, setTab] = useUrlState(TAB_DEFAULTS);
+  const { user } = useSession();
+  const isStaff = user?.type !== 'client';
 
   const [summary, setSummary] = useState<AeoVisibilitySummary | null>(null);
   const [summaryError, setSummaryError] = useState<ApiError | null>(null);
@@ -132,12 +135,16 @@ export default function AiVisibilityPage() {
         primaryAction={{ label: 'Update AI results', href: `/projects/${projectId}/research/ai/new` }}
         secondaryActions={
           <div className="flex items-center gap-2">
-            <Button asChild variant="outline" size="sm">
-              <Link href={`/projects/${projectId}/research/ai/sets`}>Manage question sets (staff)</Link>
-            </Button>
-            <Button asChild variant="outline" size="sm">
-              <Link href={`/projects/${projectId}/research/ai/runs`}>Run administration (staff)</Link>
-            </Button>
+            {isStaff && (
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/projects/${projectId}/research/ai/sets`}>Manage question sets (staff)</Link>
+              </Button>
+            )}
+            {isStaff && (
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/projects/${projectId}/research/ai/runs`}>Run administration (staff)</Link>
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={() => void loadSummary()}>
               <RefreshCw aria-hidden="true" className="mr-2 h-4 w-4" />
               Refresh
@@ -166,13 +173,13 @@ export default function AiVisibilityPage() {
           </TabsList>
 
           <TabsContent value="summary">
-            <SummaryView projectId={projectId} summary={summary} />
+            <SummaryView projectId={projectId} summary={summary} isStaff={isStaff} />
           </TabsContent>
           <TabsContent value="questions">
             <QuestionsView projectId={projectId} auditId={summary.auditId} />
           </TabsContent>
           <TabsContent value="history">
-            <HistoryView projectId={projectId} />
+            <HistoryView projectId={projectId} isStaff={isStaff} />
           </TabsContent>
         </Tabs>
       ) : null}
@@ -182,7 +189,15 @@ export default function AiVisibilityPage() {
 
 // ─── Summary view (§8.1) ────────────────────────────────────────────────
 
-function SummaryView({ projectId, summary }: { projectId: string; summary: AeoVisibilitySummary }) {
+function SummaryView({
+  projectId,
+  summary,
+  isStaff,
+}: {
+  projectId: string;
+  summary: AeoVisibilitySummary;
+  isStaff: boolean;
+}) {
   return (
     <div className="space-y-6 pt-4">
       {summary.status !== 'completed' ? (
@@ -334,12 +349,14 @@ function SummaryView({ projectId, summary }: { projectId: string; summary: AeoVi
               </li>
             ))}
           </ul>
-          <Link
-            href={`/projects/${projectId}/research/ai/runs/${summary.auditId}`}
-            className="text-table text-primary underline-offset-4 hover:underline"
-          >
-            Open the full run detail (staff)
-          </Link>
+          {isStaff && (
+            <Link
+              href={`/projects/${projectId}/research/ai/runs/${summary.auditId}`}
+              className="text-table text-primary underline-offset-4 hover:underline"
+            >
+              Open the full run detail (staff)
+            </Link>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -622,7 +639,7 @@ function stanceLabel(stance: string): string {
 
 // ─── History view (§8.2 comparability break) ───────────────────────────
 
-function HistoryView({ projectId }: { projectId: string }) {
+function HistoryView({ projectId, isStaff }: { projectId: string; isStaff: boolean }) {
   const [history, setHistory] = useState<AeoVisibilityHistoryEntry[] | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
 
@@ -676,12 +693,14 @@ function HistoryView({ projectId }: { projectId: string }) {
                     {entry.finishedAt ? <Timestamp value={entry.finishedAt} /> : notMeasuredLabel()} · v
                     {entry.querySetVersion} · {entry.markets.length ? entry.markets.join(', ') : 'Market not recorded'}
                   </p>
-                  <Link
-                    href={`/projects/${projectId}/research/ai/runs/${entry.auditId}`}
-                    className="text-table text-primary underline-offset-4 hover:underline"
-                  >
-                    Open run (staff)
-                  </Link>
+                  {isStaff && (
+                    <Link
+                      href={`/projects/${projectId}/research/ai/runs/${entry.auditId}`}
+                      className="text-table text-primary underline-offset-4 hover:underline"
+                    >
+                      Open run (staff)
+                    </Link>
+                  )}
                 </div>
                 <p className="text-table text-muted-foreground">
                   {formatNumber(entry.questionsChecked)} of {formatNumber(entry.totalQuestions)} questions checked ·{' '}

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "faster-fixes": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@fasterfixes/mcp"
+      ],
+      "env": {
+        "FASTER_FIXES_TOKEN": "ff_agent_b0be2af76cc6b57d020013eb6d68e4c3744cc7afb91f7052fefa17a03b1511e0",
+        "FASTER_FIXES_PROJECT": "proj_86a1389afe7b24b311188627"
+      }
+    }
+  }
+}

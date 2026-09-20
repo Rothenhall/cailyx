@@ -9,6 +9,109 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-20 — Correction: the live app is `web/`, not `frontend/`; two more feedback fixes
+
+Discovered mid-fix-pass: this repo has **three** frontend-ish directories —
+`web/` (Next.js, App Router, `(ops)` + `(client)` route groups — auto-deploys to
+Vercel on push, last touched today, matches the feedback's reported Railway
+URLs like `/projects/:id/research/website` exactly) and `frontend/` (an older
+"terminal" console app, last touched 5 days ago, **not linked to any deploy
+config found in this repo** and its own routes redirect back to `/` with a
+"legacy" comment). AGENTS.md's tree diagram doesn't mention either `web/` or
+`client-portal/`, so this wasn't obvious up front. The earlier fix in this
+session for the dead Google-connect buttons was made in `frontend/`
+(`components/terminal/AnalyticsPane.tsx`) — a real bug fix, but in the
+non-deployed app, so it does not address the live feedback. Leaving that fix in
+place (it's correct code, just not on the path that matters) and redid the
+actual fix in `web/` below. Worth a follow-up conversation with the team on
+whether `frontend/` should be archived/deleted to prevent this again.
+
+**Fix: no way to connect Google Analytics / Search Console from `research/website`**
+(`web/src/app/(ops)/projects/[projectId]/research/website/page.tsx`, `SearchTab`
+and `VisitorsTab`) — both "not connected" messages were plain text with no
+link. Added a `Connect Search Console` / `Connect Google Analytics` link to
+each, pointing at the existing, working resource-picker page at
+`/projects/:id/connections/google/[service]` (`web/src/app/(ops)/.../connections/google/[service]/page.tsx`,
+already wired to the real OAuth flow via `getGoogleAuthorizationUrl` — just
+unlinked from anywhere on `research/website`).
+
+**Fix: dead-end "(staff)" links reachable by client accounts on `/research/ai`**
+(`web/src/app/(ops)/projects/[projectId]/research/ai/page.tsx`) — "Manage
+question sets (staff)", "Run administration (staff)", "Open the full run
+detail (staff)", and "Open run (staff)" were rendered unconditionally, with no
+role check anywhere in the file, even though the page's own design comment
+(§8.1/§8.2) calls this a merged **client-facing** destination with those as
+staff-only secondary links. Backend RBAC already blocks a client account from
+the underlying endpoints (`aeo-audit.controller.ts` and `query-set.controller.ts`
+carry no `@ClientPortal()`, and `RolesGuard` default-denies client-type users),
+so this was a UX dead-end, not a privilege-escalation gap. Added `useSession()`
++ `isStaff = user?.type !== 'client'` and gated all four links behind it.
+
+**Verified:** `npx tsc --noEmit` and `eslint` clean on both changed files in
+`web/`. Did not verify in a browser (no live Chrome extension available in this
+session) — confirmed via curl earlier that the Google OAuth endpoints these
+links lead to work correctly; did not re-verify session `type` end-to-end for
+a client-portal login in this pass.
+
+---
+
+## 2026-09-20 — Fix: "Connect" buttons for Google Analytics / Search Console did nothing
+
+Client feedback (x2): "you are showing, not connected, that is fine, but you need
+to show me from where i can connect right?" — the Google Analytics and Search
+Console connector cards showed a status dot and a "Connect" button, but the
+button had no `onClick` at all; the only working OAuth-connect flow lived in the
+unlinked `/v3` preview's Settings panel, unreachable from the live app (`/`, the
+terminal — `frontend/src/app/projects/[projectId]/page.tsx` confirms per-project
+routes are a legacy redirect back to `/`).
+
+Wired `ConnectorCard` in `frontend/src/components/terminal/AnalyticsPane.tsx` to
+call the existing `authorizeGoogle()` helper (already used by `/v3`'s working
+flow) and open the real Google consent screen in a popup, resolving once the
+popup posts back or closes, then refreshing the integrations list via a new
+`refreshIntegrations()` in `frontend/src/app/page.tsx`. No new OAuth
+tooling — reused the already-approved `backend/src/modules/google/` module
+end-to-end. Also added the same missing action (an "Open connections" button)
+to the `/v3` `SeoAuditWorkspace` gate screen, which had the identical dead-end:
+text telling the user to "open the connections panel" with nothing to click.
+
+**Verified:** `npx tsc --noEmit` clean. Confirmed via curl against the running
+backend that `POST /api/integrations/google/authorize` (now called by the
+button) returns a real `accounts.google.com` OAuth URL for both `analytics` and
+`search-console`, and that `GET /api/integrations` reports `google-analytics` /
+`google-search-console` keys matching the button's service mapping. Could not
+click through the actual popup/consent screen in this environment (no live
+Chrome extension attached), so the click-through itself is unverified —
+the request construction and endpoint are confirmed correct.
+
+---
+
+## 2026-09-20 — Fix: cross-tab refresh race logged users out entirely
+
+Client feedback: "while i am using the app suddenly it is getting logged out and
+asking me to login again." Root cause was in `auth.service.ts`'s `refresh()`:
+refresh tokens rotate on every use, and presenting an already-rotated (revoked)
+token was always treated as theft — it revoked *every* session and refresh token
+for that user. Two tabs open on the same account (or two near-simultaneous
+requests) would race to `/auth/refresh`; the loser's rotated-away token tripped
+that reuse-as-compromise path and force-logged out every tab, with no retry able
+to recover since all sessions were now dead server-side.
+
+Added a 15s `ROTATION_GRACE_MS` window (`recentRotations` map in `AuthService`):
+a token presented within that window of its own rotation gets the winning
+request's new pair handed back instead of triggering the nuke. Reuse outside the
+window still revokes everything, unchanged. Frontend (`frontend/src/lib/api.ts`)
+also gained a best-effort cross-tab lock via `localStorage` so a second tab waits
+briefly for the first tab's in-flight refresh instead of racing it.
+
+**Verified:** `npx tsc --noEmit` clean on both `backend/` and `frontend/`.
+Manually reproduced the race with curl — a stale token presented right after
+rotation now returns 200 with the winner's pair; the same token presented after
+the 15s window still returns 401 and revokes the account's sessions, confirming
+the compromise-detection guarantee is unchanged.
+
+---
+
 ## 2026-09-20 — Rothenhall brand applied to the Cailyx web app
 
 The Rothenhall Partners Brand Kit **v1.1.0** (`Brand/tokens/brand.css`) is now the

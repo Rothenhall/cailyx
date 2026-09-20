@@ -61,6 +61,13 @@ const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const GENERIC_FORGOT_RESPONSE = {
   message: 'If that email is registered, a password reset link has been sent.',
 } as const;
+/**
+ * Window in which a just-rotated-away refresh token is treated as a benign
+ * race (e.g. two open tabs refreshing within the same instant) rather than
+ * reuse-as-compromise. Kept short — long enough for concurrent requests
+ * in flight, far too short to matter for an actually stolen token.
+ */
+const ROTATION_GRACE_MS = 15_000;
 
 /** Request-derived metadata attached to a session at login/refresh time. */
 export interface SessionRequestMeta {
@@ -118,6 +125,13 @@ function deviceLabelFrom(userAgent?: string): string | null {
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+
+  /**
+   * tokenHash → the pair issued when that (now-revoked) token was rotated,
+   * kept for {@link ROTATION_GRACE_MS} so a losing concurrent refresh gets
+   * the winner's new pair instead of tripping reuse-detection.
+   */
+  private readonly recentRotations = new Map<string, { tokens: AuthTokens; expiresAt: number }>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -238,9 +252,11 @@ export class AuthService {
 
   /**
    * Rotate a refresh token: verify it exists, is unrevoked and unexpired,
-   * revoke it, then issue a new pair on the SAME session. Reuse of a revoked
-   * token revokes the user's whole refresh chain (and every session tied to
-   * it — reuse is treated as compromise, not a race).
+   * revoke it, then issue a new pair on the SAME session. Presenting a token
+   * within {@link ROTATION_GRACE_MS} of its own rotation (e.g. two open tabs
+   * refreshing at once) replays the winner's new pair back to the loser.
+   * Outside that window, reuse of a revoked token revokes the user's whole
+   * refresh chain and every session tied to it — treated as compromise.
    * @throws UnauthorizedException on unknown, expired, revoked, or reused
    *         tokens, or a since-disabled user.
    */
@@ -251,6 +267,11 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
     if (stored.revokedAt) {
+      const recent = this.recentRotations.get(tokenHash);
+      if (recent) {
+        this.recentRotations.delete(tokenHash);
+        if (recent.expiresAt > Date.now()) return recent.tokens;
+      }
       // Token reuse after rotation/revocation — kill the whole family.
       await this.prisma.refreshToken.updateMany({
         where: { userId: stored.userId, revokedAt: null },
@@ -285,7 +306,7 @@ export class AuthService {
       select: { id: true },
     });
 
-    return this.issueTokens(
+    const tokens = await this.issueTokens(
       {
         sub: user.id,
         email: user.email,
@@ -296,6 +317,13 @@ export class AuthService {
       meta,
       existingSession?.id,
     );
+
+    for (const [hash, entry] of this.recentRotations) {
+      if (entry.expiresAt <= Date.now()) this.recentRotations.delete(hash);
+    }
+    this.recentRotations.set(tokenHash, { tokens, expiresAt: Date.now() + ROTATION_GRACE_MS });
+
+    return tokens;
   }
 
   /**

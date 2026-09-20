@@ -145,7 +145,7 @@ export default function WebsitePage() {
         </Alert>
       )}
 
-      {overview && <SourceAvailabilityStrip overview={overview} />}
+      {overview && <SourceAvailabilityStrip projectId={projectId} overview={overview} />}
       {overview && <WindowAlignmentNote overview={overview} />}
       <PageAnalysisLink projectId={projectId} />
       {overview && <StaffPanels projectId={projectId} />}
@@ -182,14 +182,26 @@ export default function WebsitePage() {
   );
 }
 
-function SourceAvailabilityStrip({ overview }: { overview: WebsiteOverview }) {
+function SourceAvailabilityStrip({ projectId, overview }: { projectId: string; overview: WebsiteOverview }) {
   const a = overview.sourceAvailability;
+  const searchConsoleOk = a.searchConsole.connected && !a.searchConsole.expired;
+  const analyticsOk = a.analytics.connected && !a.analytics.expired;
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap gap-2 text-meta text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-2 text-meta text-muted-foreground">
         <Badge variant={a.technicalCheck.available ? 'default' : 'outline'}>{a.technicalCheck.label}</Badge>
-        <Badge variant={a.searchConsole.connected && !a.searchConsole.expired ? 'default' : 'outline'}>{a.searchConsole.label}</Badge>
-        <Badge variant={a.analytics.connected && !a.analytics.expired ? 'default' : 'outline'}>{a.analytics.label}</Badge>
+        <Badge variant={searchConsoleOk ? 'default' : 'outline'}>{a.searchConsole.label}</Badge>
+        {!searchConsoleOk && (
+          <Link className="underline" href={`/projects/${projectId}/connections/google/search-console`}>
+            Connect
+          </Link>
+        )}
+        <Badge variant={analyticsOk ? 'default' : 'outline'}>{a.analytics.label}</Badge>
+        {!analyticsOk && (
+          <Link className="underline" href={`/projects/${projectId}/connections/google/analytics`}>
+            Connect
+          </Link>
+        )}
       </div>
       {/* §7.6: plain English about what connecting each missing source adds —
           and, on expiry, that the last authorized snapshot is still what is
@@ -301,7 +313,12 @@ function OverviewTab({ projectId, overview }: { projectId: string; overview: Web
           <CardHeader className="pb-2"><CardTitle className="text-meta text-muted-foreground">Google clicks / impressions</CardTitle></CardHeader>
           <CardContent>
             {overview.google.clicks == null ? (
-              <p className="text-meta text-muted-foreground">Not measured — connect Google Search</p>
+              <p className="text-meta text-muted-foreground">
+                Not measured —{' '}
+                <Link className="underline" href={`/projects/${projectId}/connections/google/search-console`}>
+                  connect Google Search
+                </Link>
+              </p>
             ) : (
               <>
                 <p className="text-2xl font-semibold">{formatNumber(overview.google.clicks)} <span className="text-meta text-muted-foreground">/ {formatNumber(overview.google.impressions ?? 0)}</span></p>
@@ -314,7 +331,12 @@ function OverviewTab({ projectId, overview }: { projectId: string; overview: Web
           <CardHeader className="pb-2"><CardTitle className="text-meta text-muted-foreground">Visitor sessions</CardTitle></CardHeader>
           <CardContent>
             {overview.google.sessions == null ? (
-              <p className="text-meta text-muted-foreground">Not measured — connect Google Analytics</p>
+              <p className="text-meta text-muted-foreground">
+                Not measured —{' '}
+                <Link className="underline" href={`/projects/${projectId}/connections/google/analytics`}>
+                  connect Google Analytics
+                </Link>
+              </p>
             ) : (
               <>
                 <p className="text-2xl font-semibold">{formatNumber(overview.google.sessions)}</p>
@@ -450,6 +472,9 @@ function SearchTab({ projectId, pages, overview }: { projectId: string; pages: J
           showing zero.
         </p>
         <p className="text-meta text-muted-foreground">{overview.sourceAvailability.searchConsole.addsWhat}</p>
+        <Link className="text-meta underline" href={`/projects/${projectId}/connections/google/search-console`}>
+          Connect Search Console
+        </Link>
       </div>
     );
   }
@@ -506,6 +531,9 @@ function VisitorsTab({ projectId, pages, overview }: { projectId: string; pages:
           rather than zero.
         </p>
         <p className="text-meta text-muted-foreground">{overview.sourceAvailability.analytics.addsWhat}</p>
+        <Link className="text-meta underline" href={`/projects/${projectId}/connections/google/analytics`}>
+          Connect Google Analytics
+        </Link>
       </div>
     );
   }

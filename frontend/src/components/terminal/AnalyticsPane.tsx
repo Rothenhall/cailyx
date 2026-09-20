@@ -13,9 +13,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { ApiError } from '@/lib/api';
 import { cleanFindingText } from '@/lib/text';
 import { CardSkeleton } from './CardSkeleton';
-import { getAudit, getAuditJob, getMeasurementSummary, listAudits, listLinkGraphs, runAudit } from '@/lib/terminal-api';
+import { authorizeGoogle, getAudit, getAuditJob, getMeasurementSummary, listAudits, listLinkGraphs, runAudit } from '@/lib/terminal-api';
 import { pollUntilDone } from '@/lib/poll-job';
-import type { Integration, LinkGraph, TechnicalAudit } from '@/types/terminal';
+import type { GoogleService, Integration, LinkGraph, TechnicalAudit } from '@/types/terminal';
+
+const GOOGLE_SERVICE_BY_KEY: Record<string, GoogleService> = {
+  'google-analytics': 'analytics',
+  'google-search-console': 'search-console',
+};
 
 type Tab = 'seo' | 'links' | 'technical' | 'aeo';
 
@@ -41,10 +46,12 @@ export function AnalyticsPane({
   projectId,
   domain,
   integrations,
+  onConnected,
 }: {
   projectId: string | null;
   domain: string | null;
   integrations: Integration[];
+  onConnected?: () => void | Promise<void>;
 }) {
   const [tab, setTab] = useState<Tab>('seo');
   const [audit, setAudit] = useState<TechnicalAudit | null>(null);
@@ -127,8 +134,8 @@ export function AnalyticsPane({
 
       {/* Google connectors */}
       <div className="grid grid-cols-2 gap-2 border-b border-border p-2">
-        <ConnectorCard name="Google Analytics" sub="Traffic & behavior" integ={ga} />
-        <ConnectorCard name="Search Console" sub="Search rankings" integ={gsc} />
+        <ConnectorCard name="Google Analytics" sub="Traffic & behavior" integ={ga} projectId={projectId} onConnected={onConnected} />
+        <ConnectorCard name="Search Console" sub="Search rankings" integ={gsc} projectId={projectId} onConnected={onConnected} />
       </div>
 
       {!projectId ? (
@@ -179,8 +186,60 @@ export function AnalyticsPane({
 }
 
 /* ── connector card ──────────────────────────────────────────── */
-function ConnectorCard({ name, sub, integ }: { name: string; sub: string; integ?: Integration }) {
+function ConnectorCard({
+  name,
+  sub,
+  integ,
+  projectId,
+  onConnected,
+}: {
+  name: string;
+  sub: string;
+  integ?: Integration;
+  projectId: string | null;
+  onConnected?: () => void | Promise<void>;
+}) {
   const connected = integ?.connected ?? false;
+  const service = integ ? GOOGLE_SERVICE_BY_KEY[integ.key] : undefined;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const connect = async () => {
+    if (!service) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { url } = await authorizeGoogle(service, projectId ?? undefined);
+      const popup = window.open(url, 'cailyx-google-oauth', 'width=520,height=700');
+      if (!popup) {
+        setError('Allow pop-ups for this site, then try again');
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          clearInterval(t);
+          window.removeEventListener('message', onMsg);
+          resolve();
+        };
+        const onMsg = (e: MessageEvent) => {
+          if (e.data && e.data.source === 'cailyx-google-oauth') finish();
+        };
+        window.addEventListener('message', onMsg);
+        const t = setInterval(() => {
+          if (popup.closed) finish();
+        }, 500);
+      });
+      await onConnected?.();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'could not start the Google connect');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="rounded-md border border-border bg-bg-inset p-2">
       <div className="flex items-center gap-1.5">
@@ -190,17 +249,18 @@ function ConnectorCard({ name, sub, integ }: { name: string; sub: string; integ?
       <p className="mt-0.5 text-[10px] text-faint">{sub}</p>
       <div className="mt-1.5 h-8 rounded bg-bg-raised" aria-hidden />
       <button
-        disabled={connected}
+        disabled={connected || busy || !service}
         title={integ?.detail ?? ''}
+        onClick={connect}
         className={`mt-1.5 w-full rounded border px-2 py-1 text-[10px] ${
           connected
             ? 'border-accent-dim text-accent'
-            : 'border-border text-dim hover:border-border-strong'
+            : 'border-border text-dim hover:border-border-strong disabled:opacity-50'
         }`}
       >
-        {connected ? 'Connected' : 'Connect'}
+        {connected ? 'Connected' : busy ? 'connecting…' : 'Connect'}
       </button>
-      {!connected && <p className="mt-1 text-[9px] leading-tight text-faint">{integ?.configHint}</p>}
+      {!connected && <p className="mt-1 text-[9px] leading-tight text-faint">{error ?? integ?.configHint}</p>}
     </div>
   );
 }

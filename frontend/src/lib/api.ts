@@ -16,6 +16,9 @@ export const API_URL =
 
 const TOKEN_KEY = 'cailyx.token';
 const REFRESH_KEY = 'cailyx.refresh';
+const REFRESH_LOCK_KEY = 'cailyx.refreshLock';
+/** How long a cross-tab refresh lock is honored before it's considered stale. */
+const REFRESH_LOCK_TTL_MS = 5_000;
 
 /** NestJS error payload shape ({ message, error, statusCode }). */
 export class ApiError extends Error {
@@ -112,11 +115,44 @@ type JsonInit = { method?: string; json?: unknown };
 
 let refreshInFlight: Promise<boolean> | null = null;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Best-effort cross-tab coordination: if another tab claimed the refresh
+ * lock recently, wait for it to finish and reuse whatever token it left
+ * behind instead of racing it to `/auth/refresh` (the backend tolerates the
+ * race regardless, but avoiding it means one fewer round trip).
+ */
+async function waitForOtherTabRefresh(startToken: string | null): Promise<boolean> {
+  for (let i = 0; i < 10; i++) {
+    await sleep(150);
+    const lock = Number(window.localStorage.getItem(REFRESH_LOCK_KEY) ?? 0);
+    if (Date.now() - lock > REFRESH_LOCK_TTL_MS) return false;
+    const current = getToken();
+    if (current && current !== startToken) return true;
+  }
+  return false;
+}
+
 /** Try once to rotate the refresh token. Returns true on success. */
 async function tryRefresh(): Promise<boolean> {
   if (refreshInFlight) return refreshInFlight;
   const refreshToken = getRefreshToken();
   if (!refreshToken) return false;
+
+  try {
+    const lock = Number(window.localStorage.getItem(REFRESH_LOCK_KEY) ?? 0);
+    if (Date.now() - lock <= REFRESH_LOCK_TTL_MS) {
+      const startToken = getToken();
+      if (await waitForOtherTabRefresh(startToken)) return true;
+    }
+    window.localStorage.setItem(REFRESH_LOCK_KEY, String(Date.now()));
+  } catch {
+    /* storage unavailable — fall through and refresh directly */
+  }
+
   refreshInFlight = (async () => {
     try {
       const res = await fetch(`${API_URL}/api/auth/refresh`, {

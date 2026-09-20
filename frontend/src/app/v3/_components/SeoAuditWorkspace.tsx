@@ -29,6 +29,7 @@ import {
 import { pollUntilDone } from '@/lib/poll-job';
 import type { AuditDelta, SeoAudit, SeoComparison, SeoTrendPoint } from '@/types/terminal';
 import { band, rel } from '@/app/v3/_lib/audit';
+import { useV3 } from '@/app/v3/_lib/SessionContext';
 import { SeoFixes, SeoOverview, SeoPages, SeoQueries } from './SeoAuditReport';
 import { Button } from './Button';
 import { ChevronLeft, SyncIcon } from './icons';
@@ -54,6 +55,7 @@ export function SeoAuditWorkspace({
   onClose: () => void;
   onNotify: (msg: string, tone?: 'ok' | 'warn') => void;
 }) {
+  const { setPanel } = useV3();
   const [audit, setAudit] = useState<SeoAudit | null>(null);
   const [comparison, setComparison] = useState<SeoComparison | null>(null);
   const [trend, setTrend] = useState<SeoTrendPoint[]>([]);
@@ -260,9 +262,11 @@ export function SeoAuditWorkspace({
             <p className="text-ui font-semibold text-text">Search Console needed</p>
             <p className="mt-1 text-caption leading-relaxed text-faint">{gate}</p>
             <p className="mt-2 text-caption leading-relaxed text-faint">
-              Open the connections panel in the top bar, connect Google Search Console, and map this project&rsquo;s
-              property. Then re-open this.
+              Connect Google Search Console and map this project&rsquo;s property. Then re-open this.
             </p>
+            <Button type="button" variant="primary" size="sm" onClick={() => setPanel('connections')} className="mt-3">
+              Open connections
+            </Button>
           </div>
         </div>
       ) : !audit ? (

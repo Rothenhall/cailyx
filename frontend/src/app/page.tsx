@@ -289,6 +289,16 @@ export default function CanvasConsole() {
       .finally(() => setAgentsLoading(false));
   };
 
+  const refreshIntegrations = async () => {
+    try {
+      const ig = await getIntegrations();
+      setInteg(ig);
+      cacheSet('integrations', ig);
+    } catch {
+      /* keep whatever's currently shown */
+    }
+  };
+
   const logout = () => {
     setSession(null);
     router.replace('/login');
@@ -347,6 +357,7 @@ export default function CanvasConsole() {
             projectId={activeId}
             domain={project?.domain ?? null}
             integrations={integ?.integrations ?? []}
+            onConnected={refreshIntegrations}
           />
         );
       case 'context':
