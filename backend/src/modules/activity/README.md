@@ -100,6 +100,25 @@ None of its own.
   pages), which is why the export/nextCursor paths were checked for shape
   rather than content.
 
+## C1 addendum (2026-09-20) — first real caller of `record()`, and a new action
+
+`docs/analysis/client-portal.md` §33 asked for a "shared admin-action audit
+log (actor, action, target, timestamp, metadata)" as new C1 scope. It already
+existed here — this module was found via `grep -rl "AuditLog\|auditLog"
+backend/src/modules` turning up nothing, followed by a closer read that this
+module (a different name, same shape) already matched the spec exactly. No
+new module was built; `clients` module was instead wired to import
+`ActivityModule` and call `record()` from its new "waive the onboarding-wizard
+Google-connect gate" action (§15) — the first real (non-smoke-test) write into
+this table. `'waived'` was added to `ActivityAction`
+(`activity.types.ts`)/`ACTIVITY_ACTIONS` (`dto/activity.dto.ts`) as a new,
+dedicated verb rather than overloading `'updated'`, since §33 names the waive
+action explicitly as one of the sensitive actions this log must cover.
+Verified live: `GET /api/activity?action=waived&clientId=...` returns the
+event with the waiving admin's `actorId`, the project as `resourceId`, and
+`changes: {onboardingWizardState: {before, after: "waived"}}` — see
+`clients/README.md`'s testing notes for the full call sequence.
+
 ## Not wired, and why
 
 - **`record()` over HTTP** — deliberately absent (see above). It is the

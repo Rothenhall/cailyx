@@ -35,6 +35,12 @@ import { FindingsModule } from '../findings/findings.module';
 // definitions (frozen cycle denominator, the action queue's sources) rather
 // than re-deriving them in this module.
 import { DeliveryPlanModule } from '../delivery-plan/delivery-plan.module';
+// C1 — ActivityService.record() is how the "waive onboarding-wizard gate"
+// action (§15) writes to the shared admin-action audit log (§33). No new
+// audit-log module was built: `activity` (G15) already IS that shared
+// mechanism (actor, action, target, timestamp, redacted metadata, plus
+// admin-only read/export routes) — see clients.service.ts's import comment.
+import { ActivityModule } from '../activity/activity.module';
 import { ClientsService } from './clients.service';
 import { ClientsOnboardingExecutors } from './clients.onboarding-executors';
 import { ClientsController } from './clients.controller';
@@ -59,6 +65,7 @@ import { ClientsController } from './clients.controller';
     KeywordResearchModule,
     GrowthExecutionModule,
     BacklinksModule,
+    ActivityModule,
   ],
   controllers: [ClientsController],
   providers: [ClientsService, ClientsOnboardingExecutors],

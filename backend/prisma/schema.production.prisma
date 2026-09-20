@@ -412,11 +412,39 @@ model Project {
   /// by the `clients` module (technical-audit -> digital-presence ->
   /// tech-stack -> gap-analysis sync -> strategy build -> report). Untouched
   /// (stays "pending") for projects created outside that orchestrator.
+  ///
+  /// PIPELINE-INTERNAL — NOT the client-facing engagement Phase/Milestone model.
+  /// `onboardingStatus`/`onboardingStep` describe the one-time Day-1 bootstrapping
+  /// run only (plumbing). The future client-facing engagement/timeline concept
+  /// (`Phase`/`Milestone`/`Approval`, `docs/analysis/client-portal.md` §10, Phase C3
+  /// in `docs/PLAN.md` §11.3 — not yet designed or built) is a SEPARATE, ongoing
+  /// concept and must get its own field(s)/model when it's built. Do not repurpose
+  /// or overload these two fields for it — conflating "which Day-1 stage is
+  /// running" with "which client-facing engagement Phase this project is in" is
+  /// exactly the ambiguity `docs/PLAN.md` §11.0's cleanup pass exists to prevent.
+  /// (Separately: also do not confuse this with `onboardingWizardState` below,
+  /// which is the per-project client-facing onboarding-WIZARD gate, C1/§16 — a
+  /// third, independent concept from both of these.)
   onboardingStatus String  @default("pending")
   /// Human-readable name of whichever stage is currently running/failed —
-  /// e.g. "technical-audit", "gap-analysis". Null once completed.
+  /// e.g. "technical-audit", "gap-analysis". Null once completed. Same
+  /// pipeline-internal scope note as `onboardingStatus` above.
   onboardingStep   String?
   onboardingError  String?
+  /// C1 (`docs/analysis/client-portal.md` §16, `docs/PLAN.md` §11.1) — state of
+  /// the per-project client-facing onboarding WIZARD gate (confirm details ->
+  /// connect GSC -> connect GA4 -> done), distinct from `onboardingStatus` above
+  /// (the Day-1 bootstrapping pipeline) and from the not-yet-built engagement
+  /// Phase/Milestone model (C3). One value of:
+  ///   not-started | confirming-details | connecting-gsc | connecting-ga4 | done | waived
+  /// Scoped to `Project`, not `Client` — client-portal.md §16: a client with
+  /// several projects/brands onboards each one separately. `waived` is set only by
+  /// the admin "waive Google-connect" action (§15) and must stay visibly distinct
+  /// from `done` in every DTO/response that surfaces it — never collapsed into a
+  /// boolean "is onboarded". The wizard UI that actually transitions through these
+  /// states is Phase C2 (not built in C1) — C1 only builds this column plus a
+  /// service method to read/write it.
+  onboardingWizardState String @default("not-started")
   /// G06 — the engagement funding work on this project.
   engagementId String?
   /// G06 — IANA timezone for this project's due dates, inherited from the

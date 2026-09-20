@@ -1,5 +1,30 @@
 'use client';
 
+/**
+ * CP04 — welcome / onboarding checklist page.
+ *
+ * TRANSITION PLAN (recorded 2026-09-20, `docs/analysis/client-portal.md` §2/§11,
+ * `docs/PLAN.md` §11.0): this page is being repurposed, not replaced wholesale.
+ *
+ * - Per client-portal.md §2, this single all-in-one checklist is superseded as the
+ *   client's *first-visit* onboarding gate by a new sequential, hard-gated wizard
+ *   (confirm details -> connect GSC -> connect GA4 -> done) that does NOT exist yet.
+ *   Building that wizard is Phase C2 (`docs/PLAN.md` §11.2) — a separate, later piece
+ *   of work. Phase C1 (this stage) only lays the state-model foundation (per-project
+ *   `onboardingWizardState` on `Project`, see `backend/prisma/schema.prisma`) that C2's
+ *   wizard will read/write and gate on.
+ * - Until C2 ships, THIS page remains the de-facto onboarding entry point — it is not
+ *   being torn out or hidden in this stage.
+ * - Once C2 ships the real gated wizard, this page's role changes to a post-onboarding
+ *   "manage your connections / account" surface (reconnect/disconnect Google, review
+ *   confirmed details) rather than the first-run gate. That was an explicitly open call
+ *   in client-portal.md §11 ("worth a quick call when this gets built") — recorded here
+ *   so a future engineer doesn't build a second, competing checklist page from scratch
+ *   without noticing this one is meant to be repurposed.
+ * - Do NOT restructure this page's UI as part of Stage 1 (C1) — that's out of scope;
+ *   this comment exists purely so the transition plan survives to whoever builds C2.
+ */
+
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';

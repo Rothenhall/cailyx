@@ -9,6 +9,63 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-20 — Client Portal Stage 1: §11.0 cleanup + Phase C1 (audit trail + onboarding-gate foundation)
+
+Full decision record: `docs/analysis/client-portal.md` §§15/16/33. Build order: `docs/PLAN.md`
+§11.0/§11.1. Full write-up: `backend/src/modules/clients/README.md`,
+`backend/src/modules/activity/README.md`, `docs/API.md`, `docs/MODULES-STATUS.md` (Wave 7).
+
+**§11.0 cleanup (four of five items; `frontend`/`client-portal` removal and `sleeper-refresh`'s
+GSC gap deliberately left untouched, per the plan):**
+- `POST /clients/:clientId/login` (temp-password) marked `@deprecated` — kept working as a
+  non-default escape hatch, not removed. `POST /clients/:clientId/invites` (`client-access`,
+  invite-link) confirmed canonical. The one known caller
+  (`web/.../ops/clients/[clientId]/access/page.tsx`) now shows an in-page deprecation banner.
+- CP04 (`web/.../welcome/page.tsx`) left functionally untouched, with an inline comment
+  documenting its Phase-C2 transition plan (first-visit gate today → post-onboarding "manage
+  connections" surface once C2 ships the real wizard).
+- `Project.onboardingStatus`/`onboardingStep` (pipeline-internal) now carry an explicit doc
+  comment in `schema.prisma` and `schema.production.prisma` against being repurposed for the
+  future engagement Phase/Milestone model (Phase C3).
+
+**Phase C1:**
+- **Audit log (§33):** no new module built — `activity` (G15, `ActivityService`) already matched
+  the spec (actor/action/target/timestamp/redacted metadata + admin-only reads). Added `'waived'`
+  as a new `ActivityAction`.
+- **Per-project onboarding-wizard state (§16):** new `Project.onboardingWizardState` column
+  (`not-started | confirming-details | connecting-gsc | connecting-ga4 | done | waived`), scoped
+  per-project not per-client, plus `ClientsService.getOnboardingWizardState()`/
+  `waiveOnboardingWizard()`. `GET /api/clients/:clientId/projects/:projectId/onboarding-wizard`
+  reads it.
+- **Admin waive action (§15):**
+  `POST /api/clients/:clientId/projects/:projectId/onboarding-wizard/waive` (`@Roles('admin')`),
+  sets the gate to `"waived"` and writes an audit event. `waived` is always returned as the
+  literal state string — never collapsed into a boolean "is onboarded".
+
+**Verified live** against a booted backend (`PORT=3099`) and a real Postgres container
+(`localhost:5436`): created a client + project (`onboardingWizardState: "not-started"` on
+create) → `GET .../onboarding-wizard` → `{"state":"not-started"}` → `POST .../waive` with a
+`reason` → response `onboardingWizardState: "waived"` → re-read confirmed persistence →
+`GET /api/activity?action=waived&clientId=...` returned exactly one matching event (actorId =
+the admin, resourceId = the project, `changes: {onboardingWizardState: {before:
+"not-started", after: "waived"}}`) → confirmed the deprecated `/login` endpoint still returns
+201. `npx tsc --noEmit` clean.
+
+**Left for later (out of scope for this stage, by design):** the sequential onboarding-wizard UI
+that actually transitions through the non-waived states is Phase C2; `frontend`/`client-portal`
+directory removal is a separate commit the user does themselves; `sleeper-refresh`'s GSC-OAuth
+gap is untouched (already flagged in `MODULES-STATUS.md`'s Wave-4 row).
+
+**Pre-existing repo issue found, not caused by this change:** `npx prisma migrate dev` fails with
+`P3019` — `prisma/migrations/migration_lock.toml` still says `provider = "sqlite"` from before
+the 2026-09-16 Postgres cutover (the migration SQL files are SQLite-dialect too), even though
+`schema.prisma`/`schema.production.prisma` have said `postgresql` since that cutover. Used
+`prisma db push` instead, which is the only thing that currently works against this schema.
+Flagged in `docs/MODULES-STATUS.md`'s Wave 7 note so C2+ doesn't hit the same surprise cold; not
+fixed here (out of scope for this stage).
+
+---
+
 ## 2026-09-20 — Correction: the live app is `web/`, not `frontend/`; two more feedback fixes
 
 Discovered mid-fix-pass: this repo has **three** frontend-ish directories —

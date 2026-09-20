@@ -91,6 +91,52 @@ executors keep:
 `runDayOnePipeline`, and no durable run is created for it — doing both would run
 every stage twice. Moving Day-1 onto the ledger is a deliberate follow-up.
 
+## C1 (2026-09-20) — onboarding-wizard gate + admin waive action
+
+`docs/analysis/client-portal.md` §§15/16/33, `docs/PLAN.md` §11.1. Two additions:
+
+- **`Project.onboardingWizardState`** — a new column, one of `not-started |
+  confirming-details | connecting-gsc | connecting-ga4 | done | waived`, scoped
+  to `Project` (not `Client`) per §16 — a client with several brands onboards
+  each project separately. Distinct from `onboardingStatus`/`onboardingStep`
+  (the Day-1 bootstrapping pipeline, unchanged, see doc comment on both in
+  `schema.prisma`) and from the not-yet-built engagement Phase/Milestone model
+  (Phase C3). This stage only builds the column and read/write methods
+  (`getOnboardingWizardState`, `waiveOnboardingWizard`) — the sequential wizard
+  UI that actually advances a project through `confirming-details` →
+  `connecting-gsc` → `connecting-ga4` → `done` is Phase C2, not built here.
+- **`POST /clients/:clientId/projects/:projectId/onboarding-wizard/waive`**
+  (`@Roles('admin')`) — §15's escape hatch. Sets the gate straight to `waived`
+  and writes an audit event via `ActivityService.record()` (action `"waived"`,
+  resource `{type: "project", id: projectId}`) so who waived it, when, and for
+  which client/project is recorded (§33). `waived` is always returned as the
+  literal string in `ClientProjectSummaryDto.onboardingWizardState` — never
+  collapsed into a boolean — so it can never be mistaken for a real Google
+  connection anywhere it's read.
+- **No new audit-log module was built.** `backend/src/modules/activity`
+  (G15, `ActivityService`) already IS the shared admin-action audit log §33
+  asks for — actor/action/resource/timestamp/redacted-metadata, plus
+  already-existing admin-only read routes (`GET /api/activity`,
+  `/api/activity/export`, `/api/clients/:clientId/activity`,
+  `/api/projects/:projectId/activity`). `ClientsModule` now imports
+  `ActivityModule` and calls `activity.record()` from
+  `waiveOnboardingWizard()`. `'waived'` was added to `ActivityAction`/
+  `ACTIVITY_ACTIONS` as a new, dedicated verb.
+
+## Deprecation: temp-password login superseded by invites (2026-09-20)
+
+`docs/analysis/client-portal.md` §2, `docs/PLAN.md` §11.0. `POST
+/clients/:clientId/login` (below) is **no longer the canonical way to grant
+portal access** — `POST /clients/:clientId/invites` (`client-access` module,
+single-use 7-day link, client sets their own password) is. The temp-password
+endpoint is kept working, not removed or restricted — it is a documented,
+non-default escape hatch (`@deprecated` JSDoc on both the controller handler
+and `ClientsService.createClientLogin`). Its one known caller,
+`web/.../ops/clients/[clientId]/access/page.tsx`, now carries an in-page
+warning banner saying the same thing; no ops-side invite UI exists yet
+(that's G02/future work), so this page stays the working fallback until one
+is built. No new caller should be wired to the deprecated endpoint.
+
 ## Client-portal login
 
 `POST /clients/:clientId/login` creates a `type: "client"` `User` row (same
@@ -123,7 +169,9 @@ data, enforced at the guard, not just the UI.
 | `GET` | `/clients/:clientId` | any operator | Client detail + its projects |
 | `PATCH` | `/clients/:clientId` | delivery-lead | Update name/contact/status/owner/notes |
 | `POST` | `/clients/:clientId/projects` | delivery-lead | Add a project, run the Day-1 pipeline (202-shaped 201: returns immediately, `onboardingStatus: "running"`) |
-| `POST` | `/clients/:clientId/login` | delivery-lead | Create a client-portal login |
+| `GET` | `/clients/:clientId/projects/:projectId/onboarding-wizard` | any operator | Read the onboarding-wizard gate state (C1) |
+| `POST` | `/clients/:clientId/projects/:projectId/onboarding-wizard/waive` | **admin only** | Waive the Google-connect gate for this project (C1/§15), writes an audit event |
+| `POST` | `/clients/:clientId/login` | delivery-lead | **[Deprecated]** Create a client-portal login (temp password) — use `POST /clients/:clientId/invites` instead |
 | `GET` | `/clients/:clientId/messages` | any operator | The message thread |
 | `POST` | `/clients/:clientId/messages` | any operator | Post a message (visible to the client) |
 
@@ -136,6 +184,20 @@ Day-1 pipeline calls into. No new audit logic lives here.
 `JobsModule`); the only new dependency it adds is `PrismaService` (global) for
 the run's artifacts and the legacy onboarding columns.
 
+C1 adds `ActivityModule` (`../activity/activity.module`) as a new dependency,
+for `ActivityService.record()` — used only by `waiveOnboardingWizard()`.
+
+## PRD alignment (C1 — `docs/analysis/client-portal.md` §§15/16/33)
+
+| Requirement | Status | Notes |
+|---|---|---|
+| §33 shared admin-action audit log (actor, action, target, timestamp, metadata) | ✅ | Reused the existing `activity` (G15) module rather than building a new one — it already matched the spec. Added `'waived'` as a new `ActivityAction`. |
+| §16 per-project onboarding-wizard state model | ✅ (state model only) | `Project.onboardingWizardState` column + `getOnboardingWizardState`/`waiveOnboardingWizard` service methods. The wizard UI that transitions through the non-waived states is Phase C2 — not built here. |
+| §15 admin waive action, admin-only, audited, visibly distinct from `done` | ✅ | `POST .../onboarding-wizard/waive`, `@Roles('admin')`, writes an `ActivityEvent`, `onboardingWizardState` always returned as the literal string. |
+| §11.0 cleanup — collapse to one client-login mechanism | ⚠️ | Invite-link flow (`client-access`) confirmed canonical; temp-password endpoint marked `@deprecated`, kept functional as an escape hatch (not removed — matches the plan's "deprecate, don't necessarily delete" framing). No ops-side invite UI was built (out of scope for C1), so the deprecated page remains the only working ops UI for now. |
+| §11.0 cleanup — retire CP04 as the onboarding gate (rename only) | ✅ | `welcome/page.tsx` now carries an inline transition-plan comment; no UI restructuring done, per the stage's explicit scope limit. |
+| §11.0 cleanup — separate namespaces for pipeline stages vs. future Phase/Milestone | ✅ | Doc comments added to `onboardingStatus`/`onboardingStep`/`onboardingWizardState` in both `schema.prisma` and `schema.production.prisma`. |
+
 ## Testing notes
 
 Verified end-to-end against a live local backend: create client → create
@@ -146,6 +208,20 @@ from `/portal/*`) → confirmed cross-client `projectId` spoofing on a message
 is rejected. `users.smoke.sh`, `dashboard.smoke.sh`, `competitors.smoke.sh`
 re-run clean after the `RolesGuard` change (no regression). `npx tsc --noEmit`
 clean.
+
+**C1 (2026-09-20), verified live against a booted backend + real Postgres:**
+created a client and project (`onboardingWizardState: "not-started"` on
+create) → `GET .../onboarding-wizard` returned `{"state":"not-started"}` →
+`POST .../onboarding-wizard/waive` (admin token, `reason` supplied) returned
+`onboardingWizardState: "waived"` → re-read via `GET .../onboarding-wizard`
+confirmed the state persisted as `{"state":"waived"}` → `GET
+/api/activity?action=waived&clientId=...` returned exactly one event with
+`actorId` = the admin's user id, `action: "waived"`, `resourceType:
+"project"`, `resourceId` = the project id, and `changes: {onboardingWizardState:
+{before: "not-started", after: "waived"}}` → confirmed the deprecated `POST
+.../login` endpoint still works (201, temp password returned) — deprecation is
+documentation-only, not a functional break. `npx tsc --noEmit` clean
+(zero errors) after all C1 changes.
 
 ## G19/D26 — operator message write validates project ownership (2026-09-16)
 

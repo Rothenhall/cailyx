@@ -20,7 +20,11 @@ export type ActivityAction =
   | 'cancelled'
   | 'granted'
   | 'revoked'
-  | 'logged-in';
+  | 'logged-in'
+  // C1 (2026-09-20, docs/analysis/client-portal.md §15/§33) — admin
+  // "waive Google-connect onboarding gate" action. Kept in sync with
+  // dto/activity.dto.ts's ACTIVITY_ACTIONS.
+  | 'waived';
 
 export type ActivityOrigin = 'api' | 'ui' | 'scheduler' | 'webhook';
 export type ActivityResult = 'success' | 'failure';
