@@ -384,3 +384,176 @@ External integrations:
   Playwright ──→ measurement, technical-audit
   Log ingestion ──→ crawler-monitor
 ```
+
+---
+
+## 11. Client Portal & Admin Console — Implementation / Revamp Plan (2026-09-20)
+
+> Everything below is sequencing on top of decisions already made and recorded in
+> `docs/analysis/client-portal.md` v1.3 (35 sections) — that doc is the *what and why*; this
+> section is the *build order*. Section references below (`§N`) point into that doc, not this
+> one. No new external vendor/tool is needed anywhere in this plan (Stripe, DataForSEO, and
+> Google OAuth are all already-approved, already-integrated services) — so the `AGENTS.md`
+> "2-3 tool options" ceremony doesn't apply to any phase here, **except** the engagement/timeline
+> model (C3 below), which still needs its own focused analysis pass for DB shape and module
+> ownership before code, per `client-portal.md` §10's own instruction.
+>
+> Same discipline as Waves 0–5 above: **one phase at a time**, each phase gets the full
+> `AGENTS.md` post-completion checklist (module README, `docs/API.md`, PRD alignment, `tsc`
+> clean, e2e test) before the next phase starts.
+
+### 11.0 Cleanup first — reconcile partial/duplicate work before adding anything new
+
+The user's own framing for this plan was that some of what exists is "unnecessarily
+implemented or partially implemented" — these are real, and doing them first means new work in
+C1–C7 below is built on a clean base instead of layering on top of ambiguity.
+
+- [ ] **Collapse to one client-login mechanism.** Two exist today: `POST
+  /clients/:clientId/login` (temp-password, plaintext-in-email) and `POST
+  /clients/:clientId/invites` (invite-link, client sets own password). The invite-link flow is
+  canonical per every decision in this conversation (§2). Deprecate the temp-password endpoint
+  — either remove it outright or leave it as an internal escape hatch clearly marked
+  not-for-normal-use, but stop treating it as a live parallel path. Small, no schema change.
+- [ ] **Retire CP04 as the onboarding gate.** Today's single-page welcome checklist
+  (`web/.../welcome/page.tsx`) is superseded by the new sequential wizard (C2 below) as the
+  *first-visit* experience. Don't delete it — repurpose it as the post-onboarding "manage your
+  connections / account" surface (§11's own open note flagged this exact question). Doing this
+  as a rename/repurpose rather than a parallel build avoids ending up with two Google-connect
+  UIs live at once.
+- [ ] **Keep the Day-1 pipeline's internal stages and the new client-facing Phase/Milestone
+  concept (§10) in separate namespaces.** `Project.onboardingStatus`/`onboardingStep` describe
+  the one-time bootstrapping pipeline (technical-audit → digital-presence → ... → reporting) —
+  that's plumbing, not a client-facing "Phase." When C3 is built, it must not repurpose or
+  overload these fields; conflating "which Day-1 stage is running" with "which engagement Phase
+  the client is in" is exactly the kind of partial/confusing state this cleanup pass exists to
+  prevent.
+- [ ] **Decide the fate of `frontend/` and `client-portal/`.** Both are confirmed-deprecated
+  dead code (superseded by `web/`), currently sitting as an uncommitted local deletion (per this
+  session's incident and your decision to leave them deleted). Formalize that: commit their
+  removal from the repo as its own clean, clearly-labeled commit — not bundled into any of the
+  phases below, so a `git blame` on C1–C7's commits never has to explain 211 unrelated deletions.
+- [ ] **Flag, don't fix yet: `sleeper-refresh` still ignores the `google` module.** It only takes
+  manual/CSV GSC import despite the real OAuth integration now existing elsewhere. Not part of
+  any phase below (nobody asked for it), but worth a line in `MODULES-STATUS.md`'s open-items so
+  it doesn't get lost — closing it later is a small, self-contained follow-up.
+
+### 11.1 Phase C1 — Audit trail + onboarding-gate foundation
+
+**Why first:** almost every later phase (C2's gate, C5's suspend/waive actions, C6's overrides)
+produces or checks an audit-worthy event or a gate state. Building the shared primitive once,
+first, avoids five bespoke one-off implementations.
+
+- [ ] Shared admin-action audit log (actor, action, target, timestamp, metadata) — §33.
+- [ ] Per-project onboarding-wizard state model: `not-started / confirming-details /
+  connecting-gsc / connecting-ga4 / done / waived`, scoped to `Project` not `Client` — §16.
+- [ ] Admin "waive Google-connect for this client" action, writing to the audit log above,
+  visibly distinct from a real connection everywhere it's read — §15.
+
+### 11.2 Phase C2 — Auto-email + the sequential onboarding wizard
+
+**Why second:** this is the literal front door to the portal once C1's gate model exists to hang
+it on. Depends on C1.
+
+- [ ] Day-1 pipeline completion → auto-send invite-link email ("your portal is ready"), honoring
+  honest partial results on a degraded run (no PDF, no blocking on a clean run) — §2, §18.
+- [ ] New sequential wizard UI: confirm/edit details → connect GSC → connect GA4 → done, gated
+  per C1's project-scoped state, with the C1 waive path as the documented bypass — §2, §11.
+- [ ] Wizard-gate check keyed on **project** state so an already-onboarded colleague accepting a
+  seat invite skips straight in — §17.
+- [ ] Verify (then close the gap if real) whether category and target-markets are already
+  client-editable the same way description/competitors are — §12.
+
+### 11.3 Phase C3 — Engagement/timeline model (needs its own analysis pass first)
+
+**Why gated separately:** this is the one piece explicitly called out in `client-portal.md` §10
+as needing its own follow-up analysis doc — DB shape, which module owns it, whether
+`Diagnose → Build → Operate → Compound` are the real Phase names — before any code. **Do not
+skip straight to implementation for this phase**; write `docs/analysis/engagement-timeline.md`,
+get it confirmed, then build.
+
+- [ ] Analysis pass: Phase/Milestone/Approval schema, module ownership (`clients`?
+  `client-portal`? new `engagement` module?), migration shape.
+- [ ] Build `Phase` + `Milestone` (admin-authored, admin marks complete, no client approval
+  needed on milestones) — §10.
+- [ ] Build the `Approval` primitive, scoped to content-before-publish only (not competitors/
+  facts, which are direct-edit per C2/§12, and not prompts, which are C4's separate request
+  queue) — §9, §10.
+- [ ] Baseline-report concept: pin the post-onboarding Day-1 report, report later runs as delta
+  against it, not against the previous run only — §25. Depends on C2 (the wizard is what
+  produces "post-onboarding" as a real moment) and reuses `reporting`'s existing delta machinery
+  built for `monitoring`.
+
+### 11.4 Phase C4 — Request queues (prompts + content)
+
+**Why here:** independent of C3 — deliberately a *different, lighter* mechanism than the
+Approval primitive (§9), so it doesn't need to wait on C3's schema work. Can run in parallel
+with C3 if capacity allows.
+
+- [ ] Client-facing read-only prompt list (the real active query set, not a summary) — §13.
+- [ ] Lightweight prompt add/delete request queue, admin acts directly (not a diff-review flow)
+  — §13.
+- [ ] Quota check against the plan's tracked-prompt limit at request time, flagged as an upsell
+  moment rather than a silent failure over the limit — §20.
+- [ ] Structured content-request form on the client content tab, landing directly in
+  `content-workspace` as a client-tagged item (reuses existing pipeline, no new triage inbox) —
+  §14, §22.
+
+### 11.5 Phase C5 — Lifecycle & billing hardening
+
+**Why here:** these close real, currently-open gaps in admin control (§5 flagged "suspend" as
+unverified) and billing robustness (§7 already found billing more built than assumed — this
+phase extends what its webhook handling reacts to, not the verification pipeline itself).
+Depends on C1's audit log.
+
+- [ ] Close the "suspend" gap: a real suspend/offboard action on `Client`, wired to immediately
+  revoke Google tokens (not just stop calling them) — §5, §23.
+- [ ] Payment-failure handling: consume `invoice.payment_failed`/`customer.subscription.
+  past_due` Stripe webhook events (extends the already-verified `billing` webhook intake),
+  grace period, then auto-suspend via the action above — §30.
+- [ ] Account-ownership transfer: admin action to reassign a `Client`'s primary contact — §32.
+- [ ] Client seat permission differentiation: gate billing/seat-management/content-approval
+  endpoints to `client-admin` only, `client-collaborator` gets view + request access — §27.
+
+### 11.6 Phase C6 — Governance, cost control & security
+
+**Why here:** lower urgency than C1–C5 (nothing here is currently a live risk the way the
+Google-gate lockout or unaudited suspend was), but each is a small, mostly independent slice —
+good fill-in work, no strict internal ordering required.
+
+- [ ] Competitor-cap enforcement tied to plan tier — needs the actual per-tier numbers proposed
+  as part of this work (PRD's "3 to 8" is a suggestion, not a tier table) — §29.
+- [ ] Public report-share link: add expiry + optional client-set password, as its own token model
+  extension (deliberately not reusing `scorecard`'s simpler unguessable-only token) — §31.
+- [ ] Data-freshness ("as of [date]") labeling across score/metric/data panels in the client
+  portal — broad but low-risk, touches many pages, no backend gap to close — §28.
+
+### 11.7 Phase C7 — Refresh-cadence automation
+
+**Why last:** the most infrastructural, least dependent piece — can be built any time after the
+foundation exists, but has no urgent dependents. Reuses `scheduling`/`monitoring`'s existing
+BullMQ cadence infrastructure; needs its own short scoping pass on exactly which pipeline stages
+re-run on cadence (probably not the full Day-1 flowchart every time) before implementation.
+
+- [ ] Scheduled job, keyed to each client's plan tier (Starter weekly, Growth/Scale daily),
+  triggering the appropriate subset of the measurement/scoring pipeline automatically — §19.
+
+### 11.8 Suggested order and why
+
+```
+11.0 Cleanup ──────────────────────────────────┐
+                                                 ▼
+C1 (audit log + gate model) ──→ C2 (wizard + auto-email) ──→ C3 (engagement/timeline)*
+                                     │                              │
+                                     ▼                              ▼
+                              C4 (request queues)             C5 (lifecycle/billing)
+                                     │                              │
+                                     └──────────┬───────────────────┘
+                                                ▼
+                                    C6 (governance/security)
+                                                │
+                                                ▼
+                                    C7 (refresh automation)
+```
+`*` C3 needs its own analysis doc before code — see 11.3. C4 and C6 have no hard dependency on
+C3 and can be reordered ahead of it if the engagement-timeline analysis pass takes a while to
+land.
