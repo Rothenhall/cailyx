@@ -1436,6 +1436,13 @@ model GrowthAsset {
   /// a brief someone is already acting on. `Opportunity.convert()` is the
   /// only writer.
   sourceOpportunityId String?
+  /// C4 (client-portal.md §14/§22): the `ContentRequest` this asset was
+  /// created from, if a client submitted the structured "request new
+  /// content" form. Not a foreign key — same reasoning as the two ids above:
+  /// a pruned/archived request must never cascade-delete or dangling-break a
+  /// brief someone is already acting on. Set once, at creation, by
+  /// `GrowthExecutionService.createFromClientRequest` only.
+  sourceClientRequestId String?
   /// Caller-supplied idempotency key for opportunity-triggered creation only
   /// (null for every other creation path). Unique so a retried "Create
   /// content" click with the same key can never create a second brief —
@@ -1466,7 +1473,87 @@ model GrowthAsset {
   @@index([projectId, assetType])
   @@index([projectId, status])
   @@index([sourceOpportunityId])
+  @@index([sourceClientRequestId])
   @@index([assigneeId])
+}
+
+/// C4 (client-portal.md §14/§22): a client's structured "request new content"
+/// submission. The record exists for the client's own request history and
+/// for admin traceability — it is deliberately NOT a triage inbox an operator
+/// must convert: `growthAssetId` is set at creation time, in the same
+/// transaction, so the request lands directly in `content-workspace` as a
+/// real, client-tagged `GrowthAsset` (see `sourceClientRequestId` above).
+model ContentRequest {
+  id                String   @id @default(cuid())
+  projectId         String
+  clientId          String
+  requestedByUserId String
+  /// One of CONTENT_WORKSPACE_ASSET_TYPES (content-workspace.types.ts) —
+  /// validated against that list, not redeclared here.
+  contentType       String
+  /// Free-text target keyword or topic, as the client typed it.
+  topic             String
+  /// low | normal | high
+  priority          String   @default("normal")
+  note              String?
+  /// The GrowthAsset created from this request — set once, at creation.
+  growthAssetId     String
+  createdAt         DateTime @default(now())
+
+  @@index([projectId])
+  @@index([clientId])
+}
+
+/// C4 (client-portal.md §13/§20): the lightweight prompt add/delete request
+/// queue. Deliberately NOT the Approval primitive (§9/§10) — the client
+/// requests, an admin acts directly on the real `QuerySet` using its own
+/// edit/versioning mechanics (draft -> add/remove -> activate, or fork an
+/// active set first), then records the decision here. This table never
+/// mutates a QuerySet itself.
+model PromptRequest {
+  id                String    @id @default(cuid())
+  projectId         String
+  clientId          String
+  requestedByUserId String
+  /// add | remove
+  action            String
+  /// Required for action=add — the proposed prompt text.
+  prompt            String?
+  /// Optional persona/funnel-stage hint for action=add, so the admin knows
+  /// which QuerySet (by persona) to add it to. One of PromptPersona.
+  persona           String?
+  /// Required for action=remove — the QuerySetItem.id flagged for removal.
+  targetItemId      String?
+  /// Snapshot of the flagged prompt's text at request time, so the request
+  /// still reads even if the item is later removed by the admin action this
+  /// request itself triggers.
+  targetPromptText  String?
+  note              String?
+  /// pending | approved | declined
+  status            String    @default("pending")
+  /// §20 quota snapshot, taken at request time — never recomputed later, so
+  /// the admin sees exactly what the client's account looked like when they
+  /// asked, even if the count has since changed.
+  activePromptCount Int
+  /// The plan tier's tracked-prompt limit at request time. Null = unlimited
+  /// (Enterprise).
+  planPromptLimit   Int?
+  /// The plan tier slug used to resolve `planPromptLimit` — recorded for
+  /// audit/debugging since tier is derived, not a stored field (§20 note).
+  planTier          String
+  /// True when `activePromptCount >= planPromptLimit` for an add request —
+  /// flagged distinctly as an upsell moment, never a silent failure (§20).
+  overQuota         Boolean   @default(false)
+  decidedByUserId   String?
+  decidedAt         DateTime?
+  decisionNote      String?
+  /// The QuerySetItem.id the admin's add action produced, if they record it.
+  resultQuerySetItemId String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([projectId, status])
+  @@index([clientId])
 }
 
 // ---------------------------------------------------------------------------
