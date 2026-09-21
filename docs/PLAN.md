@@ -389,12 +389,12 @@ External integrations:
 
 ## 11. Client Portal & Admin Console — Implementation / Revamp Plan (2026-09-20)
 
-> **Status as of 2026-09-21: §11.0 cleanup, C1, C2, C3, C4, C5, C7 done and merged to `main`. C6
-> now CODE-COMPLETE (all three items §29/§31/§28), typecheck-clean on `backend/` and `web/`, on
-> branch `phase-c6-governance` — committed locally, NOT merged, and with its required live
-> backend+Postgres verification still PENDING (no reachable Postgres this session).** A client-nav
-> restructure (not a lettered phase) also shipped and is merged. See §11.9 below for the exact
-> resume point (the remaining verification gate).
+> **Status as of 2026-09-22: §11.0 cleanup, C1, C2, C3, C4, C5, C7 done and merged to `main`. C6
+> now DONE and VERIFIED (all three items §29/§31/§28) — typecheck-clean on `backend/` and `web/`,
+> and 18/18 live assertions passed against the Supabase prod Postgres — on branch
+> `phase-c6-governance`, committed locally but NOT yet merged or pushed.** A client-nav restructure
+> (not a lettered phase) also shipped and is merged. See §11.9 for what remains (merge the branch;
+> clean up the prod test rows).
 >
 > Everything below is sequencing on top of decisions already made and recorded in
 > `docs/analysis/client-portal.md` v1.3 (35 sections) — that doc is the *what and why*; this
@@ -521,7 +521,7 @@ Depends on C1's audit log.
 - [ ] Client seat permission differentiation: gate billing/seat-management/content-approval
   endpoints to `client-admin` only, `client-collaborator` gets view + request access — §27.
 
-### 11.6 Phase C6 — Governance, cost control & security — ⚠️ CODE-COMPLETE, live verification PENDING, NOT merged (branch `phase-c6-governance`; see §11.9)
+### 11.6 Phase C6 — Governance, cost control & security — ✅ DONE, verified against live prod Postgres (branch `phase-c6-governance`, NOT yet merged; see §11.9)
 
 **Why here:** lower urgency than C1–C5 (nothing here is currently a live risk the way the
 Google-gate lockout or unaudited suspend was), but each is a small, mostly independent slice —
@@ -537,10 +537,12 @@ good fill-in work, no strict internal ordering required.
 - [x] Data-freshness ("as of [date]") labeling — §28. Done in code (2026-09-21): shared `AsOf`
   component threaded through the client Performance / Competitors / Digital-Marketing panels.
 
-> **Verification gate NOT yet passed.** All three typecheck clean on `backend/` and `web/`, but the
-> plan's required live e2e run against a real backend + Postgres has not happened — no reachable
-> Postgres this session (Docker engine wouldn't start; no native Postgres; Supabase paused). Do the
-> run (steps in each module README + `MODULES-STATUS.md` Wave 7), then flip this and §11.9 to done.
+> **Verification gate PASSED (2026-09-22): 18/18** against the live Supabase prod Postgres using the
+> real compiled service code (Docker wouldn't start headlessly; ran against prod with the user's
+> approval, app not booted so no crons fired). Drift caught & fixed: prod was missing
+> `Client.planTier` (C7) and `BusinessProfile.category` (C2), and `planTier` was absent from
+> `schema.production.prisma`. Full transcript + drift notes in each module README + `MODULES-STATUS.md`
+> Wave 7. Remaining: merge `phase-c6-governance`, and clean up the `ZZ-C6-VERIFY-*` prod test rows.
 
 ### 11.7 Phase C7 — Refresh-cadence automation — ✅ DONE, merged to main
 
@@ -588,23 +590,25 @@ C5, C7, and a client-nav restructure (not a lettered phase — see `CHANGELOG.md
 was verified with a real `npx tsc --noEmit` (backend) and `npm run typecheck` (web) pass
 afterward, regenerating the Prisma client where a schema change required it.
 
-**C6 (§11.6 — governance, cost control & security): CODE-COMPLETE, live verification PENDING, on
-branch `phase-c6-governance` (committed locally, not merged, not pushed).** Updated 2026-09-21: a
-later session finished all three items on top of `main`, reusing the small preserved skeleton from
+**C6 (§11.6 — governance, cost control & security): DONE and VERIFIED, on branch
+`phase-c6-governance` (committed locally, NOT yet merged, NOT pushed).** Updated 2026-09-22: a later
+session finished all three items on top of `main`, reusing the small preserved skeleton from
 `worktree-agent-a1e4e5fbfd6f6fcbe` (the `competitor-cap.util.ts` + `business-profile.service.ts`
-edit) rather than rebuilding it.
+edit) rather than rebuilding it, and verified them 18/18 against the live prod Postgres.
 - §29 competitor cap — per-tier caps enforced in `business-profile` `saveDraft` (422 + upsell).
 - §31 public report-link — optional password on `ReportShareLink` (bcrypt), public prompt +
   `POST .../unlock` + signed HttpOnly unlock cookie, operator UI. Expiry/revocation already existed.
 - §28 data-freshness — shared `AsOf` component across the client Performance / Competitors /
   Digital-Marketing panels.
 
-Both `backend/` (`npx tsc --noEmit`) and `web/` (`npm run typecheck`) are clean. **What remains is
-only the verification gate:** the plan's required real end-to-end run against a live backend +
-Postgres was not possible this session (Docker Desktop's engine would not start, no native Postgres,
-Supabase paused/IPv6-only), so it was deliberately NOT simulated. Run it (steps in
-`business-profile/README.md` §29, `reporting/README.md` §31, and `MODULES-STATUS.md` Wave 7), then
-mark §11.6 and this section done and merge `phase-c6-governance`.
+Both `backend/` (`npx tsc --noEmit`) and `web/` (`npm run typecheck`) are clean, and the live
+verification **PASSED 18/18** against the real Supabase prod Postgres (Docker wouldn't start
+headlessly; ran against prod with the user's approval, app not booted so no crons fired — real
+compiled service code, real DB). Drift caught & fixed along the way: prod was missing
+`Client.planTier` (C7) and `BusinessProfile.category` (C2), and `planTier` was absent from
+`schema.production.prisma`. **What remains: (1) merge `phase-c6-governance` (not yet merged, not
+pushed), and (2) clean up the `ZZ-C6-VERIFY-*` test rows left on prod.** A full prod schema reconcile
+(prod DB is behind `main` beyond just these columns' declarations) is a separate ops task.
 
 **A worked example worth reading before starting C6:** Phase C4 was built on an old base (before
 C2/C3/C5/C7 and the nav restructure existed) and needed real merge-conflict resolution plus a

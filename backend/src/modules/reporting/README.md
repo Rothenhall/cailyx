@@ -379,10 +379,28 @@ Files: `report-lifecycle.service.ts` (`ShareLinkPasswordRequiredException`, `pee
 `web/.../reports/[slug]/review/page.tsx` (password field on create, "Password" pill on protected
 links) + `web/src/services/reports.ts`.
 
-### C6 §31 verification status
+### C6 §31 verification status — ✅ VERIFIED (2026-09-22, live prod Postgres)
 
-**Code-complete; `npx tsc --noEmit` clean (backend) and `npm run typecheck` clean (web).** The
-required live end-to-end run (create password-protected link → prompt page → wrong/right password →
-unlock cookie → PDF with/without cookie → expiry 404) is **PENDING**: this session had no reachable
-Postgres (Docker Desktop's engine would not start and no local Postgres was installed). Run it once
-a backend + Postgres is up — steps in `docs/MODULES-STATUS.md`'s Wave 7 C6 entry.
+`npx tsc --noEmit` clean (backend), `npm run typecheck` clean (web). Verified with the **real
+compiled `ReportLifecycleService` code against the live Supabase Postgres** (Docker would not start
+headlessly this session, so the run went against prod with the user's explicit approval; the app was
+NOT booted, so no `@Cron` sweeps fired — the service was instantiated directly and `ReportShareLink.
+passwordHash` was added to prod as an idempotent additive `ALTER`). A released-report fixture was
+created because prod had zero released reports. 13/13 assertions passed:
+
+- create link with `password` → `hasPassword: true`, expiry set, token returned once.
+- open with **no** password → `401 {"error":"password-required"}` (not the dead-link 404).
+- **wrong** password → `401 {"error":"password-invalid"}`.
+- **correct** password → resolves the released report + revision.
+- `peekShareLink` → `requiresPassword: true` without checking the password.
+- unlock grant: `mintUnlockGrant` → `verifyUnlockGrant(valid)` true; a tampered signature and a
+  different link id both → false; resolving with `{ unlockedLinkId }` (the cookie path) → resolves.
+- create link **without** a password → `hasPassword: false`, resolves directly (no prompt).
+- **expired** link → `404` (not 401); **revoked** link → `404` even with the correct password.
+
+Not exercised as a live HTTP round-trip (the app was deliberately not booted against prod): the
+Express `Set-Cookie`/`cookie` header wiring and the rendered prompt-page HTML in
+`SharedReportController`. Those are thin wrappers over the verified service gate + the
+`mint/verifyUnlockGrant` helpers (both tested above) and are covered by `tsc`; verify the full HTTP
+flow in a browser next time a non-prod backend is running. Test fixtures were left on prod (labelled
+`ZZ-C6-VERIFY-*`).

@@ -206,7 +206,7 @@ Order reconciles `PLAN.md` phases, PRD §16 build sequence, and the dependency g
 - [x] **`scorecard`** — Rung 0, PRD §13 + §17. Analysis resolved §17 as option B (`docs/analysis/wave-5.md` §2): engine + operator API now, public funnel behind `SCORECARD_PUBLIC=1` (a flag, not a rebuild). Built: fresh technical audit (probe failure → partial dimensions with reasons, never blocks the run) → versioned-rubric scoring → exactly **3 named problems** derived deterministically from the run's evidence (no LLM key required — the free funnel never blocks on a paid key) → `nonObvious` flag from probe-only evidence (blocked/render/`schema audit: fail`) → `ScorecardRun` with unguessable public share token. e2e: run 201 (score 33/invisible, 3 named problems), public 403 with flag off → 200 with flag on, bad token 404, list newest-first.
 - [x] **`delivery`** — PRD 6.11. Built per analysis choices: Plunk email (pre-approved; 503 `email-unconfigured` / `email-send-failed` guards, subject operator-editable, link-first — react-pdf PDF is frontend scope), internal Lead CRM (sources bulk/api/form/scorecard, `new → reached → booked | won/lost`) with **append-only** CTA event log (`book-call`/`review-ask`/`upgrade-click`) + CSV export for any external CRM (Attio/HubSpot = later), Stripe Checkout ledger (option A): links from `STRIPE_CHECKOUT_URL_*` env, click flips the lead's log, @Public completion = webhook stand-in (SDK + signature verification = documented next iteration). e2e: all guards + click/complete chain + lead event log verified.
 
-### Wave 7 — Client Portal & Admin Console revamp (2026-09-21, C1 + §11.0 cleanup + C2 + C3 + C4 + C5 + C7 done, plus a client-nav restructure outside the C1-C7 sequence; C6 code-complete, live verification pending)
+### Wave 7 — Client Portal & Admin Console revamp (2026-09-21..22, C1 + §11.0 cleanup + C2 + C3 + C4 + C5 + C6 + C7 done, plus a client-nav restructure outside the C1-C7 sequence; C6 verified against live prod Postgres, on branch phase-c6-governance pending merge)
 
 Full decision record: `docs/analysis/client-portal.md` v1.3 (35 sections). Build order,
 dependencies, and the required-before-code note on the engagement/timeline model: `docs/PLAN.md`
@@ -500,14 +500,26 @@ separate track (admin/client platform layer, §1.2h) from the engine-pipeline wa
   `backend/src/modules/content-workspace/README.md` (new — this module never
   had one before), `docs/API.md` (new endpoint reference).
 
-- [~] **C6 — governance, cost control & security (§§28/29/31).** Code-complete on
-  all three items; `npx tsc --noEmit` clean (`backend/`) and `npm run typecheck`
-  clean (`web/`). **Live e2e verification is PENDING** — this session had no
-  reachable Postgres (Docker Desktop's WSL engine would not start and no native
-  Postgres was installed; the Supabase URL in `.env` is paused/IPv6-only), and
-  per the plan's own discipline the run was not simulated. Committed locally on
-  branch `phase-c6-governance` (not merged, not pushed) at the user's direction
-  ("commit now, verify later").
+- [x] **C6 — governance, cost control & security (§§28/29/31).** All three items
+  done; `npx tsc --noEmit` clean (`backend/`), `npm run typecheck` clean (`web/`),
+  `web` production build clean. **Live verification PASSED (2026-09-22): 18/18
+  assertions** against the real Supabase **prod** Postgres using the real compiled
+  service code. Docker Desktop would not start headlessly, so — with the user's
+  explicit approval — the run went against prod (pooled URL; the direct URL is
+  unreachable/IPv6-only). The app was **not** booted (so no `@Cron` sweeps fired);
+  services were instantiated directly against prod, matching C7's
+  "compiled code, live DB" precedent. Committed on branch `phase-c6-governance`
+  (**not merged, not pushed** — awaiting the go-ahead).
+  - **Prod drift caught & partly fixed during verification:** the prod DB was
+    behind `main` — missing `Client.planTier` (C7) and `BusinessProfile.category`
+    (C2); `planTier` was also absent from `schema.production.prisma` (C7 only
+    edited `schema.prisma`). Added all three as idempotent additive `ALTER`s to
+    prod, and added `planTier` to `schema.production.prisma`. A full prod schema
+    reconcile is a separate ops task — see `docs/PRODUCTION-READINESS.md`.
+  - **Test fixtures left on prod**, labelled `ZZ-C6-VERIFY-*` (two runs): fake
+    clients/projects/business-profiles/reports/share-links + their activity rows.
+    They will show in the operations portfolio/health views until removed —
+    cleanup pending the user's call (hard-delete was declined up front).
   - **§29 competitor cap** (`business-profile`): per-tier caps on client-added
     competitors — `starter` 5 / `growth` 15 / `scale` 50 / `enterprise` unlimited
     (proposed by this build; §29 left the numbers open — all in

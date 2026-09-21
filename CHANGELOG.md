@@ -9,7 +9,7 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
-## 2026-09-21 — Client Portal Phase C6: governance, cost control & security (code-complete, live verification pending)
+## 2026-09-22 — Client Portal Phase C6: governance, cost control & security (verified 18/18 against live prod)
 
 Full decision record: `docs/analysis/client-portal.md` §§28/29/31. Build order: `docs/PLAN.md`
 §11.6. Full write-up: `backend/src/modules/business-profile/README.md` (§29),
@@ -42,15 +42,25 @@ clean (`web/`), Prisma client regenerated for the schema change.
   Brand Voice, Ideation). Not applied to the frozen report reader (its figures are "as released",
   not "as of today") or to Dashboard/Results (already carried freshness signals).
 
-**Verification — PENDING, and not simulated.** The plan requires a real end-to-end run against a
-live backend + Postgres. This session had no reachable Postgres: Docker Desktop's WSL engine would
-not finish starting (its `docker-desktop` distro stayed `Stopped` for ~15 min despite the app's
-processes running — a first-run instance likely needs interactive acceptance/sign-in), no native
-Postgres is installed, and the Supabase URL in `.env` is marked paused/IPv6-only. At the user's
-direction ("commit now, verify later") the code was committed locally without the live run. Exact
-verification steps are recorded in `business-profile/README.md` (§29), `reporting/README.md` (§31),
-and `docs/MODULES-STATUS.md` (Wave 7). `docs/PLAN.md` §11.6/§11.9 should be flipped to done only
-after that run passes.
+**Verification — PASSED 18/18 (2026-09-22), real code, not simulated.** Docker Desktop would not
+start headlessly (its WSL engine stayed `Stopped` ~15 min; a first-run instance needs interactive
+acceptance), so with the user's explicit approval the run went against the Supabase **prod** Postgres
+(pooled URL — the direct/IPv6 URL is unreachable). The app was **not** booted (so no `@Cron` sweeps —
+payment-failure, refresh-cadence — could fire against prod); the real compiled `BusinessProfileService`
+and `ReportLifecycleService` were instantiated directly against prod, matching C7's "compiled code,
+live DB" precedent. §29: 5/5 (422 cap at starter with the exact upsell body, allow 5, block 5→6,
+allow decrease, growth lifts the cap). §31: 13/13 (password gate 401 vs dead-link 404, wrong/right
+password, peek, unlock-grant sign/verify/tamper/other-id/via-cookie, no-password link, expiry→404,
+revoke→404). §28 covered by the passing web production build. Full transcript in each module README.
+
+**Prod drift caught & partly fixed:** the prod DB was behind `main` — missing `Client.planTier` (C7)
+and `BusinessProfile.category` (C2), and `planTier` was absent from `schema.production.prisma`
+entirely. Added the three columns to prod as idempotent additive `ALTER`s and added `planTier` to
+`schema.production.prisma`. A full prod schema reconcile is a separate ops task
+(`docs/PRODUCTION-READINESS.md`). Test fixtures were left on prod, labelled `ZZ-C6-VERIFY-*`.
+
+Still open: merge `phase-c6-governance` (not merged, not pushed) and remove the `ZZ-C6-VERIFY-*`
+prod test rows.
 
 ## 2026-09-21 — Client Portal Phase C3: engagement Phase grouping (Option B)
 

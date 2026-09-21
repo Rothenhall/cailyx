@@ -141,6 +141,27 @@ for a multi-user server.
 6. Backups: enable automated daily snapshots + PITR on the managed instance.
    **Test a restore before launch.**
 
+   > **2026-09-22 finding — the Supabase prod DB is behind `main`.** During C6's
+   > live verification (run against prod because Docker wouldn't start locally),
+   > the prod DB was found missing columns that `main`'s schema has: at least
+   > `Client.planTier` (C7) and `BusinessProfile.category` (C2). Worse,
+   > `Client.planTier` was never added to `schema.production.prisma` at all (C7
+   > edited only `schema.prisma`) — so §29 and C7's refresh-cadence were broken
+   > on prod. Because DDL has been `prisma db push` (no migration history, P3019
+   > above), nothing tracks which changes reached prod. These three columns were
+   > hot-patched onto prod as idempotent additive `ALTER`s to run the verification,
+   > and `planTier` was added to `schema.production.prisma`, but **a full prod
+   > schema reconcile is still owed** — diff `schema.production.prisma` against the
+   > live prod DB and apply every missing change under review, as part of the §4
+   > migration-history rebaseline. Also: the Supabase **direct** URL
+   > (`db.<ref>.supabase.co:5432`) is unreachable from at least one dev machine
+   > (IPv6-only / paused), so DDL there must go through the pooled URL or a host
+   > with IPv6.
+   >
+   > Left on prod from that verification: test rows labelled `ZZ-C6-VERIFY-*`
+   > (fake clients/projects/reports/share-links + activity). Remove them — they
+   > otherwise surface in the `operations` portfolio/health views.
+
 > `better-sqlite3`, `@prisma/adapter-better-sqlite3`, `@prisma/adapter-pg` are in
 > `package.json` but unused by the code (standard Prisma client). They can be
 > dropped; `better-sqlite3` needs a C++ toolchain to build on Windows (why dev

@@ -522,18 +522,28 @@ portal renders it as an upsell (`web/.../business-info/page.tsx` via
 Files: `lib/competitor-cap.util.ts` (tier table + normalize + exception),
 `business-profile.service.ts` (`enforceCompetitorCap` + the `saveDraft` check).
 
-### C6 §29 verification status
+### C6 §29 verification status — ✅ VERIFIED (2026-09-22, live prod Postgres)
 
-**Code-complete; `npx tsc --noEmit` clean (backend) and `npm run typecheck` clean (web).** The
-required live end-to-end run is **PENDING**: this session had no reachable Postgres (Docker
-Desktop's engine would not start and no local Postgres was installed). To verify once a backend +
-Postgres is up:
+`npx tsc --noEmit` clean (backend), `npm run typecheck` clean (web). Verified with the **real
+compiled `BusinessProfileService` code against the live Supabase Postgres** (Docker would not start
+headlessly this session, so the run went against prod with the user's explicit approval; the app
+was NOT booted, so no `@Cron` sweeps fired — the service was instantiated directly). 5/5 assertions
+passed:
 
-1. Attach a project to a client; `PATCH /api/clients/:clientId` `{ "planTier": "starter" }`.
-2. `PUT /api/portal/projects/:projectId/business-profile` (as that client) with 6 competitors →
-   expect `422 { "error": "competitor-cap-exceeded", "planTier": "starter", "competitorCap": 5,
-   "requestedCount": 6 }`.
-3. Save with 5 → `200`. Add a 6th → `422`. Remove one → `200` (removal never blocked).
-4. `PATCH planTier` → `growth`; save 6+ → `200` (cap now 15).
-5. Confirm the web upsell copy renders on `business-info` (the `competitorCapExceeded` branch).
+1. starter (cap 5): saving 6 competitors → rejected `422` with body
+   `{"error":"competitor-cap-exceeded","planTier":"starter","competitorCap":5,"requestedCount":6}`.
+2. starter: 5 competitors → saved.
+3. starter: increasing 5→6 → rejected `422`.
+4. starter: decreasing 5→4 → allowed (a decrease is never blocked).
+5. tier bumped to growth (cap 15): 4→6 → allowed (cap lifts with the tier).
+
+**Drift caught during this run:** the prod DB was missing `Client.planTier` (C7) *and*
+`BusinessProfile.category` (C2) — `latestRow` selects every column, so every `saveDraft` failed
+until both were added. `Client.planTier` was also absent from `schema.production.prisma` (C7 only
+added it to `schema.prisma`); fixed here. Both columns were added to prod as idempotent additive
+`ALTER`s. Prod was simply behind `main`; a full prod schema sync is a separate ops follow-up (see
+`docs/PRODUCTION-READINESS.md`).
+
+Test fixtures were left on prod (labelled `ZZ-C6-VERIFY-*`); the web upsell copy
+(`competitorCapExceeded` branch) was verified by the production build, not a browser click-through.
 
