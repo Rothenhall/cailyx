@@ -5,7 +5,11 @@
  */
 
 import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
-import { ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ClientPortal } from '../../common/decorators/auth.decorators';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { ScopeValidationService } from '../../common/guards/scope-validation.service';
+import type { AuthedRequestUser } from '../auth/strategies/jwt.strategy';
 import { OpportunitiesService } from './opportunities.service';
 import { KeywordResearchService } from '../keyword-research/keyword-research.service';
 import {
@@ -100,5 +104,42 @@ export class OpportunitiesController {
       languageCode: body.languageCode,
       includeRelated: false,
     });
+  }
+}
+
+/**
+ * OpportunitiesPortalController — client-portal read of the Ideas workspace
+ * (2026-09-21 client-nav restructure: "Digital Marketing → Ideation").
+ *
+ * Read-only by design, matching the writing-style portal precedent: the
+ * client sees the same canonical `Opportunity` rows staff see (minus nothing —
+ * there is no staff-only field on this DTO), but cannot analyze, dismiss,
+ * reopen or convert. Those remain staff actions until product asks for
+ * client-side control of the ideas queue. `clientId` never enters this
+ * controller; `ScopeValidationService.assertProjectAccess` is the only check,
+ * exactly as `BusinessProfilePortalController` and `ResultsPortalController`
+ * already do it for their own project-scoped portal reads.
+ */
+@ApiTags('opportunities: portal')
+@ApiBearerAuth()
+@ClientPortal()
+@Controller('portal/projects/:projectId/opportunities')
+export class OpportunitiesPortalController {
+  constructor(
+    private readonly opportunities: OpportunitiesService,
+    private readonly scope: ScopeValidationService,
+  ) {}
+
+  @Get()
+  @ApiOperation({ summary: "This client's ideas/opportunities queue, read-only" })
+  @ApiResponse({ status: 200, description: '{ total, page, pageSize, opportunities }' })
+  @ApiResponse({ status: 403, description: 'Project does not belong to this client' })
+  async list(
+    @CurrentUser() user: AuthedRequestUser,
+    @Param('projectId') projectId: string,
+    @Query() query: ListOpportunitiesQueryDto,
+  ) {
+    await this.scope.assertProjectAccess(user, projectId);
+    return this.opportunities.list(projectId, query);
   }
 }

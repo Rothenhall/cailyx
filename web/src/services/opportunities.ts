@@ -117,6 +117,24 @@ export async function listOpportunities(
   });
 }
 
+/**
+ * Client-portal read of the same queue — "Digital Marketing → Ideation"
+ * (2026-09-21 client-nav restructure). Read-only: the client-portal backend
+ * route (`OpportunitiesPortalController`) exposes only `GET`, so there is no
+ * dismiss/reopen/convert here. `clientId` scoping happens server-side from the
+ * JWT, same as every other `portal/projects/:projectId/...` read.
+ */
+export async function listPortalOpportunities(
+  projectId: string,
+  query: ListOpportunitiesQuery = {},
+  options?: { signal?: AbortSignal },
+): Promise<{ total: number; page: number; pageSize: number; opportunities: Opportunity[] }> {
+  return api.get(`/portal/projects/${projectId}/opportunities`, {
+    ...options,
+    query: { status: query.status, origin: query.origin, search: query.search, page: query.page, pageSize: query.pageSize },
+  });
+}
+
 export async function dismissOpportunity(projectId: string, opportunityId: string, reason: string): Promise<Opportunity> {
   return api.patch<Opportunity>(`/projects/${projectId}/opportunities/${opportunityId}/dismiss`, { reason });
 }
