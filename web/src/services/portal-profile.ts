@@ -40,6 +40,8 @@ export interface PortalProfileData {
   brandName: string | null;
   legalName: string | null;
   description: string | null;
+  /** C2 (`docs/analysis/client-portal.md` §12) — business category / type. */
+  category: string | null;
   services: string[];
   icp: {
     segments?: string[];
@@ -123,6 +125,7 @@ export interface PortalProfilePatch {
   brandName?: string;
   legalName?: string;
   description?: string;
+  category?: string;
   services?: string[];
   icp?: { segments?: string[]; roles?: string[]; painPoints?: string[] };
   markets?: string[];
@@ -177,6 +180,7 @@ export type BusinessInfoField =
   | 'brandName'
   | 'legalName'
   | 'description'
+  | 'category'
   | 'services'
   | 'icp.segments'
   | 'icp.roles'
@@ -254,6 +258,52 @@ export async function rejectBusinessInfoSuggestion(projectId: string, field: Bus
   return api.post<{ field: string; rejected: boolean; detail: string }>(
     `/portal/projects/${encodeURIComponent(projectId)}/business-profile/candidates/reject`,
     { field },
+  );
+}
+
+// ── C2 onboarding wizard (docs/analysis/client-portal.md §2/§11/§16/§17) ──
+//
+// Corrected order: confirm/edit details -> (report + rest of portal already
+// reachable) -> connect Google Search Console -> connect Google Analytics 4
+// -> done. `not-started`/`confirming-details` is the only span the project
+// gate (`../app/(client)/client/projects/[projectId]/layout.tsx`) blocks on.
+
+export type OnboardingWizardState =
+  | 'not-started'
+  | 'confirming-details'
+  | 'connecting-gsc'
+  | 'connecting-ga4'
+  | 'done'
+  | 'waived';
+
+export async function getOnboardingWizardState(projectId: string, options?: { signal?: AbortSignal }) {
+  return api.get<{ projectId: string; state: OnboardingWizardState }>(
+    `/portal/projects/${encodeURIComponent(projectId)}/onboarding-wizard`,
+    options,
+  );
+}
+
+/** Step (a): advance past confirm/edit details. Requires a confirmed business-profile version to already exist. */
+export async function confirmOnboardingDetailsStep(projectId: string) {
+  return api.post<{ projectId: string; state: OnboardingWizardState }>(
+    `/portal/projects/${encodeURIComponent(projectId)}/onboarding-wizard/confirm-details`,
+    {},
+  );
+}
+
+/** Step (b): advance past connecting Google Search Console. Gated on a real, live mapped connection. */
+export async function connectGscDoneStep(projectId: string) {
+  return api.post<{ projectId: string; state: OnboardingWizardState }>(
+    `/portal/projects/${encodeURIComponent(projectId)}/onboarding-wizard/connect-gsc-done`,
+    {},
+  );
+}
+
+/** Step (c): advance past connecting Google Analytics 4 — the terminal transition into "done". */
+export async function connectGa4DoneStep(projectId: string) {
+  return api.post<{ projectId: string; state: OnboardingWizardState }>(
+    `/portal/projects/${encodeURIComponent(projectId)}/onboarding-wizard/connect-ga4-done`,
+    {},
   );
 }
 

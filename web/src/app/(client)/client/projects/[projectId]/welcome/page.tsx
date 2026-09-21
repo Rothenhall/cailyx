@@ -3,26 +3,22 @@
 /**
  * CP04 — welcome / onboarding checklist page.
  *
- * TRANSITION PLAN (recorded 2026-09-20, `docs/analysis/client-portal.md` §2/§11,
- * `docs/PLAN.md` §11.0): this page is being repurposed, not replaced wholesale.
+ * TRANSITION PLAN — UPDATED for Phase C2 (`docs/analysis/client-portal.md`
+ * §2/§11/§16/§17, `docs/PLAN.md` §11.2).
  *
- * - Per client-portal.md §2, this single all-in-one checklist is superseded as the
- *   client's *first-visit* onboarding gate by a new sequential, hard-gated wizard
- *   (confirm details -> connect GSC -> connect GA4 -> done) that does NOT exist yet.
- *   Building that wizard is Phase C2 (`docs/PLAN.md` §11.2) — a separate, later piece
- *   of work. Phase C1 (this stage) only lays the state-model foundation (per-project
- *   `onboardingWizardState` on `Project`, see `backend/prisma/schema.prisma`) that C2's
- *   wizard will read/write and gate on.
- * - Until C2 ships, THIS page remains the de-facto onboarding entry point — it is not
- *   being torn out or hidden in this stage.
- * - Once C2 ships the real gated wizard, this page's role changes to a post-onboarding
- *   "manage your connections / account" surface (reconnect/disconnect Google, review
- *   confirmed details) rather than the first-run gate. That was an explicitly open call
- *   in client-portal.md §11 ("worth a quick call when this gets built") — recorded here
- *   so a future engineer doesn't build a second, competing checklist page from scratch
- *   without noticing this one is meant to be repurposed.
- * - Do NOT restructure this page's UI as part of Stage 1 (C1) — that's out of scope;
- *   this comment exists purely so the transition plan survives to whoever builds C2.
+ * C1 (Stage 1) built only the per-project `onboardingWizardState` column.
+ * C2 built the real gated wizard (`../layout.tsx` + `../onboarding/page.tsx`)
+ * — but the gate blocks ONLY through the confirm-details step, corrected
+ * order: confirm details -> report + rest of portal already open -> connect
+ * GSC -> connect GA4 -> done. This page is no longer the first-visit
+ * onboarding gate (that is `../onboarding/page.tsx` now) — it is what its own
+ * earlier comment predicted it would become: the post-confirm home that
+ * guides the client through the still-outstanding Google-connect steps (the
+ * banner below, read from the same `onboardingWizardState`) and doubles as
+ * the ongoing "manage your connections / account" surface afterward
+ * (reconnect/disconnect Google, review confirmed details). The checklist
+ * below is unchanged and still reports real evidence per item — the banner
+ * is additive, not a replacement for it.
  */
 
 import Link from 'next/link';
@@ -33,6 +29,7 @@ import {
   Check,
   CircleDashed,
   ClipboardCopy,
+  ExternalLink,
   Mail,
   Plug,
   Send,
@@ -61,10 +58,14 @@ import { formatDate } from '@/lib/format';
 import { listPortalProjectSummaries, type PortalProjectSummary } from '@/services/portal';
 import {
   confirmPortalBusinessProfile,
+  connectGa4DoneStep,
+  connectGscDoneStep,
+  getOnboardingWizardState,
   getPortalBusinessProfile,
   getPortalChecklist,
   savePortalBusinessProfileDraft,
   updatePortalOnboardingRequest,
+  type OnboardingWizardState,
   type PortalBusinessProfileResponse,
   type PortalChecklist,
   type PortalChecklistItem,
@@ -118,19 +119,23 @@ export default function ClientWelcomePage() {
   const [profile, setProfile] = useState<PortalBusinessProfileResponse | null>(null);
   const [invites, setInvites] = useState<PortalInvite[] | null>(null);
   const [google, setGoogle] = useState<PortalGoogleConnection[] | null>(null);
+  const [wizardState, setWizardState] = useState<OnboardingWizardState | null>(null);
+  const [wizardBusy, setWizardBusy] = useState<'gsc' | 'ga4' | null>(null);
+  const [wizardActionError, setWizardActionError] = useState<string | null>(null);
   const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
       try {
         setError(null);
-        const [projects, checklistResult, profileResult, invitesResult, googleResult] =
+        const [projects, checklistResult, profileResult, invitesResult, googleResult, wizardResult] =
           await Promise.allSettled([
             listPortalProjectSummaries({ signal }),
             getPortalChecklist(projectId, { signal }),
             getPortalBusinessProfile(projectId, {}, { signal }),
             listPortalInvites({ signal }),
             listPortalGoogleConnections(projectId, { signal }),
+            getOnboardingWizardState(projectId, { signal }),
           ]);
 
         if (projects.status === 'rejected') throw projects.reason;
@@ -139,6 +144,7 @@ export default function ClientWelcomePage() {
         if (profileResult.status === 'fulfilled') setProfile(profileResult.value);
         if (invitesResult.status === 'fulfilled') setInvites(invitesResult.value);
         if (googleResult.status === 'fulfilled') setGoogle(googleResult.value);
+        if (wizardResult.status === 'fulfilled') setWizardState(wizardResult.value.state);
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === 'AbortError') return;
         setError(toApiError(caught));
@@ -146,6 +152,27 @@ export default function ClientWelcomePage() {
     },
     [projectId],
   );
+
+  /**
+   * C2 (`docs/analysis/client-portal.md` §2/§11) — advance past the
+   * Google-connect step once a real, live mapped connection exists. The
+   * server re-checks this; a click alone never advances the state.
+   */
+  async function onWizardGoogleContinue(service: 'search-console' | 'analytics') {
+    setWizardBusy(service === 'search-console' ? 'gsc' : 'ga4');
+    setWizardActionError(null);
+    try {
+      const result =
+        service === 'search-console' ? await connectGscDoneStep(projectId) : await connectGa4DoneStep(projectId);
+      setWizardState(result.state);
+    } catch (caught) {
+      setWizardActionError(
+        clientActionMessage(caught, `${PORTAL_GOOGLE_SERVICE_LABEL[service]} is not connected yet — connect it below first.`),
+      );
+    } finally {
+      setWizardBusy(null);
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -189,6 +216,44 @@ export default function ClientWelcomePage() {
         title="Getting set up"
         context="Four things make the measurement meaningful. Each line below says what it is waiting on."
       />
+
+      {wizardState === 'connecting-gsc' || wizardState === 'connecting-ga4' ? (
+        <Alert role="status">
+          <AlertTitle>
+            {wizardState === 'connecting-gsc' ? 'Next: connect Google Search Console' : 'Next: connect Google Analytics'}
+          </AlertTitle>
+          <AlertDescription className="space-y-2">
+            <p>
+              Your details are confirmed and your Day-1 report is ready above — the last guided step is
+              connecting {wizardState === 'connecting-gsc' ? 'Search Console' : 'Analytics'} so we can measure
+              real performance.
+            </p>
+            {wizardActionError ? <p className="text-destructive">{wizardActionError}</p> : null}
+            <div className="flex flex-wrap gap-2">
+              <Button asChild size="sm">
+                <Link href={`/client/projects/${projectId}/connections`}>
+                  Connect {wizardState === 'connecting-gsc' ? 'Search Console' : 'Analytics'}
+                  <ExternalLink aria-hidden="true" className="ml-1.5 h-3.5 w-3.5" />
+                </Link>
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={wizardBusy !== null}
+                onClick={() =>
+                  void onWizardGoogleContinue(wizardState === 'connecting-gsc' ? 'search-console' : 'analytics')
+                }
+              >
+                {wizardBusy ? 'Checking…' : "I've connected, continue"}
+              </Button>
+            </div>
+            <p className="text-meta text-muted-foreground">
+              Can&apos;t connect Google today? Ask your Rothenhall contact — an admin can waive this step so you
+              can connect later.
+            </p>
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       {checklist.blocking.length > 0 ? (
         <Alert variant="destructive" role="alert">

@@ -194,6 +194,56 @@ export class ClientAccessService {
     return { ...this.toInviteDto(row), token: rawToken, acceptUrl, emailSent: sent, emailError: error };
   }
 
+  /**
+   * C2 (`docs/analysis/client-portal.md` §2/§18) — system-triggered invite,
+   * called by the Day-1 pipeline completion hook (never by an HTTP request).
+   * Reuses the exact same canonical invite-link mechanics as
+   * {@link createInvite} (7-day single-use `AuthToken`, client sets their own
+   * password, no plaintext credential) rather than the deprecated
+   * `POST /clients/:clientId/login` temp-password path.
+   *
+   * Best-effort by design: if the recipient already has a client login for
+   * this client, no new invite is created (nothing to accept) and the caller
+   * gets `{ alreadyHasLogin: true }` so it can still send a plain "log in"
+   * link. `createdBy` carries a system label (e.g.
+   * `system:day1-pipeline:<projectId>`), not a user id — `AuthToken.createdBy`
+   * is a free-text column, not a foreign key.
+   */
+  async createSystemInvite(
+    clientId: string,
+    email: string,
+    projectIds: string[],
+    createdBySystemLabel: string,
+  ): Promise<InviteCreatedDto | { alreadyHasLogin: true }> {
+    await this.requireClient(clientId);
+
+    const existingUser = await this.prisma.user.findUnique({ where: { email } });
+    if (existingUser && existingUser.type === 'client' && existingUser.clientId === clientId) {
+      return { alreadyHasLogin: true };
+    }
+    if (existingUser && (existingUser.type !== 'client' || existingUser.clientId !== clientId)) {
+      this.logger.warn(`System invite for ${email} (client ${clientId}) skipped — email already registered against a different account`);
+      return { alreadyHasLogin: true };
+    }
+
+    const scope: InviteScope = { clientId, role: 'client-admin', projectIds };
+    const rawToken = randomBytes(32).toString('base64url');
+    const row = await this.prisma.authToken.create({
+      data: {
+        tokenHash: hashToken(rawToken),
+        purpose: 'invite',
+        email,
+        scope: JSON.stringify(scope),
+        expiresAt: new Date(Date.now() + INVITE_TTL_MS),
+        createdBy: createdBySystemLabel,
+      },
+    });
+    this.logger.log(`System invite created: ${row.id} for ${email} (client ${clientId}, by ${createdBySystemLabel})`);
+
+    const acceptUrl = this.buildAcceptUrl(rawToken);
+    return { ...this.toInviteDto(row), token: rawToken, acceptUrl, emailSent: false, emailError: null };
+  }
+
   async revokeInvite(clientId: string, inviteId: string): Promise<{ ok: true }> {
     const row = await this.prisma.authToken.findUnique({ where: { id: inviteId } });
     if (!row || row.purpose !== 'invite' || this.safeParseScope(row.scope)?.clientId !== clientId) {

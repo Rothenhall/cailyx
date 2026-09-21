@@ -186,6 +186,15 @@ export class SaveBusinessProfileDto {
   @MaxLength(4000)
   description?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Business category / type ("SaaS", "local plumbing services", etc). C2 (`docs/analysis/client-portal.md` §12). Distinct from Project.category.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  category?: string;
+
   @ApiPropertyOptional({ type: [String], description: 'Services offered.' })
   @IsOptional()
   @IsArray()

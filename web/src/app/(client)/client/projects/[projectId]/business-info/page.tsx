@@ -442,6 +442,7 @@ function buildPatch(field: BusinessInfoField, value: string[] | string | null): 
     case 'brandName':
     case 'legalName':
     case 'description':
+    case 'category':
       return { [field]: v as string };
   }
 }

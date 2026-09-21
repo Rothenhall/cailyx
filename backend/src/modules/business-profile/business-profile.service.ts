@@ -79,6 +79,7 @@ interface ProfileRow {
   brandName: string | null;
   legalName: string | null;
   description: string | null;
+  category: string | null;
   services: string;
   icp: string;
   markets: string;
@@ -99,6 +100,8 @@ interface ProfileRow {
 interface SiteContextSuggestionSource {
   brand: string | null;
   description: string | null;
+  /** C2 (`docs/analysis/client-portal.md` §12) — business category / type. */
+  category: string | null;
   services: string[];
   icp: string[];
   painPoints: string[];
@@ -238,6 +241,7 @@ export class BusinessProfileService {
       brandName: row.brandName,
       legalName: row.legalName,
       description: row.description,
+      category: row.category,
       services: this.parseStringArray(row.services),
       icp: {
         segments: this.stringArrayOf(icp.segments),
@@ -538,6 +542,7 @@ export class BusinessProfileService {
     { field: 'brandName', section: 'about', label: 'Business name', getConfirmed: (d) => d.brandName, getSuggested: (c) => c.brand },
     { field: 'legalName', section: 'about', label: 'Legal name', getConfirmed: (d) => d.legalName, getSuggested: null },
     { field: 'description', section: 'about', label: 'What you do', getConfirmed: (d) => d.description, getSuggested: (c) => c.description },
+    { field: 'category', section: 'about', label: 'Business category / type', getConfirmed: (d) => d.category, getSuggested: (c) => c.category },
     { field: 'services', section: 'about', label: 'Products / services', getConfirmed: (d) => d.services, getSuggested: (c) => c.services },
     { field: 'icp.segments', section: 'customers', label: 'Customer types', getConfirmed: (d) => d.icp.segments, getSuggested: (c) => c.icp },
     { field: 'icp.roles', section: 'customers', label: 'Buyer roles', getConfirmed: (d) => d.icp.roles, getSuggested: null },
@@ -610,6 +615,7 @@ export class BusinessProfileService {
       source: {
         brand: this.str(row.brand),
         description: row.description,
+        category: row.category,
         services: this.parseStringArray(row.services),
         icp: this.parseStringArray(row.icp),
         painPoints: this.parseStringArray(row.painPoints),
@@ -877,6 +883,7 @@ export class BusinessProfileService {
       brandName: data.brandName,
       legalName: data.legalName,
       description: data.description,
+      category: data.category,
       services: JSON.stringify(data.services),
       icp: JSON.stringify(data.icp),
       markets: JSON.stringify(data.markets),
@@ -1006,6 +1013,7 @@ export class BusinessProfileService {
         brandName: data.brandName,
         legalName: data.legalName,
         description: data.description,
+        category: data.category,
         services: JSON.stringify(data.services),
         icp: JSON.stringify(data.icp),
         markets: JSON.stringify(data.markets),
@@ -1980,6 +1988,7 @@ export class BusinessProfileService {
       brandName: null,
       legalName: null,
       description: null,
+      category: null,
       services: [],
       icp: { segments: [], roles: [], painPoints: [] },
       markets: [],
@@ -2013,6 +2022,7 @@ export class BusinessProfileService {
       brandName: patch.brandName !== undefined ? patch.brandName : base.brandName,
       legalName: patch.legalName !== undefined ? patch.legalName : base.legalName,
       description: patch.description !== undefined ? patch.description : base.description,
+      category: patch.category !== undefined ? patch.category : base.category,
       services: patch.services !== undefined ? patch.services : base.services,
       icp:
         patch.icp !== undefined

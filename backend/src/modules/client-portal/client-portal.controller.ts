@@ -68,6 +68,54 @@ export class ClientPortalController {
     return this.portal.getReport(this.clientId(req), slug);
   }
 
+  // ─── C2 onboarding wizard (docs/analysis/client-portal.md §2/§11/§16/§17)
+  // — the project-scoped gate state and its three step-transition endpoints.
+  // Order: confirm details -> (report + rest of portal already reachable) ->
+  // connect GSC -> connect GA4 -> done. The gate itself lives in the web
+  // client's project layout, not here.
+
+  @Get('projects/:projectId/onboarding-wizard')
+  @ApiOperation({ summary: "This project's onboarding-wizard gate state (not-started | confirming-details | connecting-gsc | connecting-ga4 | done | waived)" })
+  @ApiResponse({ status: 200, description: '{ projectId, state }' })
+  @ApiResponse({ status: 403, description: 'projectId does not belong to this client' })
+  async getOnboardingWizardState(@Param('projectId') projectId: string, @Req() req: Request) {
+    return this.portal.getOnboardingWizardState(this.clientId(req), projectId);
+  }
+
+  @Post('projects/:projectId/onboarding-wizard/confirm-details')
+  @ApiOperation({
+    summary: 'Wizard step (a): advance past confirm/edit details',
+    description:
+      'Requires a confirmed business-profile version to already exist (POST .../business-profile/confirm). Advances the gate to "connecting-gsc" — at which point the report and the rest of the portal are already reachable (§2 corrected order); this call does not itself write any business-profile fields.',
+  })
+  @ApiResponse({ status: 200, description: '{ projectId, state: "connecting-gsc" }' })
+  @ApiResponse({ status: 409, description: 'Wrong state, or no confirmed profile on file yet' })
+  async confirmDetailsStep(@Param('projectId') projectId: string, @Req() req: Request) {
+    return this.portal.confirmDetailsStep(this.clientId(req), projectId);
+  }
+
+  @Post('projects/:projectId/onboarding-wizard/connect-gsc-done')
+  @ApiOperation({
+    summary: 'Wizard step (b): advance past connecting Google Search Console',
+    description: 'Gated on a real, live project-mapped GSC connection already existing (not merely "the client clicked next"). Advances to "connecting-ga4".',
+  })
+  @ApiResponse({ status: 200, description: '{ projectId, state: "connecting-ga4" }' })
+  @ApiResponse({ status: 409, description: 'Wrong state, or GSC not actually connected yet' })
+  async connectGscDoneStep(@Param('projectId') projectId: string, @Req() req: Request) {
+    return this.portal.connectGscDoneStep(this.clientId(req), projectId);
+  }
+
+  @Post('projects/:projectId/onboarding-wizard/connect-ga4-done')
+  @ApiOperation({
+    summary: 'Wizard step (c): advance past connecting Google Analytics 4 — the terminal step into "done"',
+    description: 'Gated the same way as GSC. This is the last transition — the wizard is complete once this succeeds.',
+  })
+  @ApiResponse({ status: 200, description: '{ projectId, state: "done" }' })
+  @ApiResponse({ status: 409, description: 'Wrong state, or GA4 not actually connected yet' })
+  async connectGa4DoneStep(@Param('projectId') projectId: string, @Req() req: Request) {
+    return this.portal.connectGa4DoneStep(this.clientId(req), projectId);
+  }
+
   @Get('projects/:projectId/content')
   @ApiOperation({ summary: 'This client\'s shared content for one project — only pieces with an explicitly shared revision (§13.5)' })
   @ApiResponse({ status: 200, description: '{ items }' })

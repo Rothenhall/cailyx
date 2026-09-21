@@ -3115,6 +3115,9 @@ model BusinessProfile {
   brandName   String?
   legalName   String?
   description String?
+  /// C2 (`docs/analysis/client-portal.md` §12) — business category / type,
+  /// e.g. "SaaS", "local plumbing services". Distinct from `Project.category`.
+  category    String?
   /// JSON string[] of services offered.
   services    String    @default("[]")
   /// JSON — ideal customer profile { segments, roles, painPoints }.

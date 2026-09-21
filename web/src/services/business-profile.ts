@@ -87,6 +87,7 @@ export interface BusinessProfilePatch {
   brandName?: string;
   legalName?: string;
   description?: string;
+  category?: string;
   services?: string[];
   icp?: { segments?: string[]; roles?: string[]; painPoints?: string[] };
   markets?: string[];
@@ -117,6 +118,7 @@ export type BusinessInfoField =
   | 'brandName'
   | 'legalName'
   | 'description'
+  | 'category'
   | 'services'
   | 'icp.segments'
   | 'icp.roles'
@@ -256,6 +258,7 @@ export const BUSINESS_INFO_FIELD_FALLBACK_LABEL: Record<BusinessInfoField, strin
   brandName: 'Business name',
   legalName: 'Legal name',
   description: 'What you do',
+  category: 'Business category / type',
   services: 'Products / services',
   'icp.segments': 'Customer types',
   'icp.roles': 'Buyer roles',
