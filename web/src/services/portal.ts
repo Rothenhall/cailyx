@@ -197,3 +197,121 @@ export async function getPortalContent(
     options,
   );
 }
+
+// ── C4 §13/§20 — prompt visibility + add/delete request queue ──────────
+
+/** One buyer prompt, exactly as `measurement` runs it — read-only. */
+export interface PortalQuerySetItem {
+  id: string;
+  querySetId: string;
+  prompt: string;
+  funnelStage: string;
+  createdAt: string;
+}
+
+/** One active, versioned prompt set (one persona) — read-only. */
+export interface PortalQuerySet {
+  id: string;
+  projectId: string;
+  version: number;
+  persona: string;
+  label: string | null;
+  status: string;
+  source: string;
+  items: PortalQuerySetItem[];
+  createdAt: string;
+  activatedAt: string | null;
+}
+
+export async function listPortalPrompts(projectId: string, options?: { signal?: AbortSignal }) {
+  const payload = await api.get<{ sets: PortalQuerySet[] }>(`/portal/projects/${projectId}/prompts`, options);
+  return unwrap<PortalQuerySet[]>(payload, 'sets');
+}
+
+export type PromptRequestAction = 'add' | 'remove';
+export type PromptRequestStatus = 'pending' | 'approved' | 'declined';
+
+/**
+ * One prompt add/delete request and its lifecycle. `overQuota` is a §20
+ * upsell flag the admin sees — it never blocks submission.
+ */
+export interface PortalPromptRequest {
+  id: string;
+  projectId: string;
+  action: PromptRequestAction;
+  prompt: string | null;
+  persona: string | null;
+  targetItemId: string | null;
+  targetPromptText: string | null;
+  note: string | null;
+  status: PromptRequestStatus;
+  activePromptCount: number;
+  planPromptLimit: number | null;
+  planTier: string;
+  overQuota: boolean;
+  decidedAt: string | null;
+  decisionNote: string | null;
+  createdAt: string;
+}
+
+export async function listPortalPromptRequests(projectId: string, options?: { signal?: AbortSignal }) {
+  const payload = await api.get<{ requests: PortalPromptRequest[] }>(
+    `/portal/projects/${projectId}/prompt-requests`,
+    options,
+  );
+  return unwrap<PortalPromptRequest[]>(payload, 'requests');
+}
+
+export interface CreatePromptRequestInput {
+  action: PromptRequestAction;
+  prompt?: string;
+  persona?: string;
+  targetItemId?: string;
+  note?: string;
+}
+
+export async function createPortalPromptRequest(
+  projectId: string,
+  input: CreatePromptRequestInput,
+  options?: { signal?: AbortSignal },
+) {
+  return api.post<PortalPromptRequest>(`/portal/projects/${projectId}/prompt-requests`, input, options);
+}
+
+// ── C4 §14/§22 — structured "request new content" form ─────────────────
+
+export type ContentRequestPriority = 'low' | 'normal' | 'high';
+
+export interface PortalContentRequest {
+  id: string;
+  projectId: string;
+  contentType: string;
+  topic: string;
+  priority: ContentRequestPriority;
+  note: string | null;
+  growthAssetId: string;
+  createdAt: string;
+}
+
+export async function listPortalContentRequests(projectId: string, options?: { signal?: AbortSignal }) {
+  const payload = await api.get<{ requests: PortalContentRequest[] }>(
+    `/portal/projects/${projectId}/content-requests`,
+    options,
+  );
+  return unwrap<PortalContentRequest[]>(payload, 'requests');
+}
+
+export interface CreateContentRequestInput {
+  contentType: string;
+  topic: string;
+  priority?: ContentRequestPriority;
+  note?: string;
+}
+
+export async function createPortalContentRequest(
+  projectId: string,
+  input: CreateContentRequestInput,
+  options?: { signal?: AbortSignal },
+) {
+  return api.post<PortalContentRequest>(`/portal/projects/${projectId}/content-requests`, input, options);
+}

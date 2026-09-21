@@ -34,6 +34,7 @@ import {
   type PortalTabData,
 } from '@/services/overview';
 import { ResultsTabPanel } from './tab-panels';
+import { PromptsPanel } from './prompts-panel';
 import {
   coverageSummaryFromEvidence,
   EVIDENCE_SOURCE_LABEL,
@@ -355,6 +356,12 @@ function ResultsScreen() {
 
         <TabsContent value="ai" className="space-y-6">
           <ResultsTabPanel tab="ai" section={tabSections.ai ?? null} />
+
+          {/* C4 (client-portal.md §13/§20) — the real, active query set is
+              surfaced here rather than as a 9th top-level nav item: this is
+              the page that already shows AI-visibility results, and the
+              prompt list is exactly what produced them. */}
+          <PromptsPanel projectId={projectId} />
 
           {/* ── What this read covers ──────────────────────────────────────── */}
       <Card>
