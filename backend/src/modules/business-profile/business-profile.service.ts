@@ -38,6 +38,11 @@ import { PrismaService } from '../database/prisma.service';
 import { ActivityService, type RecordActivityInput } from '../activity/activity.service';
 import { normalizeDomain, tryNormalizeDomain } from './lib/domain.util';
 import {
+  CompetitorCapExceededException,
+  competitorCapForTier,
+  normalizePlanTier,
+} from './lib/competitor-cap.util';
+import {
   BUSINESS_PROFILE_PROVENANCE_NOTE,
   type BusinessInfoField,
   type BusinessInfoOverview,
@@ -859,6 +864,35 @@ export class BusinessProfileService {
   // ── Draft write ─────────────────────────────────────────────────────
 
   /**
+   * §29 competitor-cap enforcement. Resolves the owning client's
+   * `Client.planTier` (the same field/read pattern `refresh-cadence` uses:
+   * a direct `prisma.client.findUnique` on `planTier`, never a derived
+   * guess) and throws a dedicated, distinguishable 422
+   * ({@link CompetitorCapExceededException}) when `newCount` would exceed
+   * that tier's cap. A project with no `clientId` (not yet attached to a
+   * client account) is treated as `starter` — the most conservative default.
+   *
+   * The thrown payload is shaped so the frontend can render this as an
+   * upsell moment rather than a generic validation error: `error:
+   * 'competitor-cap-exceeded'`, plus the numbers needed to build a "You're
+   * on the Starter plan (5 competitors) — upgrade to track more" message.
+   */
+  private async enforceCompetitorCap(clientId: string | null, newCount: number): Promise<void> {
+    let tier: string | null = null;
+    if (clientId) {
+      const client = await this.prisma.client.findUnique({
+        where: { id: clientId },
+        select: { planTier: true },
+      });
+      tier = client?.planTier ?? null;
+    }
+    const cap = competitorCapForTier(tier);
+    if (cap !== null && newCount > cap) {
+      throw new CompetitorCapExceededException(normalizePlanTier(tier), cap, newCount);
+    }
+  }
+
+  /**
    * Merge a patch onto the working draft.
    *
    * Two cases, and the difference matters:
@@ -873,11 +907,21 @@ export class BusinessProfileService {
    * There is no third case in which a confirmed row is edited.
    */
   async saveDraft(projectId: string, dto: SaveBusinessProfileDto, actorId: string | null): Promise<SaveProfileResult> {
-    await this.requireProject(projectId);
+    const project = await this.requireProject(projectId);
 
     const latest = await this.latestRow(projectId);
     const base = latest ? this.toData(latest) : this.emptyData();
     const { data, warnings } = this.merge(base, dto);
+
+    // §29 competitor cap — only blocks a save that would *increase* the
+    // competitor count past the client's plan-tier limit. A client already
+    // over the cap (e.g. grandfathered from before this cap existed) can
+    // still edit/remove competitors or save unrelated fields; they just
+    // cannot add more until they're back under the cap. See
+    // `lib/competitor-cap.util.ts` for the tier numbers and reasoning.
+    if (dto.competitors !== undefined && data.competitors.length > base.competitors.length) {
+      await this.enforceCompetitorCap(project.clientId, data.competitors.length);
+    }
 
     const columns = {
       brandName: data.brandName,

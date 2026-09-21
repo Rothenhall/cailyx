@@ -1,4 +1,4 @@
-import { api } from '@/lib/api';
+import { ApiError, api } from '@/lib/api';
 
 /**
  * Client-side business-profile adapter (design_plan G04) — CP04 "welcome
@@ -145,6 +145,38 @@ export async function savePortalBusinessProfileDraft(
     `/portal/projects/${encodeURIComponent(projectId)}/business-profile`,
     patch,
   );
+}
+
+/** Plan tiers a competitor cap is resolved from (mirrors `Client.planTier`). */
+export type PortalPlanTier = 'starter' | 'growth' | 'scale' | 'enterprise';
+
+/**
+ * The structured 422 body {@link savePortalBusinessProfileDraft} returns when a
+ * save would push the competitor count past the owning client's plan-tier cap
+ * (`docs/analysis/client-portal.md` §29). Distinct from a generic validation
+ * failure so a screen can render it as an upsell moment.
+ */
+export interface CompetitorCapExceededBody {
+  error: 'competitor-cap-exceeded';
+  message: string;
+  planTier: PortalPlanTier;
+  competitorCap: number;
+  requestedCount: number;
+}
+
+/**
+ * Narrows an unknown thrown value to a {@link CompetitorCapExceededBody}, or
+ * `null` when the failure is anything else. Lets a `catch` block branch to the
+ * competitor-cap upsell without re-reading raw status codes.
+ */
+export function competitorCapExceeded(cause: unknown): CompetitorCapExceededBody | null {
+  if (cause instanceof ApiError && cause.body && typeof cause.body === 'object') {
+    const body = cause.body as Record<string, unknown>;
+    if (body.error === 'competitor-cap-exceeded' && typeof body.competitorCap === 'number') {
+      return body as unknown as CompetitorCapExceededBody;
+    }
+  }
+  return null;
 }
 
 /**

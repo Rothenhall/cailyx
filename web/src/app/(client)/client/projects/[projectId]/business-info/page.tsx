@@ -17,6 +17,7 @@ import { StatusPill } from '@/components/patterns/StatusPill';
 import { Timestamp } from '@/components/patterns/Timestamp';
 import { listPortalProjectSummaries, type PortalProjectSummary } from '@/services/portal';
 import {
+  competitorCapExceeded,
   confirmPortalBusinessProfile,
   getBusinessInfoOverview,
   rejectBusinessInfoSuggestion,
@@ -90,6 +91,17 @@ export default function ClientBusinessInfoPage() {
       setMessage(successMessage);
       await load();
     } catch (caught) {
+      // §29 competitor cap — surface the plan-tier limit as an upsell rather
+      // than the generic "invalid input" sentence, since a 422 here means the
+      // client hit a plan ceiling, not that they typed something wrong.
+      const cap = competitorCapExceeded(caught);
+      if (cap) {
+        setActionError(
+          `Your ${cap.planTier} plan tracks up to ${cap.competitorCap} competitors. ` +
+            `Remove one, or ask us about upgrading to track more.`,
+        );
+        return;
+      }
       setActionError(clientActionMessage(caught, 'That could not be saved.'));
     }
   }

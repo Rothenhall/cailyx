@@ -485,3 +485,55 @@ None. No LLM, no external provider, no queue.
   database, so a failure could not have been attributed to this module. The
   assertions above are quoted from the scripts; treat them as claims about the
   scripts, not as a fresh pass result.
+
+## C6 §29 — Competitor cap (added 2026-09-21)
+
+`docs/analysis/client-portal.md` §29 / `docs/PLAN.md` §11.6. The number of competitors a client
+can directly add (`saveDraft`, the client-editable path from `business-info/page.tsx` →
+`portal-profile.ts`) is capped by the owning client's plan tier — same spirit as the C4 prompt
+quota (§20), because each tracked competitor multiplies measurement-run cost.
+
+**Per-tier caps** (proposed by this build; §29 deliberately left the numbers open — PRD FR-1.3's
+"3 to 8" is a suggestion, not a tier table). All in one file,
+`lib/competitor-cap.util.ts`, easy to retune:
+
+| Tier | Cap | Why |
+|---|---|---|
+| `starter` | 5 | Within PRD's "3–8" range, but not its top end — the most cost-sensitive tier. |
+| `growth` | 15 | 3× starter — mirrors §20's 100→300 step and `refresh-cadence`'s starter→growth jump. |
+| `scale` | 50 | Another ~3× step (§20's 300→1000) — a category-tracking tier, still bounded. |
+| `enterprise` | unlimited (`null`) | Matches §20 and `refresh-cadence`'s enterprise = uncapped precedent. |
+
+**How it works.** `saveDraft` calls `enforceCompetitorCap(project.clientId, newCount)` only when
+`dto.competitors` is present **and** the merged count is greater than the base count — so it blocks
+only a save that *increases* the count. A client already over the cap (e.g. grandfathered from
+before the cap existed) can still remove competitors or edit unrelated fields. The tier is read
+directly from `Client.planTier` (the same read pattern `refresh-cadence` uses — never a derived
+guess); a project with no `clientId` is treated as `starter` (the most conservative default).
+
+Unlike C4's prompt quota (which snapshots `overQuota` and lets an admin decide — appropriate there
+because a prompt *request* is itself a review step), a competitor is a direct, un-reviewed edit
+(§12), so this **rejects** the save outright with a dedicated
+`CompetitorCapExceededException` (HTTP 422). Its body is machine-readable
+(`error: "competitor-cap-exceeded"`, `planTier`, `competitorCap`, `requestedCount`) so the client
+portal renders it as an upsell (`web/.../business-info/page.tsx` via
+`competitorCapExceeded()` in `portal-profile.ts`) rather than a generic validation error.
+
+Files: `lib/competitor-cap.util.ts` (tier table + normalize + exception),
+`business-profile.service.ts` (`enforceCompetitorCap` + the `saveDraft` check).
+
+### C6 §29 verification status
+
+**Code-complete; `npx tsc --noEmit` clean (backend) and `npm run typecheck` clean (web).** The
+required live end-to-end run is **PENDING**: this session had no reachable Postgres (Docker
+Desktop's engine would not start and no local Postgres was installed). To verify once a backend +
+Postgres is up:
+
+1. Attach a project to a client; `PATCH /api/clients/:clientId` `{ "planTier": "starter" }`.
+2. `PUT /api/portal/projects/:projectId/business-profile` (as that client) with 6 competitors →
+   expect `422 { "error": "competitor-cap-exceeded", "planTier": "starter", "competitorCap": 5,
+   "requestedCount": 6 }`.
+3. Save with 5 → `200`. Add a 6th → `422`. Remove one → `200` (removal never blocked).
+4. `PATCH planTier` → `growth`; save 6+ → `200` (cap now 15).
+5. Confirm the web upsell copy renders on `business-info` (the `competitorCapExceeded` branch).
+
