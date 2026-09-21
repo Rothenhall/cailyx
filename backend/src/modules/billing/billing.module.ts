@@ -24,6 +24,12 @@
 import { Module } from '@nestjs/common';
 import { JobsModule } from '../jobs/jobs.module';
 import { ActivityModule } from '../activity/activity.module';
+// C5 (`docs/analysis/client-portal.md` §30) — PaymentFailureSweepService
+// calls ClientsService.suspendClient(), the same path an admin's manual
+// suspend uses, so Google-token revocation (§23) and the audit trail (§33)
+// happen identically either way. No circular dependency: ClientsModule (and
+// everything it imports) does not import BillingModule.
+import { ClientsModule } from '../clients/clients.module';
 import { BillingController } from './billing.controller';
 import { StripeWebhookController } from './billing-webhooks.controller';
 import { PublicCheckoutController, PublicIntakeController } from './billing-public.controller';
@@ -31,9 +37,10 @@ import { BillingPortalController } from './billing-portal.controller';
 import { BillingService } from './billing.service';
 import { StripeWebhookService } from './stripe-webhook.service';
 import { DiagnosticIntakeService } from './diagnostic-intake.service';
+import { PaymentFailureSweepService } from './payment-failure-sweep.service';
 
 @Module({
-  imports: [JobsModule, ActivityModule],
+  imports: [JobsModule, ActivityModule, ClientsModule],
   controllers: [
     BillingController,
     StripeWebhookController,
@@ -41,7 +48,7 @@ import { DiagnosticIntakeService } from './diagnostic-intake.service';
     PublicIntakeController,
     BillingPortalController,
   ],
-  providers: [BillingService, StripeWebhookService, DiagnosticIntakeService],
+  providers: [BillingService, StripeWebhookService, DiagnosticIntakeService, PaymentFailureSweepService],
   exports: [BillingService],
 })
 export class BillingModule {}
