@@ -35,8 +35,10 @@
  * @module report-lifecycle.service
  */
 
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { createHash, randomBytes } from 'crypto';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import * as bcryptjs from 'bcryptjs';
 import type { Report, ReportDeliveryAttempt, ReportRevision, ReportShareLink } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
@@ -76,6 +78,23 @@ import type {
 export const REPORT_ARTIFACT_TYPE = 'report';
 export const REPORT_REVISION_TYPE = 'report-revision';
 
+/**
+ * C6 §31 — thrown when a password-protected share link is opened without a
+ * correct password (or valid unlock cookie). A 401, deliberately distinct from
+ * the dead-link 404: the link exists and is live, it is just locked, so the
+ * public render route responds with a password prompt rather than "not found".
+ */
+export class ShareLinkPasswordRequiredException extends UnauthorizedException {
+  constructor(wasAttempted: boolean) {
+    super({
+      error: wasAttempted ? 'password-invalid' : 'password-required',
+      message: wasAttempted
+        ? 'That password is not correct.'
+        : 'This report link is password-protected.',
+    });
+  }
+}
+
 /** How long a legacy-classified report's note is allowed to be. Keeps `decisionNote` readable. */
 const GRANDFATHER_NOTE =
   'Pre-G05 row. This report was already visible to its client before the editorial lifecycle existed; G05 classified it as released at its existing content so nothing a client may already have read disappears. No internal review was performed for it — reviewedBy is null, and every later revision goes through review/approve/publish normally.';
@@ -89,7 +108,14 @@ export class ReportLifecycleService {
     private readonly reporting: ReportingService,
     private readonly approvals: ApprovalsService,
     private readonly delivery: DeliveryService,
+    private readonly config: ConfigService,
   ) {}
+
+  /** bcrypt cost for a share-link password — matches the auth module's baseline for interactive secrets. */
+  private static readonly SHARE_LINK_BCRYPT_ROUNDS = 10;
+
+  /** How long a successful unlock is remembered by the recipient's browser (C6 §31). */
+  private static readonly UNLOCK_GRANT_TTL_MS = 30 * 60 * 1000;
 
   // ─── Read: the operator's view of both axes ───────────────────
 
@@ -415,6 +441,11 @@ export class ReportLifecycleService {
 
     const token = randomBytes(32).toString('base64url');
     const expiresAt = dto.expiresInHours ? new Date(Date.now() + dto.expiresInHours * 60 * 60 * 1000) : null;
+    // C6 §31 — bcrypt the optional password (a user-chosen secret). Never store
+    // it in cleartext, and never return the hash.
+    const passwordHash = dto.password
+      ? await bcryptjs.hash(dto.password, ReportLifecycleService.SHARE_LINK_BCRYPT_ROUNDS)
+      : null;
     const row = await this.prisma.reportShareLink.create({
       data: {
         reportId: report.id,
@@ -423,12 +454,17 @@ export class ReportLifecycleService {
         // this is an audit record, not a pin.
         revisionId: await this.currentReleasedRevisionId(report),
         tokenHash: hashCode(token),
+        passwordHash,
         createdBy: actorUserId,
         expiresAt,
       },
     });
 
-    this.logger.log(`Share link ${row.id} created for report ${report.slug}${expiresAt ? ` (expires ${expiresAt.toISOString()})` : ' (no expiry)'}`);
+    this.logger.log(
+      `Share link ${row.id} created for report ${report.slug}` +
+        `${expiresAt ? ` (expires ${expiresAt.toISOString()})` : ' (no expiry)'}` +
+        `${passwordHash ? ' (password-protected)' : ''}`,
+    );
     return { ...toShareLinkDto(row), token, url: `/api/reports/shared/${token}` };
   }
 
@@ -462,6 +498,27 @@ export class ReportLifecycleService {
   }
 
   /**
+   * The one 404 every dead-link case collapses to, so a response never
+   * discloses which of unknown / revoked / expired / nothing-released it was.
+   */
+  private get shareNotFound(): NotFoundException {
+    return new NotFoundException('This share link is not available. It may have been revoked or expired.');
+  }
+
+  /**
+   * Load the live share-link row for a token, or throw the single 404. Applies
+   * the unknown / revoked / expired gate but **not** the password check — the
+   * caller uses the returned `id`/`requiresPassword` to decide whether to
+   * prompt (HTML) or refuse (PDF). C6 §31.
+   */
+  async peekShareLink(token: string): Promise<{ id: string; requiresPassword: boolean }> {
+    const row = await this.prisma.reportShareLink.findUnique({ where: { tokenHash: hashCode(token) } });
+    if (!row || row.revokedAt) throw this.shareNotFound;
+    if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) throw this.shareNotFound;
+    return { id: row.id, requiresPassword: row.passwordHash != null };
+  }
+
+  /**
    * Resolve a raw share token for the unauthenticated render route.
    *
    * Returns the report's **current released revision** — never a draft, never
@@ -470,22 +527,41 @@ export class ReportLifecycleService {
    * (withdrawn included) resolves to 404 with one message, so the answer does
    * not disclose which of those it was.
    *
+   * C6 §31: a password-protected link additionally requires proof — either a
+   * correct `password`, or an `unlockedLinkId` matching this link's id (a valid
+   * unlock cookie the recipient already earned by typing the password). Without
+   * proof it throws {@link ShareLinkPasswordRequiredException} (401), which the
+   * caller turns into a password prompt rather than the 404 above — the link
+   * *does* exist, it is just locked.
+   *
    * The view counter is written best-effort after the decision to serve: a
    * failed counter write must not turn a working link into a broken one.
    */
-  async resolveShareToken(token: string): Promise<{ report: Report; revision: ReportRevision }> {
+  async resolveShareToken(
+    token: string,
+    opts: { password?: string; unlockedLinkId?: string } = {},
+  ): Promise<{ report: Report; revision: ReportRevision }> {
     const row = await this.prisma.reportShareLink.findUnique({ where: { tokenHash: hashCode(token) } });
-    const notFound = new NotFoundException('This share link is not available. It may have been revoked or expired.');
-    if (!row || row.revokedAt) throw notFound;
-    if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) throw notFound;
+    if (!row || row.revokedAt) throw this.shareNotFound;
+    if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) throw this.shareNotFound;
+
+    // C6 §31 password gate — a locked link that exists is a 401, not a 404.
+    if (row.passwordHash) {
+      const unlockedByCookie = opts.unlockedLinkId != null && opts.unlockedLinkId === row.id;
+      const unlockedByPassword =
+        opts.password != null && (await bcryptjs.compare(opts.password, row.passwordHash));
+      if (!unlockedByCookie && !unlockedByPassword) {
+        throw new ShareLinkPasswordRequiredException(opts.password != null);
+      }
+    }
 
     const report = await this.prisma.report.findUnique({ where: { id: row.reportId } });
-    if (!report || report.status !== 'released' || report.releasedRevision == null) throw notFound;
+    if (!report || report.status !== 'released' || report.releasedRevision == null) throw this.shareNotFound;
 
     const revision = await this.prisma.reportRevision.findFirst({
       where: { reportId: report.id, revision: report.releasedRevision, status: 'released' },
     });
-    if (!revision) throw notFound;
+    if (!revision) throw this.shareNotFound;
 
     try {
       await this.prisma.reportShareLink.update({
@@ -496,6 +572,53 @@ export class ReportLifecycleService {
       this.logger.warn(`Share link ${row.id} served but its view counter was not updated: ${(err as Error).message}`);
     }
     return { report, revision };
+  }
+
+  // ─── C6 §31: unlock grant (short-lived proof of a correct password) ───
+
+  /**
+   * Mint a signed, short-lived grant proving the recipient entered the correct
+   * password for `linkId`. Stored in an HttpOnly cookie so the follow-up PDF
+   * download and page refreshes do not re-prompt, and so the password itself
+   * never travels in a URL. Signed with `JWT_SECRET` (HMAC-SHA256) — a leaked
+   * grant only unlocks the one link, and only until it expires.
+   */
+  mintUnlockGrant(linkId: string): string {
+    const exp = Date.now() + ReportLifecycleService.UNLOCK_GRANT_TTL_MS;
+    const payload = Buffer.from(JSON.stringify({ linkId, exp })).toString('base64url');
+    return `${payload}.${this.signGrant(payload)}`;
+  }
+
+  /** Verify an unlock-grant cookie value against `linkId`, in constant time, honoring its expiry. */
+  verifyUnlockGrant(value: string | undefined, linkId: string): boolean {
+    if (!value) return false;
+    const dot = value.lastIndexOf('.');
+    if (dot <= 0) return false;
+    const payload = value.slice(0, dot);
+    const signature = value.slice(dot + 1);
+    const expected = this.signGrant(payload);
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expected);
+    if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return false;
+    try {
+      const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
+        linkId?: unknown;
+        exp?: unknown;
+      };
+      return decoded.linkId === linkId && typeof decoded.exp === 'number' && decoded.exp > Date.now();
+    } catch {
+      return false;
+    }
+  }
+
+  /** How long an unlock grant stays valid, in seconds — for the cookie Max-Age. */
+  get unlockGrantMaxAgeSeconds(): number {
+    return Math.floor(ReportLifecycleService.UNLOCK_GRANT_TTL_MS / 1000);
+  }
+
+  private signGrant(payload: string): string {
+    const secret = this.config.get<string>('JWT_SECRET') ?? '';
+    return createHmac('sha256', secret).update(payload).digest('base64url');
   }
 
   // ─── Delivery ledger ───────────────────────────────────────────
@@ -959,6 +1082,7 @@ function toShareLinkDto(row: ReportShareLink): ShareLinkDto {
     viewCount: row.viewCount,
     createdBy: row.createdBy,
     createdAt: row.createdAt.toISOString(),
+    hasPassword: row.passwordHash != null,
   };
 }
 

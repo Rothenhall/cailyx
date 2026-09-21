@@ -180,6 +180,7 @@ export default function ReportReviewPage() {
   const [releaseNote, setReleaseNote] = useState('');
   const [withdrawReason, setWithdrawReason] = useState('');
   const [expiresInHours, setExpiresInHours] = useState('');
+  const [sharePassword, setSharePassword] = useState('');
   const [createLinkError, setCreateLinkError] = useState<ApiError | null>(null);
   const [creatingLink, setCreatingLink] = useState(false);
 
@@ -533,6 +534,8 @@ export default function ReportReviewPage() {
 
   const expiresValid =
     expiresInHours.trim() === '' || /^[1-9][0-9]*$/.test(expiresInHours.trim());
+  // C6 §31 — optional password: empty (no password) or 4–72 chars, matching the backend DTO.
+  const sharePasswordValid = sharePassword === '' || (sharePassword.length >= 4 && sharePassword.length <= 72);
 
   const onCopy = useCallback(async () => {
     if (!createdLink || !origin) return;
@@ -1062,20 +1065,34 @@ export default function ReportReviewPage() {
                       className="w-40"
                     />
                   </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="share-password">Password (optional)</Label>
+                    <Input
+                      id="share-password"
+                      type="password"
+                      autoComplete="new-password"
+                      value={sharePassword}
+                      onChange={(event) => setSharePassword(event.target.value)}
+                      aria-describedby="share-password-help"
+                      aria-invalid={!sharePasswordValid}
+                      className="w-56"
+                    />
+                  </div>
                   <Button
-                    disabled={!expiresValid || creatingLink}
+                    disabled={!expiresValid || !sharePasswordValid || creatingLink}
                     onClick={async () => {
                       setCreatingLink(true);
                       setCreateLinkError(null);
                       try {
-                        const created = await createReportShareLink(
-                          projectId,
-                          slug,
-                          expiresInHours.trim() === '' ? undefined : Number(expiresInHours.trim()),
-                        );
+                        const created = await createReportShareLink(projectId, slug, {
+                          expiresInHours:
+                            expiresInHours.trim() === '' ? undefined : Number(expiresInHours.trim()),
+                          password: sharePassword === '' ? undefined : sharePassword,
+                        });
                         setCreatedLink(created);
                         setCopied(false);
                         setExpiresInHours('');
+                        setSharePassword('');
                         setNotice(
                           'Share link created. It resolves to the report’s currently released revision — a later release serves the newer one under the same link.',
                         );
@@ -1093,14 +1110,26 @@ export default function ReportReviewPage() {
                   </Button>
                 </div>
                 <p id="share-expiry-help" className="text-meta text-muted-foreground">
-                  Leave it empty for a link that does not expire — it is still revocable, and
+                  Leave the expiry empty for a link that does not expire — it is still revocable, and
                   revoking is what you should rely on. The report keeps being served until the link
                   is revoked, expired, or the report is withdrawn.
+                </p>
+                <p id="share-password-help" className="text-meta text-muted-foreground">
+                  A password (4–72 characters) makes the recipient enter it before the report opens —
+                  use it when the report is more sensitive than an unguessable link alone should
+                  guard. It is stored hashed and cannot be recovered; to change it, revoke the link
+                  and create another. Share the password out-of-band, not in the same message as the
+                  link.
                 </p>
                 {!expiresValid ? (
                   <p className="text-meta text-danger-foreground">
                     An expiry has to be a whole number of hours, 1 or more. Clear the field for a
                     non-expiring link.
+                  </p>
+                ) : null}
+                {!sharePasswordValid ? (
+                  <p className="text-meta text-danger-foreground">
+                    A password has to be 4–72 characters. Clear the field for a link with no password.
                   </p>
                 ) : null}
                 {createLinkError ? (
@@ -1144,6 +1173,12 @@ export default function ReportReviewPage() {
                     ) : (
                       <>No expiry. It works until it is revoked or the report is withdrawn.</>
                     )}
+                    {createdLink.hasPassword ? (
+                      <>
+                        {' '}Password-protected — the recipient must enter the password you set. Send
+                        the password separately from the link.
+                      </>
+                    ) : null}
                   </p>
                   <div className="flex flex-wrap items-center gap-2">
                     <Button asChild variant="outline" size="sm">
@@ -1196,6 +1231,7 @@ export default function ReportReviewPage() {
                           ) : (
                             <StatusPill label="Live" tone="success" />
                           )}
+                          {link.hasPassword ? <StatusPill label="Password" tone="warning" /> : null}
                         </div>
                         <div className="text-meta text-muted-foreground">
                           Created <Timestamp value={link.createdAt} />

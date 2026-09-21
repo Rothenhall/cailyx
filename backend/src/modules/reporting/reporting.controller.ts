@@ -37,8 +37,11 @@ import {
   Post,
   Put,
   Query,
+  Req,
+  Res,
   StreamableFile,
 } from '@nestjs/common';
+import type { Request, Response } from 'express';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -55,7 +58,7 @@ import type { AuthedRequestUser } from '../auth/strategies/jwt.strategy';
 import { ScopeValidationService } from '../../common/guards/scope-validation.service';
 import { AuthService } from '../auth/auth.service';
 import { ReportingService } from './reporting.service';
-import { ReportLifecycleService } from './report-lifecycle.service';
+import { ReportLifecycleService, ShareLinkPasswordRequiredException } from './report-lifecycle.service';
 import type { ReportPdfArtifact } from './report-pdf';
 import {
   ApproveReportDto,
@@ -68,6 +71,7 @@ import {
   PublishReportDto,
   ReviewReportDto,
   SetVisibilityDto,
+  UnlockShareLinkDto,
   WithdrawReportDto,
 } from './dto/reporting.dto';
 
@@ -535,6 +539,11 @@ export class ReportMigrationController {
 
 // ─── Public share-link render ─────────────────────────────────────
 
+/** C6 §31 — the HttpOnly cookie that remembers a correct password unlock. */
+const UNLOCK_COOKIE = 'cailyx_report_unlock';
+/** Cookie path scoped to the share routes so it rides `:token`, `:token.pdf` and `/unlock` — and nothing else. */
+const UNLOCK_COOKIE_PATH = '/api/reports/shared';
+
 @ApiTags('Reporting')
 @Controller('reports/shared')
 export class SharedReportController {
@@ -555,6 +564,10 @@ export class SharedReportController {
    * report must be released — a withdrawn report serves nothing here either,
    * and the resolution (`resolveShareToken`) is the same call, so the two
    * formats cannot disagree about whether a link still works.
+   *
+   * C6 §31: a PDF cannot render a password prompt, so a locked link with no
+   * valid unlock cookie is a 401 telling the recipient to open the HTML link
+   * and enter the password first (which sets the cookie the PDF then rides).
    */
   @Public()
   @Get(':token.pdf')
@@ -563,19 +576,74 @@ export class SharedReportController {
   @ApiProduces('application/pdf')
   @ApiOperation({
     summary: 'Render a shared report as a PDF (public, token-only)',
-    description: 'The currently released revision as a PDF file. Same 404 for unknown, revoked, expired, or a report with nothing released.',
+    description: 'The currently released revision as a PDF file. Same 404 for unknown, revoked, expired, or a report with nothing released. 401 for a password-protected link opened without first unlocking it via the HTML link.',
   })
   @ApiResponse({ status: 200, description: 'application/pdf for the currently released revision' })
+  @ApiResponse({ status: 401, description: 'Link is password-protected — unlock it via the HTML link first' })
   @ApiResponse({ status: 404, description: 'Link unknown, revoked, expired, or nothing is released' })
   @ApiResponse({ status: 429, description: 'Rate limited to 20/minute' })
-  async renderSharedPdf(@Param('token') token: string, @Query('view') view?: string): Promise<StreamableFile> {
-    const { report, revision } = await this.lifecycle.resolveShareToken(token);
+  async renderSharedPdf(
+    @Param('token') token: string,
+    @Req() req: Request,
+    @Query('view') view?: string,
+  ): Promise<StreamableFile> {
+    const gate = await this.lifecycle.peekShareLink(token);
+    if (gate.requiresPassword && !this.hasValidUnlock(req, gate.id)) {
+      throw new ShareLinkPasswordRequiredException(false);
+    }
+    const { report, revision } = await this.lifecycle.resolveShareToken(token, { unlockedLinkId: gate.id });
     const artifact = await this.reporting.renderReleasedPdf(
       report,
       revision,
       view === 'detailed' ? 'detailed' : 'executive',
     );
     return pdfResponse(artifact);
+  }
+
+  /**
+   * Submit a password for a protected share link (C6 §31). On success, sets a
+   * short-lived HttpOnly unlock cookie so the report page and its PDF do not
+   * re-prompt, then serves the report HTML. On a wrong password, re-serves the
+   * prompt page with an error, at 401. The password only ever travels in this
+   * POST body — never in a URL.
+   */
+  @Public()
+  @Post(':token/unlock')
+  @Throttle({ default: { ttl: 60000, limit: 10 } })
+  @ApiParam({ name: 'token', description: 'The raw share token.' })
+  @ApiOperation({ summary: 'Unlock a password-protected shared report (public)' })
+  @ApiResponse({ status: 200, description: 'HTML report page — password accepted, unlock cookie set' })
+  @ApiResponse({ status: 401, description: 'Password prompt page re-served — password missing or wrong' })
+  @ApiResponse({ status: 404, description: 'Link unknown, revoked, or expired' })
+  async unlockShared(
+    @Param('token') token: string,
+    @Body() body: UnlockShareLinkDto,
+    @Res() res: Response,
+  ): Promise<void> {
+    const view = body.view === 'detailed' ? 'detailed' : 'executive';
+    const gate = await this.lifecycle.peekShareLink(token); // 404s a dead link before any password work
+    try {
+      const { report, revision } = await this.lifecycle.resolveShareToken(token, { password: body.password });
+      const grant = this.lifecycle.mintUnlockGrant(gate.id);
+      res.cookie(UNLOCK_COOKIE, grant, {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+        path: UNLOCK_COOKIE_PATH,
+        maxAge: this.lifecycle.unlockGrantMaxAgeSeconds * 1000,
+      });
+      const html = await this.reporting.renderReleasedHtml(report, revision, view);
+      res.status(HttpStatus.OK).type('html').send(html);
+    } catch (err) {
+      if (err instanceof ShareLinkPasswordRequiredException) {
+        res
+          .status(HttpStatus.UNAUTHORIZED)
+          .type('html')
+          .send(passwordPromptPage(token, view, 'That password is not correct. Try again.'));
+        return;
+      }
+      throw err;
+    }
   }
 
   /**
@@ -587,6 +655,9 @@ export class SharedReportController {
    * never the mutable row, and nothing at all when the report has been
    * withdrawn or the link revoked or expired. `noindex` is forced on, because
    * a capability URL that search engines index is a capability URL that leaks.
+   *
+   * C6 §31: a password-protected link with no valid unlock cookie serves the
+   * password-prompt page instead of the report.
    */
   @Public()
   @Get(':token')
@@ -594,12 +665,83 @@ export class SharedReportController {
   @Header('Content-Type', 'text/html; charset=utf-8')
   @ApiParam({ name: 'token', description: 'The raw share token. Only its sha256 is stored server-side.' })
   @ApiOperation({ summary: 'Render a shared report (public, token-only)' })
-  @ApiResponse({ status: 200, description: 'HTML report page for the currently released revision' })
+  @ApiResponse({ status: 200, description: 'HTML report page, or the password prompt for a protected link' })
   @ApiResponse({ status: 404, description: 'Link unknown, revoked, expired, or nothing is released' })
-  async renderShared(@Param('token') token: string, @Query('view') view?: string) {
-    const { report, revision } = await this.lifecycle.resolveShareToken(token);
-    return this.reporting.renderReleasedHtml(report, revision, view === 'detailed' ? 'detailed' : 'executive');
+  async renderShared(
+    @Param('token') token: string,
+    @Req() req: Request,
+    @Query('view') view?: string,
+  ): Promise<string> {
+    const resolvedView = view === 'detailed' ? 'detailed' : 'executive';
+    const gate = await this.lifecycle.peekShareLink(token);
+    if (gate.requiresPassword && !this.hasValidUnlock(req, gate.id)) {
+      return passwordPromptPage(token, resolvedView);
+    }
+    const { report, revision } = await this.lifecycle.resolveShareToken(token, { unlockedLinkId: gate.id });
+    return this.reporting.renderReleasedHtml(report, revision, resolvedView);
   }
+
+  /** True when the request carries a valid, unexpired unlock cookie for `linkId` (C6 §31). */
+  private hasValidUnlock(req: Request, linkId: string): boolean {
+    const raw = req.headers.cookie;
+    if (!raw) return false;
+    const match = raw
+      .split(';')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${UNLOCK_COOKIE}=`));
+    if (!match) return false;
+    const value = decodeURIComponent(match.slice(UNLOCK_COOKIE.length + 1));
+    return this.lifecycle.verifyUnlockGrant(value, linkId);
+  }
+}
+
+/**
+ * A minimal, self-contained password prompt for a protected share link (C6
+ * §31). No external assets, no scripts — a single form that POSTs the password
+ * to `/unlock`. `token` is base64url and `view` is coerced to a fixed set, but
+ * both are HTML-escaped anyway before they reach the markup.
+ */
+function passwordPromptPage(token: string, view: 'executive' | 'detailed', error?: string): string {
+  const action = `/api/reports/shared/${escapeHtml(encodeURIComponent(token))}/unlock`;
+  const errorBlock = error
+    ? `<p role="alert" style="color:#b91c1c;margin:0 0 12px;font-size:14px">${escapeHtml(error)}</p>`
+    : '';
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Protected report</title>
+</head>
+<body style="margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f8fafc;color:#0f172a">
+<main style="max-width:420px;margin:12vh auto;padding:0 20px">
+<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:28px">
+<h1 style="font-size:18px;margin:0 0 6px">This report is password-protected</h1>
+<p style="font-size:14px;color:#475569;margin:0 0 20px">Enter the password you were given to open it.</p>
+${errorBlock}
+<form method="post" action="${action}">
+<input type="hidden" name="view" value="${escapeHtml(view)}">
+<label for="pw" style="display:block;font-size:13px;font-weight:600;margin:0 0 6px">Password</label>
+<input id="pw" name="password" type="password" autocomplete="current-password" required autofocus
+ style="width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:15px;margin:0 0 16px">
+<button type="submit"
+ style="width:100%;padding:10px 12px;border:0;border-radius:8px;background:#0f172a;color:#fff;font-size:15px;font-weight:600;cursor:pointer">Open report</button>
+</form>
+</div>
+</main>
+</body>
+</html>`;
+}
+
+/** Escape the five HTML-significant characters for safe interpolation into the prompt markup. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**

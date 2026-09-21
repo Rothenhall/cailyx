@@ -6,7 +6,7 @@
 
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUrl, Max, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUrl, Max, MaxLength, Min, MinLength } from 'class-validator';
 
 export class GenerateReportDto {
   @ApiProperty()
@@ -94,6 +94,35 @@ export class CreateShareLinkDto {
   @IsInt()
   @Min(1)
   expiresInHours?: number;
+
+  /**
+   * C6 §31 — optional password. When set, the public render prompts for it
+   * before serving the report. Stored only as a bcrypt hash. 4–72 chars (72 is
+   * bcrypt's input cap; the same cap the auth module applies to user passwords).
+   */
+  @ApiPropertyOptional({ description: 'Optional password required to open the link. Stored hashed. 4–72 characters. Omit for no password.' })
+  @IsOptional()
+  @IsString()
+  @MinLength(4)
+  @MaxLength(72)
+  password?: string;
+}
+
+/**
+ * C6 §31 — body of the public unlock POST. The password a recipient types on
+ * the password-prompt page for a password-protected share link.
+ */
+export class UnlockShareLinkDto {
+  @ApiProperty({ description: 'The password set on this share link.' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(72)
+  password: string;
+
+  @ApiPropertyOptional({ enum: ['executive', 'detailed'], description: 'Which view to open after unlocking.' })
+  @IsOptional()
+  @IsIn(['executive', 'detailed'])
+  view?: string;
 }
 
 export class DeliverReportDto {

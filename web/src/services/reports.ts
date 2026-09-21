@@ -299,6 +299,8 @@ export interface ReportShareLink {
   viewCount: number;
   createdBy: string | null;
   createdAt: string;
+  /** C6 §31 — whether this link requires a password to open. The password itself is never returned. */
+  hasPassword: boolean;
 }
 
 /**
@@ -487,14 +489,18 @@ export async function listReportShareLinks(
  * excludes unpublished drafts from the public projection. The raw token is in
  * the returned object and in nothing else this adapter can call: the caller
  * must show it immediately or lose it.
+ *
+ * C6 §31: an optional `password` protects the link — the public render prompts
+ * for it before serving the report. Stored only as a hash; never returned.
  */
 export async function createReportShareLink(
   projectId: string,
   slug: string,
-  expiresInHours?: number,
+  opts?: { expiresInHours?: number; password?: string },
 ): Promise<ReportShareLinkCreated> {
   return api.post<ReportShareLinkCreated>(`${lifecyclePath(projectId, slug)}/share-links`, {
-    ...(expiresInHours ? { expiresInHours } : {}),
+    ...(opts?.expiresInHours ? { expiresInHours: opts.expiresInHours } : {}),
+    ...(opts?.password ? { password: opts.password } : {}),
   });
 }
 

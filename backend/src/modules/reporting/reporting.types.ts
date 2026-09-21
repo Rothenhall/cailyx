@@ -458,6 +458,8 @@ export interface ShareLinkDto {
   viewCount: number;
   createdBy: string | null;
   createdAt: string;
+  /** C6 §31 — whether this link requires a password to open. The hash itself is never returned. */
+  hasPassword: boolean;
 }
 
 /**

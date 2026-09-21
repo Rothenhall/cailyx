@@ -3264,6 +3264,11 @@ model ReportShareLink {
   revisionId String?
   /// sha256 of the share token.
   tokenHash  String    @unique
+  /// C6 §31 — bcrypt hash of the OPTIONAL client/admin-set password. Null when
+  /// the link is unguessable-only (expiry + revocation still apply). A
+  /// user-chosen secret, so bcrypt (not the sha256 used for the high-entropy
+  /// token above) — same discipline the auth module uses for passwords.
+  passwordHash String?
   createdBy  String?
   expiresAt  DateTime?
   revokedAt  DateTime?

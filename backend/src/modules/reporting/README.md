@@ -111,12 +111,14 @@ Operator routes are `@Roles`-restricted and every one validates project access
 | POST | `/api/projects/:projectId/reports/:slug/approve` | admin, delivery-lead | `approved` \| `changes-requested` |
 | POST | `/api/projects/:projectId/reports/:slug/publish` | admin, delivery-lead | **Release** (G10 gate first) |
 | POST | `/api/projects/:projectId/reports/:slug/withdraw` | admin, delivery-lead | Pull it back, reason required |
-| GET | `/api/projects/:projectId/reports/:slug/share-links` | any assigned operator | Links; never a token |
-| POST | `/api/projects/:projectId/reports/:slug/share-links` | admin, delivery-lead | Mint an expiring link (released reports only) — token returned **once** |
+| GET | `/api/projects/:projectId/reports/:slug/share-links` | any assigned operator | Links; never a token. Each carries `hasPassword` (C6 §31) |
+| POST | `/api/projects/:projectId/reports/:slug/share-links` | admin, delivery-lead | Mint an expiring link (released reports only) — token returned **once**. Optional `password` (C6 §31) |
 | DELETE | `/api/projects/:projectId/reports/:slug/share-links/:linkId` | admin, delivery-lead | Revoke (idempotent) |
 | GET | `/api/projects/:projectId/reports/:slug/delivery-attempts` | any assigned operator | The send ledger |
 | POST | `/api/projects/:projectId/reports/:slug/delivery-attempts` | admin, delivery-lead, sales | Record (and for `email`, attempt) a delivery |
-| GET | `/api/reports/shared/:token` | `@Public` | Token-only HTML of the **current release** |
+| GET | `/api/reports/shared/:token` | `@Public` | Token-only HTML of the **current release**, or a password-prompt page for a protected link (C6 §31) |
+| POST | `/api/reports/shared/:token/unlock` | `@Public` | C6 §31 — submit a protected link's password; sets the unlock cookie, returns the report |
+| GET | `/api/reports/shared/:token.pdf` | `@Public` | Token-only PDF; `401` for a protected link not yet unlocked (C6 §31) |
 | POST | `/api/reports/classify-legacy` | admin | The pre-G05 migration (idempotent) |
 | GET | `/api/reports/classify-legacy/preview` | admin | Dry run of the same |
 
@@ -331,3 +333,56 @@ requires G10's client-decision flow, and the call itself is a straight pass-thro
 - **`CheckResult` (G10) has no project column**, so claim/source review records for a
   report revision cannot be listed through a project-scoped route here either. That is
   G10's own recorded gap.
+
+## C6 §31 — Public report-link security: optional password (added 2026-09-21)
+
+`docs/analysis/client-portal.md` §31 / `docs/PLAN.md` §11.6. The token share link already had
+expiry (`ReportShareLink.expiresAt`) and revocation (`revokedAt`); §31 asked for those **plus an
+optional password**. So the only genuinely new piece here is the password — expiry/revocation were
+verified pre-existing and are unchanged. This is deliberately the token surface (`ReportShareLink`
+→ `GET /reports/shared/:token`), **not** the simpler `scorecard` public token (which §31 explicitly
+says not to reuse) and not the `visibility` slug surface.
+
+**Model.** `ReportShareLink.passwordHash String?` (both `schema.prisma` and
+`schema.production.prisma`). A user-chosen secret, so **bcrypt** (cost 10, the auth module's
+baseline) — not the sha256 the high-entropy token itself uses. The hash is never returned; the
+DTO/service expose only `hasPassword: boolean`.
+
+**Create.** `POST .../share-links` accepts an optional `password` (4–72 chars — 72 is bcrypt's
+input cap). `createShareLink` bcrypts it into `passwordHash`. Expiry (`expiresInHours`) is
+independent and unchanged.
+
+**Open (the gate).** `resolveShareToken(token, { password?, unlockedLinkId? })` throws the dead-link
+`404` for unknown/revoked/expired/nothing-released (one message, no disclosure), and — new — a
+`ShareLinkPasswordRequiredException` (`401`) when a protected link has neither a correct password
+nor a matching unlock grant. The `401` is deliberately distinct from the `404`: the link exists, it
+is just locked, so the public route responds with a prompt rather than "not found".
+`peekShareLink(token)` returns `{ id, requiresPassword }` without checking the password, so the
+controller can decide whether to prompt (HTML) or refuse (PDF) before resolving content.
+
+**Keeping the password out of URLs.** The password travels only in the `POST .../unlock` form body.
+On success the server sets a short-lived (**30 min**) HttpOnly, `SameSite=Lax`,
+path-scoped (`/api/reports/shared`) cookie `cailyx_report_unlock` holding an HMAC-`JWT_SECRET`-signed
+grant bound to that one link id (`mintUnlockGrant`/`verifyUnlockGrant`, constant-time compare +
+expiry). `GET :token` and `GET :token.pdf` accept that cookie instead of re-prompting — which is how
+the PDF download works after unlocking (a PDF cannot render a prompt, so without a valid cookie it
+is a `401` telling the recipient to open the HTML link first). No new dependency: cookies are set
+with Express's `res.cookie` and read by parsing `req.headers.cookie` directly.
+
+**No new env var** — the grant is signed with the existing `JWT_SECRET`.
+
+Files: `report-lifecycle.service.ts` (`ShareLinkPasswordRequiredException`, `peekShareLink`,
+`resolveShareToken` gate, `mintUnlockGrant`/`verifyUnlockGrant`, `createShareLink` hashing,
+`toShareLinkDto.hasPassword`), `reporting.controller.ts` (`SharedReportController` — prompt page,
+`/unlock`, PDF gate, cookie helpers), `dto/reporting.dto.ts` (`CreateShareLinkDto.password`,
+`UnlockShareLinkDto`), `reporting.types.ts` (`ShareLinkDto.hasPassword`). Operator UI:
+`web/.../reports/[slug]/review/page.tsx` (password field on create, "Password" pill on protected
+links) + `web/src/services/reports.ts`.
+
+### C6 §31 verification status
+
+**Code-complete; `npx tsc --noEmit` clean (backend) and `npm run typecheck` clean (web).** The
+required live end-to-end run (create password-protected link → prompt page → wrong/right password →
+unlock cookie → PDF with/without cookie → expiry 404) is **PENDING**: this session had no reachable
+Postgres (Docker Desktop's engine would not start and no local Postgres was installed). Run it once
+a backend + Postgres is up — steps in `docs/MODULES-STATUS.md`'s Wave 7 C6 entry.
