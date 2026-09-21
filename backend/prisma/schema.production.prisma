@@ -491,6 +491,12 @@ model Client {
   /// the client's own data.
   ownerUserId  String?
   notes        String?
+  /// `refresh-cadence` module's automatic measurement/scoring refresh cadence
+  /// (C7, `docs/analysis/client-portal.md` §19) and the C6 §29 competitor cap.
+  /// Added to the production schema 2026-09-22: C7 added it to `schema.prisma`
+  /// (dev) but never here, so prod drifted without it — caught during C6 live
+  /// verification against prod. starter=weekly, growth/scale/enterprise=daily.
+  planTier     String   @default("starter")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
