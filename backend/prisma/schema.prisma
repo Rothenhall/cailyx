@@ -151,9 +151,22 @@ model ScheduleConfig {
   seoLastRunAt DateTime?
   seoLastError String?
 
+  /// C7 (`docs/analysis/client-portal.md` §19) — automatic measurement+scoring
+  /// refresh, derived from the client's plan tier by `refresh-cadence`
+  /// (never operator-set, unlike `cadence`/`seoCadence` above). Its own
+  /// column set, same pattern as `seo*` above, so it cannot collide with
+  /// technical-audit's or monitoring's cadence sharing the generic
+  /// `cadence` column (see monitoring/README.md "Known limitation").
+  refreshCadence   String    @default("manual-only")
+  refreshNextRunAt DateTime?
+  refreshActive    Boolean   @default(false)
+  refreshLastRunAt DateTime?
+  refreshLastError String?
+
   @@index([projectId])
   @@index([active, nextRunAt])
   @@index([seoActive, seoNextRunAt])
+  @@index([refreshActive, refreshNextRunAt])
 }
 
 model PageMetadata {
@@ -476,6 +489,16 @@ model Client {
   /// the client's own data.
   ownerUserId  String?
   notes        String?
+  /// starter | growth | scale | enterprise — set by the admin (generic
+  /// `PATCH /clients/:clientId`), not derived from billing. Drives the
+  /// `refresh-cadence` module's automatic measurement/scoring refresh
+  /// cadence (C7, `docs/analysis/client-portal.md` §19): starter=weekly,
+  /// growth/scale=daily, enterprise=daily (true real-time is explicitly
+  /// deferred — `docs/PLAN.md` "Real-time monitoring... is future"). No
+  /// `billing.Offer`/`Entitlement` encodes a tier today, so this is its own
+  /// field rather than derived from the billing ledger — see refresh-cadence
+  /// module README for the full reasoning.
+  planTier     String   @default("starter")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

@@ -9,6 +9,15 @@ export type ClientStatus = 'active' | 'paused' | 'churned';
 export type OnboardingStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 /**
+ * C7 (`docs/analysis/client-portal.md` §19) — the plan tier drives the
+ * `refresh-cadence` module's automatic measurement/scoring cadence. Set by
+ * the admin via generic `PATCH /clients/:clientId`; not derived from
+ * `billing` (no `Offer`/`Entitlement` encodes a tier today — see
+ * `refresh-cadence/README.md`).
+ */
+export type PlanTier = 'starter' | 'growth' | 'scale' | 'enterprise';
+
+/**
  * C1 (`docs/analysis/client-portal.md` §16, `docs/PLAN.md` §11.1) — state of the
  * per-project client-facing onboarding-WIZARD gate. Distinct from
  * `OnboardingStatus` above (the Day-1 bootstrapping pipeline) — see the doc
@@ -35,6 +44,7 @@ export interface ClientDto {
   status: ClientStatus;
   ownerUserId: string | null;
   notes: string | null;
+  planTier: PlanTier;
   createdAt: string;
   updatedAt: string;
 }
