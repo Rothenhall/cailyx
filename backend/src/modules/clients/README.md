@@ -123,6 +123,48 @@ every stage twice. Moving Day-1 onto the ledger is a deliberate follow-up.
   `waiveOnboardingWizard()`. `'waived'` was added to `ActivityAction`/
   `ACTIVITY_ACTIONS` as a new, dedicated verb.
 
+## C2 (2026-09-21) — corrected wizard order + auto-email on Day-1 completion
+
+`docs/analysis/client-portal.md` §§2/11/12/17/18, `docs/PLAN.md` §11.2. This
+**corrects the report-vs-Google-connect ordering from two earlier attempts**
+at C2, one of which was preserved (uncommitted, never merged) on branch
+`worktree-agent-aeb71c76ff99ed6d7`. Both earlier attempts made GSC+GA4
+connection a hard gate blocking the Day-1 report and the entire portal — that
+matched an early draft of client-portal.md's §11 but was reversed after the
+product owner reviewed the actual hand-drawn flow diagram
+(`client-onbaording.excalidraw`): the report is shown to the client **before**
+Google-connect is asked for, not after. `Project.onboardingWizardState`'s
+enum values are unchanged from C1 (`not-started | confirming-details |
+connecting-gsc | connecting-ga4 | done | waived`) — only what's visible at
+each state changed, and that change lives in the web client's gate
+(`web/src/app/(client)/client/projects/[projectId]/layout.tsx`), not here.
+
+Two pieces of real backend work landed in this module for C2:
+
+- **Auto-email on Day-1 pipeline completion** (§2/§18). Both completion
+  points — the legacy `runDayOnePipeline()`'s report stage and the durable
+  `ClientsOnboardingExecutors.reportStage()` (G07/A7) — now call
+  `sendPortalReadyEmail(projectId)` after the report stage settles, **whether
+  it succeeded or failed** (§18: "a partial/degraded Day-1 run still fires the
+  completion email"). That method creates an invite for the project's primary
+  contact via `ClientAccessService.createSystemInvite()` (new, `client-access`
+  module — the canonical invite-link mechanics, called as a service method,
+  never re-triggering the HTTP endpoint) and sends a Plunk email: "your Cailyx
+  portal is ready, click here to log in" — no PDF, no report attachment, just
+  the link. Best-effort throughout: a missing contact email, an existing
+  login, or an unconfigured `PLUNK_SECRET_KEY` are logged and swallowed, never
+  thrown back into the pipeline.
+- **`ClientsModule` now imports `ClientAccessModule`** so `ClientsService` can
+  inject `ClientAccessService` for the above. No circular dependency —
+  `client-access` does not import `clients`.
+
+The wizard's own read/transition endpoints (`getOnboardingWizardState`,
+`confirmDetailsStep`, `connectGscDoneStep`, `connectGa4DoneStep`) live in
+`client-portal.service.ts`/`.controller.ts`, not here — this module still
+only owns the state COLUMN and the admin waive escape hatch (C1, unchanged).
+See that module's README for the wizard endpoints and the corrected-order
+verification.
+
 ## Deprecation: temp-password login superseded by invites (2026-09-20)
 
 `docs/analysis/client-portal.md` §2, `docs/PLAN.md` §11.0. `POST
@@ -197,6 +239,8 @@ for `ActivityService.record()` — used only by `waiveOnboardingWizard()`.
 | §11.0 cleanup — collapse to one client-login mechanism | ⚠️ | Invite-link flow (`client-access`) confirmed canonical; temp-password endpoint marked `@deprecated`, kept functional as an escape hatch (not removed — matches the plan's "deprecate, don't necessarily delete" framing). No ops-side invite UI was built (out of scope for C1), so the deprecated page remains the only working ops UI for now. |
 | §11.0 cleanup — retire CP04 as the onboarding gate (rename only) | ✅ | `welcome/page.tsx` now carries an inline transition-plan comment; no UI restructuring done, per the stage's explicit scope limit. |
 | §11.0 cleanup — separate namespaces for pipeline stages vs. future Phase/Milestone | ✅ | Doc comments added to `onboardingStatus`/`onboardingStep`/`onboardingWizardState` in both `schema.prisma` and `schema.production.prisma`. |
+| §2/§18 auto-email on Day-1 completion (success or honest-partial), invite-link not temp-password | ✅ | `sendPortalReadyEmail()`, called from both the legacy and durable report-stage completion points, success and failure branches alike. |
+| §17 wizard gate is project-scoped, never user-scoped | ✅ | Verified live: a brand-new colleague login created after a project reached `done` read `done` on its very first `GET .../onboarding-wizard` call — see client-portal module README for the transcript. |
 
 ## Testing notes
 

@@ -206,7 +206,7 @@ Order reconciles `PLAN.md` phases, PRD §16 build sequence, and the dependency g
 - [x] **`scorecard`** — Rung 0, PRD §13 + §17. Analysis resolved §17 as option B (`docs/analysis/wave-5.md` §2): engine + operator API now, public funnel behind `SCORECARD_PUBLIC=1` (a flag, not a rebuild). Built: fresh technical audit (probe failure → partial dimensions with reasons, never blocks the run) → versioned-rubric scoring → exactly **3 named problems** derived deterministically from the run's evidence (no LLM key required — the free funnel never blocks on a paid key) → `nonObvious` flag from probe-only evidence (blocked/render/`schema audit: fail`) → `ScorecardRun` with unguessable public share token. e2e: run 201 (score 33/invisible, 3 named problems), public 403 with flag off → 200 with flag on, bad token 404, list newest-first.
 - [x] **`delivery`** — PRD 6.11. Built per analysis choices: Plunk email (pre-approved; 503 `email-unconfigured` / `email-send-failed` guards, subject operator-editable, link-first — react-pdf PDF is frontend scope), internal Lead CRM (sources bulk/api/form/scorecard, `new → reached → booked | won/lost`) with **append-only** CTA event log (`book-call`/`review-ask`/`upgrade-click`) + CSV export for any external CRM (Attio/HubSpot = later), Stripe Checkout ledger (option A): links from `STRIPE_CHECKOUT_URL_*` env, click flips the lead's log, @Public completion = webhook stand-in (SDK + signature verification = documented next iteration). e2e: all guards + click/complete chain + lead event log verified.
 
-### Wave 7 — Client Portal & Admin Console revamp (2026-09-20, C1 + §11.0 cleanup done, C2–C7 not started)
+### Wave 7 — Client Portal & Admin Console revamp (2026-09-21, C1 + §11.0 cleanup + C2 done, C3–C7 not started)
 
 Full decision record: `docs/analysis/client-portal.md` v1.3 (35 sections). Build order,
 dependencies, and the required-before-code note on the engagement/timeline model: `docs/PLAN.md`
@@ -254,6 +254,55 @@ separate track (admin/client platform layer, §1.2h) from the engine-pipeline wa
   used `prisma db push` instead (confirmed schema-in-sync against the running Postgres container),
   matching what a broken `migrate dev` leaves as the only working option today. Flagging here so
   whoever picks up C2+ doesn't hit the same P3019 surprise cold.
+- [x] **C2 — onboarding wizard, CORRECTED order.** Two earlier attempts at C2 (one preserved,
+  uncommitted, on branch `worktree-agent-aeb71c76ff99ed6d7`) built a version where GSC+GA4
+  connection was a hard gate blocking the Day-1 report and the entire portal, matching client-
+  portal.md §11's v1.1 text at the time. That is now known wrong: the product owner reviewed the
+  actual hand-drawn flow diagram (`client-onbaording.excalidraw`) and confirmed the real order is
+  confirm details → the report and rest of the portal are already reachable → connect GSC →
+  connect GA4 → done, all inside one continuous guided wizard box on the diagram. This pass
+  corrects that ordering rather than repeating it a third time.
+  `Project.onboardingWizardState`'s enum values are unchanged from C1 — only the web gate's
+  blocking condition changed (blocks ONLY `not-started`/`confirming-details`, not
+  `connecting-gsc`/`connecting-ga4`).
+  - Backend: `client-portal.service.ts`/`.controller.ts` gained the wizard's read state + 3
+    step-transition endpoints (`confirm-details`, `connect-gsc-done`, `connect-ga4-done`),
+    project-scoped per §17 (never callerId-scoped — verified live: a brand-new colleague login
+    created after a project reached `done`, and which never called any wizard endpoint itself,
+    read `"done"` on its first call). `clients.service.ts` +
+    `clients.onboarding-executors.ts` gained the §2/§18 auto-email-on-Day-1-completion hook
+    (fires on success OR honest-partial failure, from both the legacy and durable G07/A7
+    completion points) via a new `ClientAccessService.createSystemInvite()` (canonical
+    invite-link flow, called as a service method, never the deprecated temp-password path).
+    `business-profile` gained a `category` field (§12's one remaining unverified field —
+    ICP turned out to already be fully wired; "target markets" was already covered by
+    `markets`/`targets`).
+  - Web: new project-level gate layout (blocks only through confirm-details), a trimmed
+    single-step `/onboarding` page (redirects to the dashboard on success instead of continuing
+    into a second/third blocking step), and a guided Google-connect banner added to
+    `welcome/page.tsx` (post-report, non-blocking, still explicit guided steps with server-
+    verified transitions — not a dismissible ambient nudge).
+  - Salvaged near-verbatim from the preserved branch: the transition-endpoint shapes/gating
+    rules and the auto-email hook body — both were already order-agnostic, since the state
+    machine's values never changed. Rebuilt: the gate's blocking condition, the wizard UI (one
+    step, not three), and the welcome-page integration.
+  - e2e-verified against a live backend + real Postgres: created a client/project → confirmed a
+    business profile (with `category: "SaaS"`, round-tripped through save+confirm) →
+    `confirm-details` → **`GET /api/portal/reports` succeeded while state was still
+    `connecting-gsc`** (the corrected-order proof) → `connect-gsc-done` 409'd with no mapping,
+    then succeeded once a `GoogleProjectResource` row was inserted (simulating a completed OAuth
+    round trip — no live Google credentials in this environment) → same pattern for
+    `connect-ga4-done` → `"done"` → re-verified the C1 admin-waive escape hatch unaffected on a
+    separate project → confirmed the pipeline-completion email hook actually fires (log:
+    `Day-1 pipeline completed for <id>` immediately followed by the portal-ready-email attempt,
+    which logged a non-fatal warning because the dev environment's Plunk key returns 401 — the
+    hook's own best-effort/never-throw behavior working as designed, not a bug). `backend: npx
+    tsc --noEmit` clean; `web: npm run typecheck` clean. Not verified: the real Google OAuth
+    authorize/callback round trip itself (needs live Google credentials) and a browser click-
+    through of the web UI (verified via the API + reading the gate/wizard/banner source). Full
+    write-up: `backend/src/modules/client-portal/README.md` (primary — endpoints + full
+    transcript), `backend/src/modules/clients/README.md`, `backend/src/modules/client-access/README.md`,
+    `backend/src/modules/business-profile/README.md`, `docs/API.md` (new endpoint reference).
 
 ### Standing item (not a module)
 

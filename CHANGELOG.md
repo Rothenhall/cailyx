@@ -9,6 +9,68 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-21 — Client Portal Phase C2: onboarding wizard, CORRECTED order
+
+Full decision record: `docs/analysis/client-portal.md` §§2/11/12/17/18. Build order:
+`docs/PLAN.md` §11.2. Full write-up: `backend/src/modules/client-portal/README.md`,
+`backend/src/modules/clients/README.md`, `backend/src/modules/client-access/README.md`,
+`backend/src/modules/business-profile/README.md`, `docs/API.md`, `docs/MODULES-STATUS.md`
+(Wave 7).
+
+**This corrects the report-vs-Google-connect ordering from two earlier attempts at C2** — one
+preserved, uncommitted and never merged, on branch `worktree-agent-aeb71c76ff99ed6d7`. Both
+made GSC+GA4 connection a hard gate blocking the Day-1 report and the whole portal. After the
+product owner reviewed the actual hand-drawn onboarding flow diagram
+(`client-onbaording.excalidraw` at the repo root), the real order was confirmed: confirm
+details → the report and rest of the portal are already reachable → connect GSC → connect
+GA4 → done — one continuous guided wizard, not "wizard then a separately-unlocked app with a
+dismissible nudge." `Project.onboardingWizardState`'s enum values (C1) are unchanged; only what
+each state blocks changed.
+
+- **Web gate, corrected:** the new project-level gate
+  (`web/src/app/(client)/client/projects/[projectId]/layout.tsx`) blocks ONLY
+  `not-started`/`confirming-details` — not `connecting-gsc`/`connecting-ga4`. The `/onboarding`
+  page is now a single confirm-details step; it redirects to the project dashboard on success
+  instead of continuing into a second/third blocking step. `welcome/page.tsx` gained a banner
+  that guides the client through the still-outstanding Google-connect step post-report (reusing
+  the existing `connections/page.tsx` OAuth flow), replacing the wrong-order dedicated blocking
+  UI.
+- **Wizard transition endpoints** (`client-portal.service.ts`/`.controller.ts`): `GET
+  .../onboarding-wizard`, `POST .../confirm-details`, `.../connect-gsc-done`,
+  `.../connect-ga4-done` — project-scoped (§17), server-re-checked (a confirmed profile must
+  exist; a live `GoogleProjectResource` mapping must exist), never advanced on a client click
+  alone.
+- **Auto-email on Day-1 completion (§2/§18):** fires on success OR honest-partial failure, from
+  both the legacy and durable (G07/A7) pipeline completion points, via a new
+  `ClientAccessService.createSystemInvite()` (canonical invite-link mechanics, called as a
+  service method — never the deprecated temp-password path) + a Plunk "your Cailyx portal is
+  ready, click here to log in" email (no PDF, no report attachment). Best-effort throughout.
+- **`business-profile` `category` field (§12):** new nullable column, wired through the full
+  save/confirm/merge/overview path and both client and ops business-info screens. ICP turned out
+  to already be fully wired (no work needed); target markets were already covered by existing
+  `markets`/`targets` fields.
+- **Salvaged vs. rebuilt** from the preserved branch: the transition-endpoint shapes/gating
+  rules and the auto-email hook body were already order-agnostic and reused near-verbatim. The
+  gate's blocking condition, the wizard UI (one step instead of three), and the welcome-page
+  integration were rebuilt for the corrected order.
+
+**Verified live** against a booted backend + real Postgres: created a client/project → saved +
+confirmed a business profile (`category: "SaaS"` round-tripped) → `confirm-details` →
+**`GET /api/portal/reports` succeeded while state was still `connecting-gsc`** (the
+corrected-order proof) → `connect-gsc-done` 409'd with no mapping, succeeded once a
+`GoogleProjectResource` row was inserted (OAuth round trip itself not exercised — no live
+Google credentials in this environment) → same pattern for `connect-ga4-done` → `"done"` →
+re-verified C1's admin-waive escape hatch unaffected on a separate project → confirmed the
+pipeline-completion email hook fires (log shows the attempt immediately after "Day-1 pipeline
+completed," non-fatal 401 from the dev Plunk key — best-effort design working as intended) →
+§17 project-scoping verified: a brand-new colleague login created after a project reached
+`done`, which never itself called any wizard endpoint, read `"done"` on its first call.
+`backend: npx tsc --noEmit` clean; `web: npm run typecheck` clean. Not verified: the real Google
+OAuth authorize/callback round trip, and a browser click-through of the web UI (verified via the
+API and by reading the gate/wizard/banner source for correctness).
+
+---
+
 ## 2026-09-20 — Client Portal Stage 1: §11.0 cleanup + Phase C1 (audit trail + onboarding-gate foundation)
 
 Full decision record: `docs/analysis/client-portal.md` §§15/16/33. Build order: `docs/PLAN.md`

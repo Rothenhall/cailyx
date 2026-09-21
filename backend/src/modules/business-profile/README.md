@@ -214,12 +214,26 @@ never merged:
 | `suggestions` | A still-open value the latest `SiteContext` extracted, **not** applied, with its `sourcePage` and `sourceDate` |
 | `gaps` | Empty, and nothing suggesting it — a question for a human, not an inferred answer |
 
-Eleven fields are tracked (`BUSINESS_INFO_FIELD_DEFS`): brand name, legal name,
-what you do, products/services, customer types, buyer roles, customer
-problems, target locations, languages, named competitors, commercial goals.
-Four of them — legal name, buyer roles, languages, goals — have **no
-extraction source at all**: nothing in `SiteContext` reads them, so the field
-is `confirmed`-or-`gap` only and no suggestion is ever fabricated for it.
+Twelve fields are tracked (`BUSINESS_INFO_FIELD_DEFS`): brand name, legal name,
+what you do, **business category / type**, products/services, customer types,
+buyer roles, customer problems, target locations, languages, named
+competitors, commercial goals. Four of them — legal name, buyer roles,
+languages, goals — have **no extraction source at all**: nothing in
+`SiteContext` reads them, so the field is `confirmed`-or-`gap` only and no
+suggestion is ever fabricated for it.
+
+**C2 (2026-09-21, `docs/analysis/client-portal.md` §12):** `category` is new —
+a `BusinessProfile.category` column (nullable string), wired through
+`BusinessProfileData`, `SaveBusinessProfileDto`, `toData()`/`saveDraft()`/
+`confirm()`/`emptyData()`/`merge()`, `BUSINESS_INFO_FIELD_DEFS` (section
+`about`, suggested from `SiteContext.category`, which already existed and
+was already read for the client-safe `listCandidates()` surface — only the
+confirmed-facts side was missing it) and `BUSINESS_INFO_FIELDS`. Also wired
+into both `business-info/page.tsx` screens (client and ops) via their
+generic `buildPatch()` switches — no new UI component needed since both
+pages already render `overview.sections` data-driven. This was §12's one
+remaining unverified field from C1/C2 planning; "target markets" was
+confirmed already covered by the existing `markets`/`targets` fields.
 
 `hasSiteContext` + `sourceCheckedAt` say whether the module looked and when; a
 project with no context shows gaps and zero suggestions, which is the honest
@@ -401,6 +415,7 @@ None. No LLM, no external provider, no queue.
 | §10.3 — provider targeting support is stated, never assumed | ✅ | `market-provider-support.ts`, traced per adapter; a non-whitelisted city is `unsupported` everywhere, never widened to country |
 | §10.4 — site evidence suggests targets, a human confirms | ✅ | `suggestedCountries` from `SiteContext.markets`; offered, never auto-applied |
 | §10.2 step 6 — remove the silent ccTLD → default-US measurement path | ✅ | `resolveDefaultMarket()` throws a conflict naming the fix; proven by `target-markets.smoke.sh` |
+| C2 §12 — business category/type is client-editable in the confirm-details wizard step | ✅ | New `category` column, live end-to-end (verified: `PUT` a draft with `category`, `POST /confirm`, `category` round-trips in the confirmed row) — see client-portal/clients module READMEs for the wizard flow this feeds. |
 
 ## What was verified, and what was not
 

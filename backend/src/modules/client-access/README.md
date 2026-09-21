@@ -89,6 +89,29 @@ client-access/
   grantee may revoke one. No handler here ever passes a caller-supplied `userId`
   as an owner — the owner is derived from the stored row inside the service.
 
+## C2 (2026-09-21) — `createSystemInvite()`, a service-only invite path
+
+`docs/analysis/client-portal.md` §2/§18. Not a new HTTP endpoint — a public
+method on `ClientAccessService` that `clients`' Day-1-pipeline-completion
+hook calls directly. Reuses the exact same canonical invite-link mechanics as
+`createInvite()` (7-day single-use `AuthToken`, client sets their own
+password on accept, no plaintext credential ever sent) rather than
+duplicating them or falling back to the deprecated `POST
+/clients/:clientId/login` temp-password path. Differences from
+`createInvite()`:
+
+- `createdBy` carries a system label (e.g. `system:day1-pipeline:<projectId>`)
+  instead of an operator's user id — legitimate, since `AuthToken.createdBy`
+  is a free-text column, not a foreign key.
+- If the recipient already has a client login for this client, it returns
+  `{ alreadyHasLogin: true }` instead of throwing, so the caller can still
+  send a plain "log in" link rather than the whole pipeline stage failing.
+- It does not send the standard invite email itself (`emailSent: false`
+  always) — `clients.service.ts#sendPortalReadyEmail` sends its own
+  differently-worded "your portal is ready" email using the returned
+  `acceptUrl`, so the two email copies (generic invite vs. Day-1-specific
+  portal-ready) never collide.
+
 ## Dependencies
 
 `GoogleModule` (supplies the OAuth / connection / Search Console / Analytics
