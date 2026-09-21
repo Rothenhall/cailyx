@@ -3121,6 +3121,13 @@ model BusinessProfile {
   brandName   String?
   legalName   String?
   description String?
+  /// C2 (`docs/analysis/client-portal.md` §12, `docs/PLAN.md` §11.2) — business
+  /// category / type ("SaaS", "local plumbing services", etc). Free text, same
+  /// draft/confirm versioning as every other field on this row. Distinct from
+  /// `Project.category`, which is an operator/enrichment-set column on the
+  /// Project row itself and is NOT part of this versioned, client-confirmable
+  /// profile — the two are intentionally not kept in sync automatically.
+  category    String?
   /// JSON string[] of services offered.
   services    String    @default("[]")
   /// JSON — ideal customer profile { segments, roles, painPoints }.
