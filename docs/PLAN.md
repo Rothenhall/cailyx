@@ -389,6 +389,13 @@ External integrations:
 
 ## 11. Client Portal & Admin Console — Implementation / Revamp Plan (2026-09-20)
 
+> **Status as of 2026-09-21: §11.0 cleanup, C1, C2, C3, C5, C7 done and merged to `main`. C4
+> done and merged to `main`. C6 barely started (one file, uncommitted-to-main, preserved on
+> branch `worktree-agent-a1e4e5fbfd6f6fcbe`) — interrupted by an account rate limit before any
+> of its three items (§29/§31/§28) were finished or verified.** A client-nav restructure (not a
+> lettered phase) also shipped and is merged. See §11.9 below for the exact resume point and a
+> ready-to-paste prompt for a fresh session.
+>
 > Everything below is sequencing on top of decisions already made and recorded in
 > `docs/analysis/client-portal.md` v1.3 (35 sections) — that doc is the *what and why*; this
 > section is the *build order*. Section references below (`§N`) point into that doc, not this
@@ -402,7 +409,7 @@ External integrations:
 > `AGENTS.md` post-completion checklist (module README, `docs/API.md`, PRD alignment, `tsc`
 > clean, e2e test) before the next phase starts.
 
-### 11.0 Cleanup first — reconcile partial/duplicate work before adding anything new
+### 11.0 Cleanup first — reconcile partial/duplicate work before adding anything new — ✅ DONE (4 of 5 items; frontend/client-portal removal deliberately left to the user)
 
 The user's own framing for this plan was that some of what exists is "unnecessarily
 implemented or partially implemented" — these are real, and doing them first means new work in
@@ -437,7 +444,7 @@ C1–C7 below is built on a clean base instead of layering on top of ambiguity.
   any phase below (nobody asked for it), but worth a line in `MODULES-STATUS.md`'s open-items so
   it doesn't get lost — closing it later is a small, self-contained follow-up.
 
-### 11.1 Phase C1 — Audit trail + onboarding-gate foundation
+### 11.1 Phase C1 — Audit trail + onboarding-gate foundation — ✅ DONE, merged to main
 
 **Why first:** almost every later phase (C2's gate, C5's suspend/waive actions, C6's overrides)
 produces or checks an audit-worthy event or a gate state. Building the shared primitive once,
@@ -449,7 +456,7 @@ first, avoids five bespoke one-off implementations.
 - [ ] Admin "waive Google-connect for this client" action, writing to the audit log above,
   visibly distinct from a real connection everywhere it's read — §15.
 
-### 11.2 Phase C2 — Auto-email + the sequential onboarding wizard
+### 11.2 Phase C2 — Auto-email + the sequential onboarding wizard — ✅ DONE, merged to main (corrected order: report before Google-connect, per client-onbaording.excalidraw)
 
 **Why second:** this is the literal front door to the portal once C1's gate model exists to hang
 it on. Depends on C1.
@@ -463,7 +470,7 @@ it on. Depends on C1.
 - [ ] Verify (then close the gap if real) whether category and target-markets are already
   client-editable the same way description/competitors are — §12.
 
-### 11.3 Phase C3 — Engagement/timeline model (needs its own analysis pass first)
+### 11.3 Phase C3 — Engagement/timeline model (needs its own analysis pass first) — ✅ DONE, merged to main (Option B — see docs/analysis/engagement-timeline.md)
 
 **Why gated separately:** this is the one piece explicitly called out in `client-portal.md` §10
 as needing its own follow-up analysis doc — DB shape, which module owns it, whether
@@ -483,7 +490,7 @@ get it confirmed, then build.
   produces "post-onboarding" as a real moment) and reuses `reporting`'s existing delta machinery
   built for `monitoring`.
 
-### 11.4 Phase C4 — Request queues (prompts + content)
+### 11.4 Phase C4 — Request queues (prompts + content) — ✅ DONE, merged to main
 
 **Why here:** independent of C3 — deliberately a *different, lighter* mechanism than the
 Approval primitive (§9), so it doesn't need to wait on C3's schema work. Can run in parallel
@@ -498,7 +505,7 @@ with C3 if capacity allows.
   `content-workspace` as a client-tagged item (reuses existing pipeline, no new triage inbox) —
   §14, §22.
 
-### 11.5 Phase C5 — Lifecycle & billing hardening
+### 11.5 Phase C5 — Lifecycle & billing hardening — ✅ DONE, merged to main
 
 **Why here:** these close real, currently-open gaps in admin control (§5 flagged "suspend" as
 unverified) and billing robustness (§7 already found billing more built than assumed — this
@@ -514,7 +521,7 @@ Depends on C1's audit log.
 - [ ] Client seat permission differentiation: gate billing/seat-management/content-approval
   endpoints to `client-admin` only, `client-collaborator` gets view + request access — §27.
 
-### 11.6 Phase C6 — Governance, cost control & security
+### 11.6 Phase C6 — Governance, cost control & security — ⚠️ BARELY STARTED, NOT merged (see §11.9 — resume here)
 
 **Why here:** lower urgency than C1–C5 (nothing here is currently a live risk the way the
 Google-gate lockout or unaudited suspend was), but each is a small, mostly independent slice —
@@ -527,7 +534,7 @@ good fill-in work, no strict internal ordering required.
 - [ ] Data-freshness ("as of [date]") labeling across score/metric/data panels in the client
   portal — broad but low-risk, touches many pages, no backend gap to close — §28.
 
-### 11.7 Phase C7 — Refresh-cadence automation
+### 11.7 Phase C7 — Refresh-cadence automation — ✅ DONE, merged to main
 
 **Why last:** the most infrastructural, least dependent piece — can be built any time after the
 foundation exists, but has no urgent dependents. Reuses `scheduling`/`monitoring`'s existing
@@ -564,3 +571,49 @@ C1 (audit log + gate model) ──→ C2 (wizard + auto-email) ──→ C3 (eng
 `*` C3 needs its own analysis doc before code — see 11.3. C4 and C6 have no hard dependency on
 C3 and can be reordered ahead of it if the engagement-timeline analysis pass takes a while to
 land.
+
+### 11.9 Current status & resume point (updated 2026-09-21)
+
+**Done and merged to `main`:** §11.0 cleanup (4/5 items — `frontend`/`client-portal` removal
+deliberately left for the user to do separately, as its own isolated commit), C1, C2, C3, C4,
+C5, C7, and a client-nav restructure (not a lettered phase — see `CHANGELOG.md`). Every merge
+was verified with a real `npx tsc --noEmit` (backend) and `npm run typecheck` (web) pass
+afterward, regenerating the Prisma client where a schema change required it.
+
+**Not done:** C6 (§11.6 — governance, cost control & security). Barely started before an account
+rate limit interrupted the agent building it: only `backend/src/modules/business-profile/lib/
+competitor-cap.util.ts` exists (skeleton, unverified, uncommitted to `main`) plus a partial edit
+to `business-profile.service.ts`. That work is preserved, not lost, on git branch
+`worktree-agent-a1e4e5fbfd6f6fcbe` (not merged — check it out or `git show` individual files from
+it before rebuilding, to avoid redoing the small amount that exists). None of C6's three items
+(§29 competitor cap, §31 public report-link security, §28 data-freshness labeling) are complete
+or verified.
+
+**A worked example worth reading before starting C6:** Phase C4 was built on an old base (before
+C2/C3/C5/C7 and the nav restructure existed) and needed real merge-conflict resolution plus a
+follow-up reconciliation once merged — its own plan-tier derivation logic had to be switched over
+to use `Client.planTier`, a field C7 added after C4 started. If C6 hits something similar
+(`Client.planTier` should already exist on `main` by the time C6 starts fresh, so this specific
+gotcha shouldn't recur, but the general pattern — check `main` for a field/module that didn't
+exist when a phase's own plan was written — is worth watching for).
+
+#### Prompt for a new Claude Code session to resume this work
+
+```
+Read AGENTS.md, then docs/PLAN.md §11 (especially §11.9), docs/analysis/client-portal.md v1.3,
+and docs/MODULES-STATUS.md's Wave 7 section, in that order, before doing anything else.
+
+Phases C1, C2, C3, C4, C5, C7 of the client-portal/admin-console revamp plan (docs/PLAN.md §11)
+are done and merged to main. Phase C6 (§11.6 — governance, cost control & security: a
+per-plan-tier competitor cap §29, public report-link expiry+password §31, and data-freshness
+"as of [date]" labeling §28) is barely started — a small amount of preserved, uncommitted-to-main
+work sits on git branch worktree-agent-a1e4e5fbfd6f6fcbe (check it before rebuilding from
+scratch, since some of it may be reusable).
+
+Finish Phase C6: read docs/PLAN.md §11.6 for the full task description, check the preserved
+branch for reusable work, then build all three items (§29/§31/§28), following the same discipline
+already established in this plan — module READMEs, docs/API.md updates, tsc clean on both
+backend/ and web/, real end-to-end verification against a live backend + Postgres (not simulated
+requests), and a docs/MODULES-STATUS.md Wave 7 update when done. Commit locally as you go; ask
+before pushing to any remote.
+```
