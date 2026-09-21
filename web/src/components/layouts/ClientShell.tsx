@@ -42,13 +42,21 @@ export function ClientShell({ badges, detailPanel, contentWidth, children }: Cli
   const projectId = clientProjectPrefix(pathname);
 
   const sections = projectId
-    ? CLIENT_PROJECT_NAV.map((section) => ({
-        ...section,
-        items: section.items.map((item) => ({
-          ...item,
-          href: resolveNavHref(item, (href) => clientProjectNavHref(projectId, href)),
-        })),
-      }))
+    ? CLIENT_PROJECT_NAV.map((section) => {
+        const prefix = (href: string) => clientProjectNavHref(projectId, href);
+        return {
+          ...section,
+          items: section.items.map((item) => ({ ...item, href: resolveNavHref(item, prefix) })),
+          // Performance's "Visibility" sub-heading (Organic/AI) lives in
+          // `groups`, same mechanism `PROJECT_NAV`'s Team tools uses — those
+          // hrefs need the same project prefix or they'd resolve relative to
+          // nothing and 404.
+          groups: section.groups?.map((group) => ({
+            ...group,
+            items: group.items.map((item) => ({ ...item, href: resolveNavHref(item, prefix) })),
+          })),
+        };
+      })
     : CLIENT_NAV;
 
   return (

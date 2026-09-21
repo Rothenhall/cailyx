@@ -419,36 +419,179 @@ export const CLIENT_NAV: NavSection[] = [
 ];
 
 /**
- * Within one of the client's own projects — §3.3.
+ * Within one of the client's own projects.
  *
- * §3.3 fixes the primary row at five items ("Overview | Plan | Results |
- * Content | Calendar") and explicitly demotes Business information and
- * Connected accounts to *secondary links*. They were primary here before P16,
- * which put two setup screens on the same footing as the client's daily path.
- * §3.3 also says Business information stays reachable from the overview's setup
- * checklist, so demoting them costs the client nothing.
+ * ## 2026-09-21 — the minimal five-item tree is reversed, deliberately
  *
- * §3.3's absolute rules, all of which hold by construction in this file:
- *  - no all-client selector anywhere in the client tree (there is no such
- *    entry, and `ClientShell` renders only from these lists);
- *  - one-project clients land directly in their project (the `/client` home
- *    redirect, not a nav concern);
- *  - clients never see the staff Research or Evidence tools — those live in
- *    `PROJECT_NAV` / `STAFF_GROUPS`, which only `OpsShell` reads.
+ * Everything below §3.3 in this comment block (Overview | Plan | Results |
+ * Content | Calendar, with Business information and Connected accounts as
+ * secondary links) described P16's **client**-side tree, which the product
+ * owner reviewed directly on 2026-09-21 and reversed: the client tree grows
+ * back out to something closer to what staff see in `PROJECT_NAV`, because on
+ * review the minimal five-item version read as *withholding* screens from the
+ * client rather than simplifying for them.
+ *
+ * This is **not** a re-litigation of P16 for `PROJECT_NAV` — §3.2's
+ * audience-shaped staff tree, its Team tools collapse, and its "do not show
+ * backend-module groupings to clients" rule (§4.3) all stand unchanged, and
+ * this file does not touch `PROJECT_NAV` or `STAFF_GROUPS`. It is a narrower,
+ * explicit reversal of one earlier call: the *client* tree specifically. Where
+ * §3.3's old rules are still true (no all-client selector, one-project
+ * clients land directly in their project, clients never see staff-only
+ * Research/Evidence tools) they are restated below because they still hold —
+ * only the shape of the primary list changed.
+ *
+ * ## The new shape (product owner's exact spec, 2026-09-21)
+ *
+ * ```
+ * Dashboard
+ * Reports
+ * Performance
+ *   ├─ Overview
+ *   ├─ Technical
+ *   └─ Visibility
+ *      ├─ Organic
+ *      └─ AI
+ * Competitors
+ * Digital Marketing
+ *   ├─ Brand Profile
+ *   ├─ Brand Voice
+ *   ├─ Ideation
+ *   ├─ Content
+ *   └─ Calendar
+ * Business Information
+ * Team Management
+ * Settings
+ * ```
+ *
+ * "Visibility" is modelled as a `NavGroup` (a labelled sub-list within the
+ * Performance section) rather than a fourth level of `NavItem` nesting — the
+ * same mechanism `PROJECT_NAV` already uses for Team tools' Research/Evidence
+ * headings, so no `AppShell` rendering change was needed for the extra depth.
+ *
+ * ## Where each item's content comes from (mapping decisions)
+ *
+ * The four client Results tabs in `@/services/overview`
+ * (`website | ai | presence | competitors`) are the real backing data. Rather
+ * than move those tabs' routes, this tree adds new pages that render the same
+ * shared panel components (`results/tab-panels.tsx`) the old `/results`
+ * screen used — the old four-tab `/results` page is left in place, unlinked
+ * from this nav but still reachable (nothing that pointed at it, such as a
+ * score bucket's stored drilldown, breaks):
+ *
+ *  - **Performance → Technical** (`/performance/technical`) renders the
+ *    `website` tab's site-health half: health state, "pages that matter", and
+ *    the technical-check row of "where these numbers come from".
+ *  - **Performance → Visibility → Organic** (`/performance/visibility/organic`)
+ *    renders the `website` tab's Google-search half (clicks/impressions/
+ *    sessions/position, the window-alignment note, the findings list, and the
+ *    Search-Console/Analytics rows) — this is genuinely organic-search-shaped
+ *    content, split out of the same tab rather than duplicated wholesale.
+ *    There is no top-level slot for the old `presence` tab (social/directory
+ *    profiles) in the product owner's spec, so it is folded in here too,
+ *    below the organic-search block: "where you're findable" reads as one
+ *    Visibility question, not two, and folding it into Organic (rather than
+ *    Technical or a phantom fifth destination) keeps it next to the other
+ *    "found in search/listings" facts. This is a judgment call, not a spec
+ *    line — worth revisiting if presence data grows enough to want its own
+ *    place.
+ *  - **Performance → Visibility → AI** (`/performance/visibility/ai`) is the
+ *    `ai` tab, unchanged, at its new address.
+ *  - **Competitors** (`/competitors`) is the `competitors` tab, promoted from
+ *    a Performance sub-item to its own top-level destination per the spec.
+ *  - **Performance → Overview** (`/performance`) is new: a thin landing page
+ *    that surfaces the composed score (already fetched by the project
+ *    Dashboard) plus one headline figure from each of Technical/Organic/AI/
+ *    Competitors, each linking onward. It does not re-implement any of the
+ *    four tabs' content.
+ *
+ * **Reports** (`/reports`) is now project-scoped, reusing
+ * `listPortalReports()` (still account-wide server-side, since "own" is
+ * enforced by the server per CP11's doc comment) filtered client-side to this
+ * project — the smallest change that matches the new per-project nav
+ * position without touching the account-wide `/client/reports` screen, which
+ * stays for a client wanting every project's reports in one list.
+ *
+ * **Approvals** has no top-level slot in the spec. It is not dropped: the
+ * project Dashboard (formerly "Overview", CP03) already links to
+ * `/client/approvals` in its "More on this project" row, and that is where it
+ * stays — a badge/section on Dashboard rather than a ninth primary nav item,
+ * since the spec explicitly names eight top-level destinations and Approvals
+ * was not one of them.
+ *
+ * **Team Management** (`/client/account/people`) is `absolute: true`: seats
+ * (`PortalMember.projectIds`) are an account-level concept — a member's
+ * project scope is a property of the seat, not the reverse — so there is no
+ * genuinely project-scoped "team" to build a wrapper around. The nav position
+ * implies project scope, but the underlying data does not have one; linking
+ * straight to the existing account-level People screen was judged more honest
+ * than a thin per-project wrapper that would just show the same account-wide
+ * list with a project name in the breadcrumb.
+ *
+ * **Settings** (`/settings`) is new and deliberately small: there is no
+ * existing client-facing settings surface and no client-appropriate
+ * notification-preferences data to read yet, so this page is project/account
+ * basics (name, domain, plan) rather than an invented large settings area.
+ *
+ * **Digital Marketing → Brand Profile / Brand Voice** reuse existing
+ * client-portal reads (`getPortalBusinessProfile`, `getPortalWritingStyle`)
+ * that already existed before this change — both are read-only summaries that
+ * link out to Business Information (profile) for edits, rather than
+ * duplicating its edit UI. **Ideation** required a new read-only
+ * client-portal endpoint (`OpportunitiesPortalController`, see
+ * `backend/src/modules/opportunities/`) since none existed. **Content** and
+ * **Calendar** are unchanged routes (`/content`, `/calendar`), only their nav
+ * grouping moved — a nav grouping is a sidebar concept, not a URL structure,
+ * so no page moved on disk.
+ *
+ * **Business Information** (`/business-info`) is promoted from `secondary`
+ * to a full top-level item, unchanged otherwise. **Connected accounts**
+ * (`/connections`) has no slot in the new spec; it stays reachable at its
+ * existing URL (linked from Business information's own footer text) but is no
+ * longer a primary or secondary nav entry — the product owner's list does not
+ * include it, and nothing in this change deletes the route.
  */
 export const CLIENT_PROJECT_NAV: NavSection[] = [
   {
     items: [
-      { label: 'Overview', href: '', icon: PanelsTopLeft },
-      { label: 'Plan', href: '/plan', icon: Workflow },
-      { label: 'Results', href: '/results', icon: TrendingUp },
-      { label: 'Content', href: '/content', icon: BookOpen },
-      // §6.5 requires a client-facing calendar, and §6.4 requires it to be the
-      // same calendar rather than a parallel one: this is the portfolio of one
-      // project, filtered on the server to content explicitly shared with them.
+      { label: 'Dashboard', href: '', icon: PanelsTopLeft },
+      { label: 'Reports', href: '/reports', icon: FileText },
+    ],
+  },
+  {
+    label: 'Performance',
+    items: [
+      { label: 'Overview', href: '/performance', icon: Gauge },
+      { label: 'Technical', href: '/performance/technical', icon: Wrench },
+    ],
+    groups: [
+      {
+        label: 'Visibility',
+        items: [
+          { label: 'Organic', href: '/performance/visibility/organic', icon: Search },
+          { label: 'AI', href: '/performance/visibility/ai', icon: Sparkles },
+        ],
+      },
+    ],
+  },
+  {
+    items: [{ label: 'Competitors', href: '/competitors', icon: Users }],
+  },
+  {
+    label: 'Digital Marketing',
+    items: [
+      { label: 'Brand Profile', href: '/digital-marketing/brand-profile', icon: Tag },
+      { label: 'Brand Voice', href: '/digital-marketing/brand-voice', icon: PenLine },
+      { label: 'Ideation', href: '/digital-marketing/ideation', icon: Lightbulb },
+      { label: 'Content', href: '/content', icon: Newspaper },
       { label: 'Calendar', href: '/calendar', icon: CalendarDays },
-      { label: 'Business information', href: '/business-info', icon: BookOpen, secondary: true },
-      { label: 'Connected accounts', href: '/connections', icon: Blocks, secondary: true },
+    ],
+  },
+  {
+    items: [
+      { label: 'Business Information', href: '/business-info', icon: BookOpen },
+      { label: 'Team Management', href: '/client/account/people', icon: UserCog, absolute: true },
+      { label: 'Settings', href: '/settings', icon: Settings },
     ],
   },
 ];
