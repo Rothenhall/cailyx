@@ -9,6 +9,27 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-22 — Discoverability pipeline: objection-trust branding split (Stage 3 fix #1)
+
+Full plan: `docs/analysis/discoverability-pipeline-plan.md` (Stage 3, step 1).
+
+`aeo-matrix.generator.ts` tagged every `objection-trust` cell `branded` via the
+per-dimension `DIMENSION_BRANDING` map, but the spec (§3.3) wants that dimension to
+carry both a branded variant ("is {client} legit") *and* an unbranded one ("downsides
+of {category}"), tagged individually — and one of its own templates was already
+unbranded yet mis-tagged. Added an optional per-template `branding` override; the
+generation loop now uses `template.branding ?? DIMENSION_BRANDING[dimension]`. Tagged
+`objection-trust`'s templates individually (3 branded that name the client, 3 unbranded
+category/service framings incl. the spec's canonical "downsides of {category}").
+Confirmed the other two branded dimensions (`head-to-head`, `brand-direct`) are
+genuinely uniform (every template names the brand), so no per-cell change was needed
+there. No schema change (`MatrixCell.meta.branding` was already per-cell).
+
+`npx tsc --noEmit` + `nest build` clean. Verified by calling `generateMatrix` directly
+(pure function, no DB): a `standard`-tier matrix produced 3 branded + 3 unbranded
+`objection-trust` cells, brand named iff branded, `head-to-head` still all branded.
+`backend/src/modules/aeo-audit/README.md` dimension table updated.
+
 ## 2026-09-22 — Discoverability pipeline: brand-voice verification-status fix (Step 1)
 
 Full plan: `docs/analysis/discoverability-pipeline-plan.md` (Recommended build order,

@@ -106,13 +106,17 @@ multi-surface audits pass their smoke suite today).
    somewhere in the set.
 
 ### Steps
-1. **Fix `objection-trust` branding** — smallest, highest-value fix. Split it (and
-   check whether any other dimension the spec calls "inherently mixed" needs the same
-   treatment) into generating both variants, each with its own `branding` tag, instead
-   of a single fixed value per dimension. Contained to `aeo-matrix.generator.ts`'s
-   template/interpolation logic — no schema change (a `MatrixCell` already carries its
-   own `branding` field per-cell, not per-dimension, so this is a generator bug, not a
-   data-model gap).
+1. **Fix `objection-trust` branding** — ✅ **DONE 2026-09-22.** Added an optional
+   per-template `branding` override to the `Template` interface; the generation loop now
+   uses `template.branding ?? DIMENSION_BRANDING[dimension]`. Tagged `objection-trust`'s
+   templates individually (ot1–ot3 branded — they name the client; ot4–ot6 unbranded —
+   category/service framing, incl. the spec's canonical "downsides of {category}"). Checked
+   the other two branded dimensions (`head-to-head`, `brand-direct`): every one of their
+   templates names the brand, so they are genuinely uniform — `objection-trust` was the only
+   mixed one, matching the plan. No schema change (per-cell `branding` already existed).
+   **Verified** by calling `generateMatrix` directly (pure function, no DB): a `standard`-tier
+   matrix produced 3 branded + 3 unbranded `objection-trust` cells, brand named iff branded,
+   `head-to-head` still uniformly branded. `npx tsc --noEmit` clean, `nest build` clean.
 2. **Add a coverage-check pass** after generation: compare confirmed
    `services`/`icp`/`markets` (from the site-context-v2 work) against what actually
    got interpolated into a generated prompt, and surface a `coverageGaps` list on the
@@ -275,7 +279,7 @@ Per AGENTS.md's "one module at a time," in priority order:
 
 1. **Brand-voice verification-status fix** — ✅ **DONE 2026-09-22** (see Brand Voice step 1).
    `socialActivity()` now scrapes only `confirmed` accounts. Verified live vs prod DB, tsc clean.
-2. **Stage 3 fix #1** (`objection-trust` branding split) — small, independent, ships fast.
+2. **Stage 3 fix #1** (`objection-trust` branding split) — ✅ **DONE 2026-09-22** (see Stage 3 step 1). Both branded + unbranded variants now generated and tagged per-cell; verified via `generateMatrix`, tsc clean.
 3. **Stage 2** (competitor discovery query patterns) — needed before Stage 4 scoring can
    use `evidenceKind` diversity meaningfully, and before Stage 3's branded buckets have
    good seed names.

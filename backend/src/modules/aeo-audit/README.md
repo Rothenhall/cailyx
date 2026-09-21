@@ -200,9 +200,15 @@ signal.
 | `brand-direct` | "is {client} any good" | branded |
 | `problem-framed` | pain language only, pre-category | unbranded |
 | `buying-criteria` | "{category} for a {size} company" | unbranded |
-| `objection-trust` | "is {client} legit", "downsides of…" | branded |
+| `objection-trust` | "is {client} legit" / "downsides of {category}" | **mixed** — branded + unbranded per-cell |
 | `job-to-be-done` | "how do I {outcome} without…" | unbranded |
 | `geo-vertical` | "{service} for {vertical} in {geo}" | unbranded |
+
+`objection-trust` is the one *inherently mixed* dimension (2026-09-22): it generates both
+a branded variant that vets the client ("is {client} legit") and an unbranded variant
+aimed at the category ("downsides of {category}"). Branding is therefore tagged per-cell
+(each `Template` may carry its own `branding`), not per-dimension — every other dimension's
+templates are uniform, so they still inherit `DIMENSION_BRANDING`.
 
 **Branded vs unbranded is never averaged together.** Unbranded prompts are the
 real visibility test; branded ones only prove the engine knows the name once you

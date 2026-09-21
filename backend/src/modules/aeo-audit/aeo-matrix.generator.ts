@@ -95,6 +95,14 @@ interface Template {
   id: string;
   register: PromptRegister;
   build: (v: Vars) => string;
+  /**
+   * Per-template branding override for an *inherently mixed* dimension whose
+   * cells are not uniformly branded/unbranded (spec §3.3: `objection-trust`
+   * wants both "is {brand} legit" and "downsides of {category}"). When unset
+   * the cell inherits {@link DIMENSION_BRANDING} for its dimension, which is
+   * still correct for every dimension whose templates are uniform.
+   */
+  branding?: PromptBranding;
 }
 
 /** Interpolation values available to a template. */
@@ -193,11 +201,19 @@ const TEMPLATES: Record<PromptDimension, Template[]> = {
     { id: 'bc4', register: 'terse', build: (v) => `affordable ${v.service} ${v.geo}` },
     { id: 'bc5', register: 'conversational', build: (v) => `We need ${v.service} but we're a small team. Who handles clients our size?` },
   ],
+  // Inherently mixed (spec §3.3): a buyer's trust/objection questions come in a
+  // branded form (vetting *this* company) AND an unbranded form (doubting the
+  // *category* itself). Both are generated and each cell is tagged individually
+  // via the per-template `branding` override — DIMENSION_BRANDING below is only
+  // the default for the branded majority.
   'objection-trust': [
-    { id: 'ot1', register: 'terse', build: (v) => `is ${v.brand} legit` },
-    { id: 'ot2', register: 'conversational', build: (v) => `Are there any complaints about ${v.brand}?` },
-    { id: 'ot3', register: 'conversational', build: (v) => `What are the downsides of working with a ${v.category} provider like ${v.brand}?` },
-    { id: 'ot4', register: 'conversational', build: (v) => `Is ${v.service} actually worth paying for, or is it overhyped?` },
+    { id: 'ot1', register: 'terse', branding: 'branded', build: (v) => `is ${v.brand} legit` },
+    { id: 'ot2', register: 'conversational', branding: 'branded', build: (v) => `Are there any complaints about ${v.brand}?` },
+    { id: 'ot3', register: 'conversational', branding: 'branded', build: (v) => `What are the downsides of working with a ${v.category} provider like ${v.brand}?` },
+    // Unbranded: the same objection aimed at the category, never naming the client.
+    { id: 'ot4', register: 'terse', branding: 'unbranded', build: (v) => `downsides of ${v.category}` },
+    { id: 'ot5', register: 'conversational', branding: 'unbranded', build: (v) => `Is ${v.service} actually worth paying for, or is it overhyped?` },
+    { id: 'ot6', register: 'conversational', branding: 'unbranded', build: (v) => `What are the risks of hiring a ${v.category} provider?` },
   ],
   'job-to-be-done': [
     { id: 'jd1', register: 'conversational', build: (v) => `How do I ${v.outcome} without hiring a full team?` },
@@ -390,7 +406,9 @@ export function generateMatrix(
         meta: {
           dimension,
           register: template.register,
-          branding: DIMENSION_BRANDING[dimension],
+          // Per-template override for inherently-mixed dimensions (objection-trust);
+          // every other dimension's templates are uniform, so the default holds.
+          branding: template.branding ?? DIMENSION_BRANDING[dimension],
           service: interpolated(prompt, vars.service),
           competitor: interpolated(prompt, vars.competitor),
           icp: interpolated(prompt, vars.icp),
