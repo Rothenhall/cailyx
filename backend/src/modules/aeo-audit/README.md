@@ -182,6 +182,15 @@ Every generated prompt is stored with its category and full provenance, so
 results can be sliced and the matrix curated after seeing which cells produced
 signal.
 
+The `QuerySet.label` JSON carries the matrix provenance: `tier`, `requested`,
+`produced`, `skipped` (dimensions that could not be built and why), and — since
+2026-09-22 (discoverability-pipeline Stage 3) — `coverageGaps`: the confirmed
+`services`/`icpSegments`/`markets` that reached **no** generated prompt (spec §5.3;
+empty arrays mean full coverage). Generation also drops cross-bucket
+**near-duplicates** — two dimensions converging on the same wording in different
+order collapse to the first occurrence (`dedupKey`), beyond the existing
+exact-match guard.
+
 | Column | Holds |
 |---|---|
 | `QuerySetItem.dimension` | the category (indexed, also indexed with `querySetId`) |

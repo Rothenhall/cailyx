@@ -133,15 +133,21 @@ multi-surface audits pass their smoke suite today).
    **Verified** by calling `generateMatrix` directly (pure function, no DB): a `standard`-tier
    matrix produced 3 branded + 3 unbranded `objection-trust` cells, brand named iff branded,
    `head-to-head` still uniformly branded. `npx tsc --noEmit` clean, `nest build` clean.
-2. **Add a coverage-check pass** after generation: compare confirmed
-   `services`/`icp`/`markets` (from the site-context-v2 work) against what actually
-   got interpolated into a generated prompt, and surface a `coverageGaps` list on the
-   matrix result — mirrors the exact pattern `aeo-context.service.ts`'s own coverage
-   flag already uses for page selection.
-3. **Add cross-bucket dedup** — a normalize-and-compare pass over the final cell list
-   before it's persisted as a `QuerySet`. Given the existing `normalize(prompt)` helper
-   already exists in the generator (currently used for slot-fill checking, not dedup),
-   this is an extension of existing code, not new machinery.
+2. **Add a coverage-check pass** — ✅ **DONE 2026-09-22.** `computeCoverageGaps(ctx, cells)`
+   compares confirmed `services`/`icp`/`markets` against what actually landed in a
+   generated prompt (whole-word match, so a short market code like "US" isn't matched
+   inside "business"), surfacing a `coverageGaps` list on `GeneratedMatrix` and into the
+   persisted `QuerySet` label alongside `skipped`. Note: the generator only interpolates
+   the primary `ctx.geo`, so additional confirmed markets legitimately surface as gaps —
+   which is exactly the §5.3 "geos with zero prompts" signal.
+3. **Add cross-bucket dedup** — ✅ **DONE 2026-09-22.** The existing `seenPrompts` set only
+   caught exact-lowercase duplicates; added a `dedupKey(prompt)` (lowercase, strip
+   punctuation, drop stopwords, sort tokens) + a `seenDedupKeys` set so near-identical
+   phrasing across buckets ("downsides of payroll" vs "payroll downsides", "alternatives
+   to X" vs "X alternatives") collapses to the first occurrence.
+   Both verified via `generateMatrix` (pure, 8/8): dedupKey collapses order/stopword
+   variants but keeps distinct content; coverage flags an un-targeted market but not the
+   used service/ICP; no two generated cells share a dedupKey. `tsc` + `nest build` clean.
 4. **LLM-discovered buckets beyond the fixed 10** — the biggest of the four, and the
    one most worth a deliberate go/no-go: it changes `PromptDimension` from a closed
    enum to an open set, which several other places in the codebase key off of directly
@@ -300,7 +306,7 @@ Per AGENTS.md's "one module at a time," in priority order:
    Name-independent + comparison SERP passes + best-effort G2 review-site pull (fetch→render),
    new `serp-comparison-search`/`review-site-category` evidence kinds. New pure logic unit-verified
    8/8; tsc + build clean. Review-site pull may be bot-blocked in practice (documented caveat).
-4. **Stage 3 fixes #2–3** (coverage-gap report, cross-bucket dedup).
+4. **Stage 3 fixes #2–3** (coverage-gap report, cross-bucket dedup) — ✅ **DONE 2026-09-22** (see Stage 3 steps 2–3). `coverageGaps` on the matrix result + persisted label; `dedupKey`-based near-duplicate collapse. Verified 8/8, tsc + build clean.
 5. **Stage 4 steps 1–2** (absence/co-mention aggregation + weighted ranking) — the
    biggest net-new logic in this plan, but pure aggregation over data that already exists.
 6. **Decision point**: Stage 4 step 3 (per-competitor enrichment scope) — needs your

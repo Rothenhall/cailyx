@@ -291,6 +291,23 @@ export interface GeneratedMatrix {
    * ordered it, instead of looking arbitrary.
    */
   demand: { applied: boolean; ranked: Array<{ service: string; volume: number }> };
+  /** Confirmed inputs that reached no prompt (spec §5.3). */
+  coverageGaps: CoverageGaps;
+}
+
+/**
+ * Which confirmed inputs never made it into a single generated prompt (spec
+ * §5.3 coverage validation). A non-empty list is a real signal — either the
+ * budget was too small to reach that input, or every dimension that would use
+ * it was skipped for missing prerequisites.
+ */
+export interface CoverageGaps {
+  /** Confirmed services that appear in no generated prompt. */
+  services: string[];
+  /** Confirmed ICP segments that appear in no generated prompt. */
+  icpSegments: string[];
+  /** Confirmed target markets that appear in no generated prompt (the generator only interpolates the primary `geo`). */
+  markets: string[];
 }
 
 /**
@@ -329,12 +346,14 @@ export function generateMatrix(
   });
 
   if (eligible.length === 0) {
+    // Nothing eligible → every confirmed input is, trivially, a coverage gap.
     return {
       cells: [],
       skipped,
       requested: target,
       produced: 0,
       demand: { applied: false, ranked: [] },
+      coverageGaps: computeCoverageGaps(ctx, []),
     };
   }
 
@@ -378,6 +397,11 @@ export function generateMatrix(
 
   const cells: MatrixCell[] = [];
   const seenPrompts = new Set<string>();
+  // Cross-bucket near-duplicate guard (spec §3.3): two dimensions can converge
+  // on the same wording in different word order / with different filler words
+  // ("downsides of payroll" vs "payroll downsides"). `seenPrompts` only catches
+  // exact matches; this collapses semantic duplicates, first occurrence winning.
+  const seenDedupKeys = new Set<string>();
 
   for (const dimension of funded) {
     const want = quota.get(dimension) ?? 0;
@@ -396,7 +420,10 @@ export function generateMatrix(
       if (hasUnfilledSlot(prompt)) continue; // a required value was missing
       const key = prompt.toLowerCase();
       if (seenPrompts.has(key)) continue;
+      const dkey = dedupKey(prompt);
+      if (dkey && seenDedupKeys.has(dkey)) continue; // cross-bucket near-duplicate
       seenPrompts.add(key);
+      if (dkey) seenDedupKeys.add(dkey);
 
       cells.push({
         prompt,
@@ -437,7 +464,64 @@ export function generateMatrix(
     requested: target,
     produced: cells.length,
     demand: demandOrder ? { applied: true, ranked: demandOrder.ranked } : { applied: false, ranked: [] },
+    coverageGaps: computeCoverageGaps(ctx, cells),
   };
+}
+
+/** Stopwords stripped before near-duplicate comparison — filler that carries no topic. */
+const DEDUP_STOPWORDS = new Set<string>([
+  'a', 'an', 'the', 'of', 'for', 'in', 'to', 'with', 'is', 'are', 'do', 'does', 'i', 'we', 'my',
+  'our', 'that', 'this', 'any', 'and', 'or', 'on', 'at', 'vs', 'how', 'what', 'which', 'who',
+  'can', 'you', 'be', 'it', 'me', 'us', 'so', 'as', 'by', 'from', 'about',
+]);
+
+/**
+ * Canonical key for cross-bucket near-duplicate detection: lowercase, strip
+ * punctuation, drop stopwords, sort the remaining topic tokens. Two prompts
+ * that say the same thing in a different order collapse to one key. Deterministic.
+ */
+export function dedupKey(prompt: string): string {
+  return prompt
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t && !DEDUP_STOPWORDS.has(t))
+    .sort()
+    .join(' ');
+}
+
+/**
+ * spec §5.3 — which confirmed inputs reached no generated prompt. A value is
+ * "covered" when it appears as a whole word/phrase in at least one cell's
+ * prompt (word-boundary match, so a short market code like "US" is not matched
+ * inside "business").
+ */
+function computeCoverageGaps(ctx: SiteContextData, cells: MatrixCell[]): CoverageGaps {
+  const prompts = cells.map((c) => c.prompt.toLowerCase());
+  const uncovered = (values: string[]): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of values) {
+      const value = (raw ?? '').trim();
+      if (!value) continue;
+      const dedupe = value.toLowerCase();
+      if (seen.has(dedupe)) continue;
+      seen.add(dedupe);
+      const re = new RegExp(`\\b${escapeRegExp(dedupe)}\\b`, 'i');
+      if (!prompts.some((p) => re.test(p))) out.push(value);
+    }
+    return out;
+  };
+  return {
+    services: uncovered(ctx.services),
+    icpSegments: uncovered(ctx.icp),
+    markets: uncovered(ctx.markets),
+  };
+}
+
+/** Escape a value for safe insertion into a RegExp. */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

@@ -45,6 +45,28 @@ uses the paid DataForSEO SERP path (fixture-only test posture per `SERP_ALLOW_FI
 and the SERP wiring reuses the already-working `serpForDiscovery` path unchanged.
 `backend/src/modules/competitors/README.md` + `docs/API.md` updated.
 
+## 2026-09-22 — Discoverability pipeline: prompt coverage-gap report + cross-bucket dedup (Stage 3 fixes #2–3)
+
+Full plan: `docs/analysis/discoverability-pipeline-plan.md` (Stage 3, steps 2–3).
+
+- **Coverage-gap report (spec §5.3):** `computeCoverageGaps(ctx, cells)` in
+  `aeo-matrix.generator.ts` reports the confirmed `services`/`icp`/`markets` that
+  reached no generated prompt (whole-word match, so a short market code isn't matched
+  inside another word). Surfaced on `GeneratedMatrix.coverageGaps` and persisted into
+  the `QuerySet.label` JSON next to `skipped`. The generator only interpolates the
+  primary `ctx.geo`, so extra confirmed markets legitimately surface as gaps — the exact
+  "geos with zero prompts" signal §5.3 wants.
+- **Cross-bucket near-duplicate dedup (spec §3.3):** the existing `seenPrompts` set only
+  caught exact-lowercase dupes; added `dedupKey(prompt)` (lowercase, strip punctuation,
+  drop stopwords, sort tokens) + a `seenDedupKeys` set so near-identical phrasing across
+  dimensions ("downsides of payroll" vs "payroll downsides") collapses to the first
+  occurrence.
+
+No schema change. `npx tsc --noEmit` + `nest build` clean. Verified via `generateMatrix`
+(pure, 8/8): dedupKey collapses order/stopword variants but keeps distinct content;
+coverage flags an un-targeted market but not the used service/ICP; no two generated cells
+share a dedupKey. `backend/src/modules/aeo-audit/README.md` updated.
+
 ## 2026-09-22 — Discoverability pipeline: objection-trust branding split (Stage 3 fix #1)
 
 Full plan: `docs/analysis/discoverability-pipeline-plan.md` (Stage 3, step 1).

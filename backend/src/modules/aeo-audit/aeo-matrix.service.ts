@@ -222,6 +222,9 @@ export class AeoMatrixService {
           requested: generated.requested,
           produced: generated.produced,
           skipped: generated.skipped,
+          // spec §5.3 — confirmed inputs (services/ICP/markets) that reached no
+          // prompt in this matrix. Empty arrays mean full coverage.
+          coverageGaps: generated.coverageGaps,
         }),
         status: 'draft',
         source: 'aeo-matrix',
