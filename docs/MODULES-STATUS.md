@@ -206,7 +206,7 @@ Order reconciles `PLAN.md` phases, PRD §16 build sequence, and the dependency g
 - [x] **`scorecard`** — Rung 0, PRD §13 + §17. Analysis resolved §17 as option B (`docs/analysis/wave-5.md` §2): engine + operator API now, public funnel behind `SCORECARD_PUBLIC=1` (a flag, not a rebuild). Built: fresh technical audit (probe failure → partial dimensions with reasons, never blocks the run) → versioned-rubric scoring → exactly **3 named problems** derived deterministically from the run's evidence (no LLM key required — the free funnel never blocks on a paid key) → `nonObvious` flag from probe-only evidence (blocked/render/`schema audit: fail`) → `ScorecardRun` with unguessable public share token. e2e: run 201 (score 33/invisible, 3 named problems), public 403 with flag off → 200 with flag on, bad token 404, list newest-first.
 - [x] **`delivery`** — PRD 6.11. Built per analysis choices: Plunk email (pre-approved; 503 `email-unconfigured` / `email-send-failed` guards, subject operator-editable, link-first — react-pdf PDF is frontend scope), internal Lead CRM (sources bulk/api/form/scorecard, `new → reached → booked | won/lost`) with **append-only** CTA event log (`book-call`/`review-ask`/`upgrade-click`) + CSV export for any external CRM (Attio/HubSpot = later), Stripe Checkout ledger (option A): links from `STRIPE_CHECKOUT_URL_*` env, click flips the lead's log, @Public completion = webhook stand-in (SDK + signature verification = documented next iteration). e2e: all guards + click/complete chain + lead event log verified.
 
-### Wave 7 — Client Portal & Admin Console revamp (2026-09-21, C1 + §11.0 cleanup + C2 + C3 + C5 + C7 done, plus a client-nav restructure outside the C1-C7 sequence; C4/C6 in progress or not started)
+### Wave 7 — Client Portal & Admin Console revamp (2026-09-21, C1 + §11.0 cleanup + C2 + C3 + C4 + C5 + C7 done, plus a client-nav restructure outside the C1-C7 sequence; C6 in progress)
 
 Full decision record: `docs/analysis/client-portal.md` v1.3 (35 sections). Build order,
 dependencies, and the required-before-code note on the engagement/timeline model: `docs/PLAN.md`
@@ -464,6 +464,41 @@ separate track (admin/client platform layer, §1.2h) from the engine-pipeline wa
   `technical-audit`/`seo-audit`). Full write-up incl. the complete scoping rationale:
   `backend/src/modules/refresh-cadence/README.md`. `docs/API.md` updated with the new endpoint
   reference.
+
+- [x] **C4 — request queues (prompts + content).** New `prompt-requests` module
+  (client-facing read-only active query-set view + lightweight prompt
+  add/delete request queue, §13/§20) and `content-requests` module (structured
+  "request new content" form, §14/§22). Deliberately **not** the Approval
+  primitive — the queue is a simple ticket, and an admin acts on prompt
+  changes directly through `query-set`'s own existing edit/versioning
+  endpoints (fork → add/remove → activate), never through this new module.
+  Content requests create a real `content-workspace` `GrowthAsset` immediately
+  (new `GrowthAsset.sourceClientRequestId` field, non-FK, same pattern as
+  `sourceGapId`/`sourceOpportunityId`) — no separate triage inbox, per §22.
+  §20 quota check: no clean `Client`/`Subscription` "plan tier" field exists
+  in this codebase today, so plan tier is derived from the client's most
+  recent `Subscription.offerId` → `Offer.code`/`Offer.name` text match,
+  defaulting to Starter; documented as a judgment call in
+  `prompt-requests/README.md`, not a discovery. (A `Client.planTier` field was
+  observed transiently on the shared dev database during this session — very
+  likely a concurrent worktree's own C5 work landing on the same shared
+  Postgres container — but it is not present in this worktree's
+  `schema.prisma`; whoever reconciles worktrees on merge should prefer the
+  real field over this derivation if one lands.) e2e-verified against a live
+  backend + real Postgres: client submits a prompt add/remove request → lands
+  in the admin queue with the quota snapshot → admin forks/edits/activates the
+  real QuerySet → admin decides the request (linked to the resulting item) →
+  re-decide correctly 409s; client submits a structured content request →
+  real `GrowthAsset` created immediately, tagged `source: "client-request"` →
+  correctly absent from the client's own shared-content list until an
+  operator shares a revision. `npx tsc --noEmit` (backend) and `npm run
+  typecheck`/`npm run build` (web) all clean. **Not built:** an operator-facing
+  UI for the prompt-request admin queue (API-complete, no `web/` staff screen
+  yet — the queue is usable via the API/Swagger today). Full write-up:
+  `backend/src/modules/prompt-requests/README.md`,
+  `backend/src/modules/content-requests/README.md`,
+  `backend/src/modules/content-workspace/README.md` (new — this module never
+  had one before), `docs/API.md` (new endpoint reference).
 
 ### Standing item (not a module)
 

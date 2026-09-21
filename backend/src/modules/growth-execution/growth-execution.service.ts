@@ -576,6 +576,50 @@ export class GrowthExecutionService {
     return { asset: this.toDto(row), created: true };
   }
 
+  // ─── C4 (client-portal.md §14/§22): client-request -> content conversion ──
+  //
+  // Mirrors `createFromOpportunity` above: reuses `GrowthAsset` as the single
+  // content identity rather than inventing a second model, and creates the
+  // asset directly (no separate triage inbox an operator has to convert —
+  // §22's explicit decision). `sourceClientRequestId` is set once, at
+  // creation, so the piece is honestly tagged client-originated in every
+  // downstream read (`content-workspace.service.ts`'s `source` derivation).
+  // No brief/revision is created here — an empty `GrowthAsset.brief` carries
+  // the client's own topic text, and `content-workspace`'s `deriveEditorialState`
+  // already reads "no revision yet" as `planned`, which is exactly the honest
+  // state for "submitted, not yet started."
+
+  async createFromClientRequest(
+    projectId: string,
+    dto: {
+      sourceClientRequestId: string;
+      assetType: AssetType;
+      title: string;
+      brief: string;
+      targetKeyword: string | null;
+    },
+  ): Promise<GrowthAssetDto> {
+    await this.ensureProject(projectId);
+    const row = await this.prisma.growthAsset.create({
+      data: {
+        projectId,
+        assetType: dto.assetType,
+        title: dto.title,
+        brief: dto.brief,
+        targetKeyword: dto.targetKeyword,
+        sourceGapId: null,
+        sourceOpportunityId: null,
+        sourceClientRequestId: dto.sourceClientRequestId,
+        status: 'recommended',
+        source: 'deterministic',
+      },
+    });
+    this.logger.log(
+      `growth-execution: asset ${row.id} created from client request ${dto.sourceClientRequestId} for ${projectId}`,
+    );
+    return this.toDto(row);
+  }
+
   // ─── List / status ─────────────────────────────────────────────────
 
   async list(projectId: string, query: ListAssetsQueryDto): Promise<{ assets: GrowthAssetDto[] }> {
@@ -619,6 +663,7 @@ export class GrowthExecutionService {
     targetKeyword: string | null;
     sourceGapId: string | null;
     sourceOpportunityId: string | null;
+    sourceClientRequestId: string | null;
     idempotencyKey: string | null;
     status: string;
     source: string;
@@ -646,6 +691,7 @@ export class GrowthExecutionService {
       targetKeyword: row.targetKeyword,
       sourceGapId: row.sourceGapId,
       sourceOpportunityId: row.sourceOpportunityId,
+      sourceClientRequestId: row.sourceClientRequestId,
       idempotencyKey: row.idempotencyKey,
       status: row.status as GrowthAssetDto['status'],
       source: row.source as GrowthAssetDto['source'],

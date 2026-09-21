@@ -112,6 +112,8 @@ export interface GrowthAssetDto {
   sourceGapId: string | null;
   /** P07 §12.7 — the `Opportunity` this asset was created from, if any. */
   sourceOpportunityId: string | null;
+  /** C4 (client-portal.md §14/§22) — the `ContentRequest` this asset was created from, if a client submitted the structured request form. */
+  sourceClientRequestId: string | null;
   /** P07 §12.7 — idempotency key from opportunity-linked creation, if any. */
   idempotencyKey: string | null;
   status: AssetStatus;

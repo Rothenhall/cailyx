@@ -490,7 +490,13 @@ export class ContentWorkspaceService {
     const clientReviewState = this.deriveClientReviewState(b, b.latestClientVisible);
     const publicationSummary = this.derivePublicationSummary(b);
     const updateState = this.deriveUpdateState(b, publicationSummary);
-    const source = b.asset.sourceOpportunityId ? 'opportunity' : b.asset.sourceGapId ? 'gap' : 'manual';
+    const source = b.asset.sourceOpportunityId
+      ? 'opportunity'
+      : b.asset.sourceGapId
+        ? 'gap'
+        : b.asset.sourceClientRequestId
+          ? 'client-request'
+          : 'manual';
 
     return {
       assetId: b.asset.id,
@@ -500,6 +506,7 @@ export class ContentWorkspaceService {
       source,
       sourceGapId: b.asset.sourceGapId,
       sourceOpportunityId: b.asset.sourceOpportunityId,
+      sourceClientRequestId: b.asset.sourceClientRequestId,
       market: null,
       language: b.brief?.language ?? null,
       assigneeId: b.asset.assigneeId,

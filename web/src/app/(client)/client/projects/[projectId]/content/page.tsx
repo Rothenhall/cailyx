@@ -21,6 +21,7 @@ import {
   type PortalContentItem,
   type PortalProjectSummary,
 } from '@/services/portal';
+import { RequestContentDialog } from './request-content-dialog';
 
 /**
  * CP08 — Content, client side (plan §13.5).
@@ -201,12 +202,15 @@ export default function ClientContentPage() {
               }.`
         }
         secondaryActions={
-          <Button asChild variant="outline" size="sm">
-            <Link href="/client/approvals">
-              <ShieldCheck aria-hidden="true" className="mr-2 h-4 w-4" />
-              Approvals
-            </Link>
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <RequestContentDialog projectId={projectId} />
+            <Button asChild variant="outline" size="sm">
+              <Link href="/client/approvals">
+                <ShieldCheck aria-hidden="true" className="mr-2 h-4 w-4" />
+                Approvals
+              </Link>
+            </Button>
+          </div>
         }
       />
 

@@ -105,6 +105,11 @@ of the batch.
 triggered to re-sync/re-pull. `LlmService` (global, `common/llm`) —
 OpenRouter preferred, Anthropic fallback.
 
+## Consumers
+
+- `opportunities` — `convertToContent` → `createFromOpportunity` (idempotent create-then-link).
+- `content-requests` (C4, client-portal.md §14/§22) — `createFromClientRequest`, added this phase. Same create-then-link shape as `createFromOpportunity`: creates the `GrowthAsset` directly (no separate triage step), tagged `sourceClientRequestId` so `content-workspace`'s `source` derivation reports `'client-request'`.
+
 ## Testing notes
 
 Verified end-to-end against a live local backend with real DataForSEO

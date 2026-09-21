@@ -93,10 +93,12 @@ export interface ContentWorkspaceItemDto {
   projectId: string;
   assetType: ContentWorkspaceAssetType;
   title: string;
-  /** search-gap | manual | opportunity-<origin> — where this piece came from, for the source filter. */
+  /** gap | opportunity | client-request | manual — where this piece came from, for the source filter. */
   source: string;
   sourceGapId: string | null;
   sourceOpportunityId: string | null;
+  /** C4 (client-portal.md §14/§22) — the `ContentRequest` this piece was created from, if a client requested it via the structured form. */
+  sourceClientRequestId: string | null;
   /** Derived from the linked ContentBrief (via the latest revision's briefId), if any. Null when no brief has been linked yet. */
   market: string | null;
   language: string | null;

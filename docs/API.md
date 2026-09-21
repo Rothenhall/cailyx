@@ -1692,6 +1692,115 @@ reference above for the unchanged request/response shapes of `POST/GET/PATCH /ap
 
 ---
 
+## Client Portal — prompt visibility + request queues (C4: request queues, added 2026-09-21)
+
+> Full decision record: `docs/analysis/client-portal.md` §§13/14/20/22. Build order:
+> `docs/PLAN.md` §11.4 (Phase C4). See `backend/src/modules/prompt-requests/README.md` and
+> `backend/src/modules/content-requests/README.md` for the full write-up — this section is
+> the endpoint reference only.
+
+### Prompt Requests Module
+
+| Method | Path | Roles | Description |
+|---|---|---|---|
+| `GET` | `/api/projects/:projectId/prompt-requests?status=` | admin, delivery-lead | Admin queue for a project |
+| `POST` | `/api/projects/:projectId/prompt-requests/:id/decide` | admin | Record a decision — never mutates the QuerySet itself |
+| `GET` | `/api/portal/projects/:projectId/prompts` | `@ClientPortal()` | Read-only active query-set prompts (§13) |
+| `GET` | `/api/portal/projects/:projectId/prompt-requests` | `@ClientPortal()` | This client's own requests + status |
+| `POST` | `/api/portal/projects/:projectId/prompt-requests` | `@ClientPortal()` | Propose an add, or flag an existing prompt for removal |
+
+**`POST /api/portal/projects/:projectId/prompt-requests`** — body:
+```
+{ "action": "add", "prompt": "What CRM integrates with Slack for a small team?", "persona": "problem-aware" }
+```
+or
+```
+{ "action": "remove", "targetItemId": "<QuerySetItem.id>" }
+```
+Response (`201`) carries a §20 quota snapshot taken at request time:
+```
+{
+  "id": "cmub8wapc001v138bcb0ipzbu",
+  "action": "add",
+  "prompt": "What CRM integrates with Slack for a small team?",
+  "status": "pending",
+  "activePromptCount": 2,
+  "planPromptLimit": 100,
+  "planTier": "starter",
+  "overQuota": false,
+  "decidedAt": null,
+  "resultQuerySetItemId": null,
+  "createdAt": "2026-09-21T12:52:31.921Z"
+}
+```
+`overQuota: true` is never a rejection — the request is still created; it is a flag for the
+admin reviewing the queue (§20's "upsell moment, not a bug"). See
+`prompt-requests/README.md`'s "§20 quota enforcement" section for how `planTier` is derived —
+no clean `planTier` field exists on `Client`/`Subscription` in this codebase, so it is resolved
+from the client's most recent `Subscription.offerId` → `Offer.code`/`Offer.name`, defaulting to
+`starter` when nothing resolves.
+
+**`POST /api/projects/:projectId/prompt-requests/:id/decide`** — body:
+```
+{ "decision": "approved", "resultQuerySetItemId": "<QuerySetItem.id>", "decisionNote": "Added to v2, activated." }
+```
+This endpoint only records the decision. The actual prompt add/remove happens first, through the
+existing `query-set` module's own endpoints (fork the active set → add/remove the prompt →
+activate) — see `docs/API.md`'s Query Set section (unchanged by C4). `409` if the request was
+already decided.
+
+### Content Requests Module
+
+| Method | Path | Roles | Description |
+|---|---|---|---|
+| `GET` | `/api/projects/:projectId/content-requests` | admin, delivery-lead, content | Traceability read — every row already has a real `growthAssetId` |
+| `GET` | `/api/portal/projects/:projectId/content-requests` | `@ClientPortal()` | This client's own submitted requests |
+| `POST` | `/api/portal/projects/:projectId/content-requests` | `@ClientPortal()` | Submit the structured "request new content" form |
+
+**`POST /api/portal/projects/:projectId/content-requests`** — body:
+```
+{
+  "contentType": "article",
+  "topic": "best CRM for small sales teams",
+  "priority": "high",
+  "note": "Cover pricing and Slack integration"
+}
+```
+`contentType` must be one of `content-workspace`'s own six tracked content types (`article`,
+`ad-copy`, `social-content`, `email-campaign`, `landing-page`, `faq`) — `400` otherwise.
+`priority` is `low | normal | high` (default `normal`).
+
+Response (`201`):
+```
+{
+  "id": "cmub8xs5a00189y04644xaghs",
+  "contentType": "article",
+  "topic": "best CRM for small sales teams",
+  "priority": "high",
+  "note": "Cover pricing and Slack integration",
+  "growthAssetId": "cmub8xs5e00199y04x7i4zjb8",
+  "createdAt": "2026-09-21T12:53:41.182Z"
+}
+```
+Per §22, `growthAssetId` is set immediately — the request is already a real, client-tagged
+`content-workspace` item (`source: "client-request"`) that an operator can pick up from the
+ordinary content list. There is no separate triage step to convert it. It does **not** appear in
+`GET /api/portal/projects/:projectId/content` (the client's own "shared with you" list) until an
+operator explicitly shares a revision — the same rule that already governs every other content
+piece.
+
+### Query Set Module — unchanged
+
+No endpoint shape changed. `QuerySetService.list(projectId, 'active')` is reused directly by
+`GET /api/portal/projects/:projectId/prompts` above; see `query-set/README.md`.
+
+### Growth Execution Module — new internal method, no new endpoint
+
+`GrowthExecutionService.createFromClientRequest` (mirrors the existing
+`createFromOpportunity`) is called by `content-requests`, not exposed as its own route.
+
+---
+
 ## Planned Modules (not yet built)
 
 | Module | Type | Endpoints |

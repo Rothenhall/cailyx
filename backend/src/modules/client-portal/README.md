@@ -17,7 +17,9 @@ stuff and seeing reports and leaving messages."*
 
 ```
 client-portal/
-├── client-portal.module.ts       # imports ReportingModule only
+├── client-portal.module.ts       # imports ReportingModule, ContentWorkspaceModule,
+│                                  # WritingStyleModule, QuerySetModule (C4),
+│                                  # PromptRequestsModule (C4), ContentRequestsModule (C4)
 ├── client-portal.service.ts      # every query scoped to the caller's own clientId
 ├── client-portal.controller.ts   # @ClientPortal() on the controller — every route
 ├── client-portal.types.ts        # response DTOs
@@ -50,6 +52,7 @@ from the very client it was generated for.
 
 | Method | Endpoint | Description |
 |---|---|---|
+| `GET` | `/portal/me` | This client login's own profile |
 | `GET` | `/portal/projects` | This client's own projects, with status/score/band |
 | `GET` | `/portal/reports` | This client's own reports, across all their projects |
 | `GET` | `/portal/reports/:slug` | The full report (same shape `reporting` returns to an operator) — 404 if not theirs |
@@ -57,6 +60,14 @@ from the very client it was generated for.
 | `POST` | `/portal/projects/:projectId/onboarding-wizard/confirm-details` | **(C2)** Step (a): advance past confirm/edit details — requires a confirmed business-profile version, 409 otherwise |
 | `POST` | `/portal/projects/:projectId/onboarding-wizard/connect-gsc-done` | **(C2)** Step (b): advance past connecting GSC — 409 unless a live mapped `GoogleProjectResource` actually exists |
 | `POST` | `/portal/projects/:projectId/onboarding-wizard/connect-ga4-done` | **(C2)** Step (c): advance past connecting GA4 into `done` — same gating |
+| `GET` | `/portal/projects/:projectId/content` | Shared content for one project — explicitly shared revisions only |
+| `GET` | `/portal/projects/:projectId/content/:assetId` | One shared content piece |
+| `GET` | `/portal/projects/:projectId/writing-style` | Active confirmed writing style, read-only |
+| `GET` | `/portal/projects/:projectId/prompts` | **(C4)** Real, active query-set prompts — read-only (§13) |
+| `GET` | `/portal/projects/:projectId/prompt-requests` | **(C4)** This client's own prompt add/delete requests |
+| `POST` | `/portal/projects/:projectId/prompt-requests` | **(C4)** Propose an add or flag a removal (§13/§20) |
+| `GET` | `/portal/projects/:projectId/content-requests` | **(C4)** This client's own structured content requests |
+| `POST` | `/portal/projects/:projectId/content-requests` | **(C4)** Submit the structured "request new content" form (§14/§22) |
 | `GET` | `/portal/messages` | The message thread with the operator |
 | `POST` | `/portal/messages` | Post a message |
 
@@ -135,10 +146,13 @@ correctness) — see the C2 handback report for the complete honest checklist.
 
 ## Dependencies
 
-`ReportingModule` (for `getBySlug`, after this module's own ownership check).
-Every other read goes straight through Prisma — same convention
-`gap-analysis` and `clients` already follow, rather than injecting a service
-per read.
+`ReportingModule` (for `getBySlug`, after this module's own ownership check),
+`ContentWorkspaceModule`, `WritingStyleModule`. C4 adds `QuerySetModule` (the
+read-only prompt list reuses `QuerySetService.list(projectId, 'active')`
+directly — no new read-model needed), `PromptRequestsModule`,
+`ContentRequestsModule`. Every other read goes straight through Prisma —
+same convention `gap-analysis` and `clients` already follow, rather than
+injecting a service per read.
 
 ## Testing notes
 
@@ -151,3 +165,9 @@ messages round-trip both directions, and the ownership guards were exercised
 directly: a client hitting `/clients` (operator route) → 403; an operator
 hitting `/portal/projects` → 403; a client posting a message against a
 `projectId` that is not theirs → 403. `npx tsc --noEmit` clean.
+
+**C4 addition (2026-09-21):** the five new routes above were verified live —
+see `prompt-requests/README.md` and `content-requests/README.md` for the
+full request/response detail. Ownership was re-verified for the new routes
+too: a client token for one client hitting `/portal/projects/:projectId/prompts`
+with a different client's `projectId` → `403`.

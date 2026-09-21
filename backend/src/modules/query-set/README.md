@@ -54,6 +54,7 @@ None — fully DB-backed.
 
 - `measurement` (Wave 1, not yet built) — will read **active** sets as its prompt source
 - `reporting` — dashboard/query-set ownership surfaces (planned)
+- `client-portal` (C4, client-portal.md §13) — `GET /api/portal/projects/:projectId/prompts` calls `list(projectId, 'active')` directly for the client's read-only prompt view. No changes were made to this module for C4 — the existing `list`/`addPrompt`/`removePrompt`/`activate`/`fork` cycle is exactly the "edit/versioning mechanics" the new `prompt-requests` module's admin decision flow drives by hand.
 
 ## PRD alignment
 

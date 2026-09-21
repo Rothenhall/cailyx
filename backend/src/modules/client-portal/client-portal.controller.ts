@@ -16,6 +16,8 @@ import { ClientPortal } from '../../common/decorators/auth.decorators';
 import type { AuthedRequestUser } from '../auth/strategies/jwt.strategy';
 import { ClientPortalService } from './client-portal.service';
 import { PostPortalMessageDto } from './dto/client-portal.dto';
+import { CreatePromptRequestDto } from '../prompt-requests/dto/prompt-requests.dto';
+import { CreateContentRequestDto } from '../content-requests/dto/content-requests.dto';
 
 @ApiTags('Client Portal')
 @Controller('portal')
@@ -136,6 +138,74 @@ export class ClientPortalController {
   @ApiResponse({ status: 403, description: 'projectId does not belong to this client' })
   async getWritingStyle(@Param('projectId') projectId: string, @Req() req: Request) {
     return this.portal.getWritingStyle(this.clientId(req), projectId);
+  }
+
+  @Get('projects/:projectId/prompts')
+  @ApiOperation({ summary: "This client's active query-set prompts, read-only (§3/§13) — the real prompts measurement runs, not a summary" })
+  @ApiResponse({ status: 200, description: '{ sets: QuerySetDto[] }' })
+  @ApiResponse({ status: 403, description: 'projectId does not belong to this client' })
+  async listPrompts(@Param('projectId') projectId: string, @Req() req: Request) {
+    return this.portal.listPrompts(this.clientId(req), projectId);
+  }
+
+  @Get('projects/:projectId/prompt-requests')
+  @ApiOperation({ summary: "This client's own prompt add/delete requests and their status (§13)" })
+  @ApiResponse({ status: 200, description: '{ requests: PromptRequestDto[] }' })
+  async listPromptRequests(@Param('projectId') projectId: string, @Req() req: Request) {
+    return this.portal.listPromptRequests(this.clientId(req), projectId);
+  }
+
+  @Post('projects/:projectId/prompt-requests')
+  @ApiOperation({
+    summary: 'Propose a new prompt or flag an existing one for removal (§13)',
+    description:
+      'Lightweight request queue only — never edits the QuerySet directly. Carries a §20 quota snapshot; overQuota is a flag for the admin, never a rejection.',
+  })
+  @ApiBody({ type: CreatePromptRequestDto })
+  @ApiResponse({ status: 201, description: 'The created prompt request' })
+  @ApiResponse({ status: 403, description: 'projectId does not belong to this client' })
+  async createPromptRequest(
+    @Param('projectId') projectId: string,
+    @Body() body: CreatePromptRequestDto,
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthedRequestUser;
+    return this.portal.createPromptRequest(this.clientId(req), projectId, user.userId, {
+      action: body.action,
+      prompt: body.prompt,
+      persona: body.persona,
+      targetItemId: body.targetItemId,
+      note: body.note,
+    });
+  }
+
+  @Get('projects/:projectId/content-requests')
+  @ApiOperation({ summary: "This client's own structured content requests (§14/§22)" })
+  @ApiResponse({ status: 200, description: '{ requests: ContentRequestDto[] }' })
+  async listContentRequests(@Param('projectId') projectId: string, @Req() req: Request) {
+    return this.portal.listContentRequests(this.clientId(req), projectId);
+  }
+
+  @Post('projects/:projectId/content-requests')
+  @ApiOperation({
+    summary: 'Request new content via the structured form (§14/§22)',
+    description: 'Creates a real content-workspace item immediately, tagged client-originated — no separate triage inbox.',
+  })
+  @ApiBody({ type: CreateContentRequestDto })
+  @ApiResponse({ status: 201, description: 'The created content request, linked to its new content-workspace item' })
+  @ApiResponse({ status: 403, description: 'projectId does not belong to this client' })
+  async createContentRequest(
+    @Param('projectId') projectId: string,
+    @Body() body: CreateContentRequestDto,
+    @Req() req: Request,
+  ) {
+    const user = req.user as AuthedRequestUser;
+    return this.portal.createContentRequest(this.clientId(req), projectId, user.userId, {
+      contentType: body.contentType,
+      topic: body.topic,
+      priority: body.priority,
+      note: body.note,
+    });
   }
 
   @Get('messages')

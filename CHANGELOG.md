@@ -264,6 +264,61 @@ gap rather than a claimed pass. All test data deleted afterward.
 
 ---
 
+## 2026-09-21 — Client Portal Phase C4: prompt + content request queues
+
+Full decision record: `docs/analysis/client-portal.md` §§13/14/20/22. Build order:
+`docs/PLAN.md` §11.4. Full write-up: `backend/src/modules/prompt-requests/README.md`,
+`backend/src/modules/content-requests/README.md`, `backend/src/modules/content-workspace/README.md`
+(new), `docs/API.md`, `docs/MODULES-STATUS.md` (Wave 7).
+
+**Prompt visibility + add/delete request queue (§13, §20):**
+- New `prompt-requests` module. Client-facing `GET /api/portal/projects/:projectId/prompts`
+  reuses `QuerySetService.list(projectId, 'active')` directly — the real, active buyer prompts,
+  not a summary. `POST .../prompt-requests` proposes an add or flags an existing prompt for
+  removal; lands in a queue an admin reads at `GET /api/projects/:projectId/prompt-requests` and
+  decides at `POST .../:id/decide`. Deliberately separate from the Approval primitive: this
+  module never touches `QuerySet`/`QuerySetItem` — the admin performs the real add/remove through
+  `query-set`'s own existing fork → add/remove → activate endpoints, unchanged by this work.
+- §20 quota check: every request snapshots the project's active-prompt count against a plan-tier
+  limit (Starter 100 / Growth 300 / Scale 1,000 / Enterprise unlimited). No clean `planTier`
+  field exists on `Client`/`Subscription` in this codebase — resolved instead from the client's
+  most recent `Subscription.offerId` → `Offer.code`/`Offer.name`, defaulting to Starter. Flagged
+  as a documented judgment call, not a discovery of an existing field.
+  Over-quota is flagged (`overQuota: true`), never rejected — an upsell signal for the admin.
+
+**Structured "request new content" form (§14, §22):**
+- New `content-requests` module. `POST /api/portal/projects/:projectId/content-requests`
+  (contentType/topic/priority) creates a real `content-workspace` `GrowthAsset` immediately —
+  no separate triage inbox. New `GrowthAsset.sourceClientRequestId` field (non-FK, same pattern
+  as `sourceGapId`/`sourceOpportunityId`); `content-workspace`'s `source` derivation now reports
+  `'client-request'`. `GrowthExecutionService.createFromClientRequest` mirrors the module's
+  existing `createFromOpportunity`. The new asset correctly reads `editorialState: 'planned'`
+  (no revision yet) and stays absent from the client's own shared-content list until an operator
+  explicitly shares a revision — reused existing lifecycle states, nothing new invented.
+
+**Frontend:** Results page (AI tab) gains a Prompts panel — read-only list + "Request a change"
+dialog + the client's own request history with status and the over-quota note surfaced as copy.
+Content page gains a "Request new content" dialog. Both call the new `services/portal.ts`
+adapters. Chosen home for prompts: the AI-visibility results page rather than a 9th top-level nav
+item, since that's the page that already shows what these prompts produce.
+
+**Verified end-to-end** against a live backend (`PORT=3091`) + the shared dev Postgres
+(`localhost:5436`): created client/project/active query set → client submitted an add and a
+remove prompt request, both correctly quota-snapshotted → admin queue listed both → admin forked
+the real query set, added the prompt, activated it, then decided both requests (approve/decline)
+→ re-decide correctly 409s → client submitted a structured content request → real
+`GrowthAsset` created and tagged `source: "client-request"` → confirmed absent from the client's
+shared-content list pre-share. `npx tsc --noEmit` (backend) and `npm run typecheck` + `npm run
+build` (web) all clean.
+
+**Left for later:** no operator-facing UI for the prompt-request admin queue yet (API-complete).
+A shared Postgres container race during this session (another worktree's `prisma db push`
+transiently dropped this phase's new tables mid-verification) was resolved by re-running
+`prisma db push --accept-data-loss` from this worktree — a known environment quirk with several
+concurrent agents on the same dev database, not a defect in this work.
+
+---
+
 ## 2026-09-20 — Client Portal Stage 1: §11.0 cleanup + Phase C1 (audit trail + onboarding-gate foundation)
 
 Full decision record: `docs/analysis/client-portal.md` §§15/16/33. Build order: `docs/PLAN.md`
