@@ -154,7 +154,18 @@ export class RefreshCadenceService {
       surface: lastRun.surface as Surface,
       geo: lastRun.geo,
     });
-    await this.measurement.executeRun(run.id);
+    const executed = await this.measurement.executeRun(run.id);
+
+    // executeRun does not throw on a run that ends `failed` (e.g. the
+    // MEASUREMENT_MAX_COST_PER_RUN cap was hit, or every observation
+    // errored) — it just records the reason on the run. Silently scoring
+    // afterwards would report success for a refresh that measured nothing
+    // new, so this module treats that the same as a thrown error: the
+    // scheduler's `mark()` records it in `refreshLastError`, and a manual
+    // `run-now` surfaces it as a failed request rather than a quiet 200.
+    if (executed?.status === 'failed') {
+      throw new Error(`Measurement run ${run.id} failed: ${executed.error ?? 'unknown reason'}`);
+    }
 
     const score = await this.scoring.scoreProject(projectId);
 
