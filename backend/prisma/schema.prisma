@@ -469,7 +469,16 @@ model Client {
   name         String
   contactName  String?
   contactEmail String?
-  /// active | paused | churned — set by the admin, not derived.
+  /// active | paused | churned | suspended — set by the admin, not derived.
+  /// C5 (`docs/analysis/client-portal.md` §5/§23/§30): "suspended" is written
+  /// only by `ClientsService.suspendClient` (an explicit admin action, or the
+  /// payment-failure grace-period sweep acting as the "system" actor) — never
+  /// by the generic `PATCH /clients/:clientId`, which still accepts any
+  /// string here for backward compatibility but is not how suspension is
+  /// meant to be triggered going forward. Suspending revokes every Google
+  /// connection reachable through this client's projects (§23) and is
+  /// reversed only by `reactivateClient`, which does NOT restore Google
+  /// access — the client reconnects from scratch (accepted tradeoff, §23).
   status       String   @default("active")
   /// Operator id (User.id, type=operator) who owns this client. Informal
   /// reference, not a relation: an owner leaving must never cascade-touch
@@ -4489,10 +4498,20 @@ model Subscription {
   currentPeriodEnd   DateTime?
   cancelAt    DateTime?
   canceledAt  DateTime?
+  /// C5 (`docs/analysis/client-portal.md` §30) — when this subscription FIRST
+  /// went `past-due` (set once by `StripeWebhookService.onInvoiceFailed`, not
+  /// bumped on later retries of the same grace window). Cleared back to null
+  /// the moment the subscription is seen active/paid again. The grace-period
+  /// sweep (`billing/payment-failure-sweep.service.ts`) reads this to decide
+  /// whether Stripe's own retry window (`BILLING_GRACE_PERIOD_DAYS`, default
+  /// 21d — the natural default per §30, not a bespoke schedule) has elapsed
+  /// without the payment resolving; if so it suspends the owning Client.
+  pastDueSince DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
   @@index([clientId, status])
+  @@index([status, pastDueSince])
 }
 
 /// Raw provider events, stored for idempotency. A replayed webhook matches an
