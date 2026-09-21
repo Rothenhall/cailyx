@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
@@ -15,7 +17,132 @@ import { PageHeader } from '@/components/patterns/PageHeader';
 import { StatusPill } from '@/components/patterns/StatusPill';
 import { Timestamp } from '@/components/patterns/Timestamp';
 import { cycleStatusLabel, cycleStatusTone } from '@/lib/status-tones';
-import { createCycle, listCycles, type Cycle } from '@/services/delivery-plan';
+import {
+  assignToPhase,
+  createCycle,
+  createPhase,
+  listCycles,
+  listPhases,
+  removeFromPhase,
+  SUGGESTED_PHASE_NAMES,
+  type Cycle,
+  type Phase,
+} from '@/services/delivery-plan';
+
+/**
+ * C3, Option B (docs/analysis/engagement-timeline.md §2) — one phase's row in
+ * the phases panel: its own record plus which of the project's cycles are
+ * currently assigned to it. Assignment is per-cycle (each cycle picks its
+ * phase from a dropdown in the table below), not drag-and-drop, matching the
+ * plain form-driven pattern already used for creating a cycle on this screen.
+ */
+function PhasesPanel({
+  projectId,
+  phases,
+  onCreated,
+}: {
+  projectId: string;
+  phases: Phase[];
+  onCreated: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  async function onCreate(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (creating || !name.trim()) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      await createPhase(projectId, { name: name.trim() });
+      setName('');
+      onCreated();
+    } catch (caught) {
+      setCreateError(toApiError(caught).message);
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  const unusedSuggestions = SUGGESTED_PHASE_NAMES.filter(
+    (suggestion) => !phases.some((phase) => phase.name.toLowerCase() === suggestion.toLowerCase()),
+  );
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-subsection">Phases</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-table text-muted-foreground">
+          Client-facing stages of the engagement, shown in the client portal grouped with their
+          assigned cycles and 30-day-plan commitments. A phase carries no status logic of its own —
+          it is a label only. Assign a cycle to one from the table below.
+        </p>
+
+        {phases.length === 0 ? (
+          <EmptyState variant="no-records" subject="phases" />
+        ) : (
+          <ol className="space-y-1.5">
+            {phases.map((phase) => (
+              <li
+                key={phase.id}
+                className="flex items-center justify-between rounded-md border border-border px-3 py-2"
+              >
+                <span className="text-table font-medium">{phase.name}</span>
+                <StatusPill
+                  tone={phase.status === 'active' ? 'info' : phase.status === 'complete' ? 'success' : 'neutral'}
+                  label={phase.status.charAt(0).toUpperCase() + phase.status.slice(1)}
+                />
+              </li>
+            ))}
+          </ol>
+        )}
+
+        <form onSubmit={onCreate} noValidate className="flex flex-wrap items-end gap-2">
+          <div className="min-w-[220px] flex-1 space-y-1.5">
+            <Label htmlFor="phase-name">New phase name</Label>
+            <Input
+              id="phase-name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              disabled={creating}
+              placeholder="e.g. Diagnose"
+            />
+          </div>
+          <Button type="submit" disabled={creating || !name.trim()}>
+            {creating ? 'Adding…' : 'Add phase'}
+          </Button>
+        </form>
+
+        {unusedSuggestions.length > 0 ? (
+          <p className="text-meta text-muted-foreground">
+            Suggested (Rothenhall&apos;s own stage names — optional, rename or skip freely):{' '}
+            {unusedSuggestions.map((suggestion, index) => (
+              <span key={suggestion}>
+                <button
+                  type="button"
+                  className="underline underline-offset-4 hover:text-foreground"
+                  onClick={() => setName(suggestion)}
+                >
+                  {suggestion}
+                </button>
+                {index < unusedSuggestions.length - 1 ? ', ' : ''}
+              </span>
+            ))}
+          </p>
+        ) : null}
+
+        {createError ? (
+          <p role="alert" className="text-table text-danger-foreground">
+            {createError}
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
 
 /**
  * PJ08 — Cycle board, index.
@@ -39,7 +166,10 @@ export default function CyclesIndexPage() {
   const router = useRouter();
 
   const [cycles, setCycles] = useState<Cycle[] | null>(null);
+  const [phases, setPhases] = useState<Phase[]>([]);
   const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
+  const [assigningCycleId, setAssigningCycleId] = useState<string | null>(null);
+  const [assignError, setAssignError] = useState<string | null>(null);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState('');
@@ -52,12 +182,36 @@ export default function CyclesIndexPage() {
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
       setError(null);
-      setCycles(await listCycles(projectId, undefined, { signal }));
+      const [cycleResult, phaseResult] = await Promise.all([
+        listCycles(projectId, undefined, { signal }),
+        // Phases are optional (many projects will have none) — a failed read
+        // must not blank the cycle board, which is this screen's primary job.
+        listPhases(projectId, { signal }).catch(() => []),
+      ]);
+      setCycles(cycleResult);
+      setPhases(phaseResult);
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === 'AbortError') return;
       setError(toApiError(caught));
     }
   }, [projectId]);
+
+  async function onAssignPhase(cycleId: string, phaseId: string) {
+    setAssigningCycleId(cycleId);
+    setAssignError(null);
+    try {
+      if (phaseId === '__none__') {
+        await removeFromPhase(projectId, { cycleId });
+      } else {
+        await assignToPhase(projectId, phaseId, { cycleId });
+      }
+      await load();
+    } catch (caught) {
+      setAssignError(toApiError(caught).message);
+    } finally {
+      setAssigningCycleId(null);
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -153,8 +307,39 @@ export default function CyclesIndexPage() {
         accessor: (row) => row.goal,
         render: (row) => <span className="truncate text-muted-foreground">{row.goal ?? ''}</span>,
       },
+      {
+        key: 'phase',
+        header: 'Phase',
+        accessor: (row) => phases.find((phase) => phase.id === row.phaseId)?.name ?? '',
+        width: 180,
+        // C3, Option B — assignment is a label only: changing it never touches
+        // the cycle's own status/commit state above. Stops propagation so
+        // picking a phase does not also navigate the row into the cycle
+        // detail screen.
+        render: (row) => (
+          <div onClick={(event) => event.stopPropagation()}>
+            <Select
+              value={row.phaseId ?? '__none__'}
+              onValueChange={(value) => void onAssignPhase(row.id, value)}
+              disabled={assigningCycleId === row.id || phases.length === 0}
+            >
+              <SelectTrigger className="h-8 text-meta">
+                <SelectValue placeholder={phases.length === 0 ? 'No phases yet' : 'Unphased'} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">Unphased</SelectItem>
+                {phases.map((phase) => (
+                  <SelectItem key={phase.id} value={phase.id}>
+                    {phase.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        ),
+      },
     ],
-    [],
+    [phases, assigningCycleId],
   );
 
   return (
@@ -168,25 +353,37 @@ export default function CyclesIndexPage() {
 
       {error ? (
         <ErrorState error={error} notFoundReason="missing-or-private" onRetry={() => void load()} />
-      ) : cycles === null ? (
-        <Skeleton className="h-64 rounded-xl" />
-      ) : cycles.length === 0 ? (
-        <EmptyState
-          variant="no-records"
-          subject="cycles"
-          action={{ label: 'Start the first cycle', onClick: () => setCreateOpen(true) }}
-        />
       ) : (
-        <DataTable<Cycle>
-          columns={columns}
-          rows={cycles}
-          getRowId={(row) => row.id}
-          caption="Project cycles"
-          defaultSort={{ key: 'window', direction: 'desc' }}
-          rowHref={(row) => `/projects/${projectId}/cycles/${row.id}`}
-          linkColumnKey="name"
-          emptyState={<EmptyState variant="no-results" />}
-        />
+        <>
+          <PhasesPanel projectId={projectId} phases={phases} onCreated={() => void load()} />
+
+          {assignError ? (
+            <p role="alert" className="text-table text-danger-foreground">
+              {assignError}
+            </p>
+          ) : null}
+
+          {cycles === null ? (
+            <Skeleton className="h-64 rounded-xl" />
+          ) : cycles.length === 0 ? (
+            <EmptyState
+              variant="no-records"
+              subject="cycles"
+              action={{ label: 'Start the first cycle', onClick: () => setCreateOpen(true) }}
+            />
+          ) : (
+            <DataTable<Cycle>
+              columns={columns}
+              rows={cycles}
+              getRowId={(row) => row.id}
+              caption="Project cycles"
+              defaultSort={{ key: 'window', direction: 'desc' }}
+              rowHref={(row) => `/projects/${projectId}/cycles/${row.id}`}
+              linkColumnKey="name"
+              emptyState={<EmptyState variant="no-results" />}
+            />
+          )}
+        </>
       )}
 
       <Sheet

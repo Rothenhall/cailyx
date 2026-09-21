@@ -572,6 +572,7 @@ export class DeliveryPlanService {
       cancelledAt: row.cancelledAt ? row.cancelledAt.toISOString() : null,
       cancelReason: row.cancelReason,
       progress: this.toCommitmentProgress(row, linkedWork),
+      phaseId: row.phaseId,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };

@@ -253,6 +253,9 @@ export interface CommitmentDto {
   cancelledAt: string | null;
   cancelReason: string | null;
   progress: CommitmentProgressDto;
+  /** C3, Option B — optional client-facing Phase grouping. Null for
+   * unphased commitments. */
+  phaseId: string | null;
   createdAt: string;
   updatedAt: string;
 }

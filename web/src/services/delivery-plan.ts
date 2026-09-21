@@ -232,6 +232,9 @@ export interface Cycle {
   committedCount: number;
   scopeChanges: ScopeChangeEntry[];
   closedAt: string | null;
+  /** C3, Option B — optional client-facing Phase grouping. Null for
+   * unphased cycles (the default, and every pre-existing row). */
+  phaseId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -474,6 +477,84 @@ export async function commitCycle(projectId: string, cycleId: string, note?: str
   return api.post<Cycle>(`/projects/${projectId}/cycles/${cycleId}/commit`, { note });
 }
 
+// ── Phases (C3, Option B — docs/analysis/engagement-timeline.md §2) ─────
+//
+// A thin, order-only grouping label above Cycle/Commitment, for the
+// client-facing "which stage of the engagement" narrative that Cycle's own
+// recurring-work-period semantics don't map onto cleanly. No lifecycle, no
+// approval mechanics — `status` below is a display hint an admin sets
+// directly, not something a transition table governs.
+
+export type PhaseStatus = 'upcoming' | 'active' | 'complete';
+export const PHASE_STATUSES: readonly PhaseStatus[] = ['upcoming', 'active', 'complete'];
+
+/** Rothenhall's own `/about` framing, offered as a prefill suggestion when
+ * creating a project's first phases — never a locked-in enum. An admin can
+ * rename, reorder or skip any of these; `Phase.name` is free text. */
+export const SUGGESTED_PHASE_NAMES: readonly string[] = ['Diagnose', 'Build', 'Operate', 'Compound'];
+
+export interface Phase {
+  id: string;
+  projectId: string;
+  name: string;
+  order: number;
+  status: PhaseStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function listPhases(
+  projectId: string,
+  options?: { signal?: AbortSignal },
+): Promise<Phase[]> {
+  const payload = await api.get<{ phases: Phase[] }>(`/projects/${projectId}/phases`, options);
+  return unwrap<Phase[]>(payload, 'phases');
+}
+
+export async function getPhase(
+  projectId: string,
+  phaseId: string,
+  options?: { signal?: AbortSignal },
+): Promise<Phase> {
+  return api.get<Phase>(`/projects/${projectId}/phases/${phaseId}`, options);
+}
+
+export interface CreatePhaseInput {
+  name: string;
+  order?: number;
+  status?: PhaseStatus;
+}
+
+export async function createPhase(projectId: string, input: CreatePhaseInput): Promise<Phase> {
+  return api.post<Phase>(`/projects/${projectId}/phases`, input);
+}
+
+export async function updatePhase(
+  projectId: string,
+  phaseId: string,
+  input: Partial<CreatePhaseInput>,
+): Promise<Phase> {
+  return api.patch<Phase>(`/projects/${projectId}/phases/${phaseId}`, input);
+}
+
+/** Assigns an existing Cycle or Commitment to a phase — exactly one of
+ * `cycleId`/`commitmentId` per call. Never changes the target's own status. */
+export async function assignToPhase(
+  projectId: string,
+  phaseId: string,
+  target: { cycleId: string } | { commitmentId: string },
+): Promise<{ assigned: true }> {
+  return api.post<{ assigned: true }>(`/projects/${projectId}/phases/${phaseId}/assign`, target);
+}
+
+/** Clears a Cycle's or Commitment's phase assignment. */
+export async function removeFromPhase(
+  projectId: string,
+  target: { cycleId: string } | { commitmentId: string },
+): Promise<{ assigned: false }> {
+  return api.post<{ assigned: false }>(`/projects/${projectId}/phases/unassign`, target);
+}
+
 // ── Commitments (P11 — plan §6.1-6.3) ───────────────────────────────────
 
 /**
@@ -564,6 +645,9 @@ export interface Commitment {
   cancelledAt: string | null;
   cancelReason: string | null;
   progress: CommitmentProgress;
+  /** C3, Option B — optional client-facing Phase grouping. Null for
+   * unphased commitments (the default, and every pre-existing row). */
+  phaseId: string | null;
   createdAt: string;
   updatedAt: string;
 }
