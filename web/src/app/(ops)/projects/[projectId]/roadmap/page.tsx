@@ -7,6 +7,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/patterns/EmptyState';
 import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
@@ -31,16 +32,20 @@ import {
   type Roadmap,
 } from '@/services/planning';
 import {
+  assignToPhase,
   getStaffActions,
   listCommitments,
   listCycles,
   listMilestones,
+  listPhases,
   listWorkItems,
+  removeFromPhase,
   type ActionItem,
   type Commitment,
   type CommitmentStatus,
   type Cycle,
   type Milestone,
+  type Phase,
   type WorkItem,
 } from '@/services/delivery-plan';
 
@@ -66,10 +71,16 @@ function CommitmentRow({
   commitment,
   projectId,
   workItems,
+  phases,
+  onPhaseChange,
+  phaseAssigning,
 }: {
   commitment: Commitment;
   projectId: string;
   workItems: WorkItem[];
+  phases: Phase[];
+  onPhaseChange: (commitmentId: string, phaseId: string) => void;
+  phaseAssigning: boolean;
 }) {
   const { progress } = commitment;
   const showBar = progress.kind === 'countable' && progress.targetCount != null && progress.targetCount > 0;
@@ -98,6 +109,29 @@ function CommitmentRow({
 
       <p className="text-table font-medium">{progress.label}</p>
       {showBar ? <Progress value={percent} aria-label={progress.label} /> : null}
+
+      {phases.length > 0 ? (
+        <div className="flex items-center gap-2">
+          <span className="text-meta text-muted-foreground">Phase</span>
+          <Select
+            value={commitment.phaseId ?? '__none__'}
+            onValueChange={(value) => onPhaseChange(commitment.id, value)}
+            disabled={phaseAssigning}
+          >
+            <SelectTrigger className="h-7 w-40 text-meta">
+              <SelectValue placeholder="Unphased" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">Unphased</SelectItem>
+              {phases.map((phase) => (
+                <SelectItem key={phase.id} value={phase.id}>
+                  {phase.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-muted-foreground">
         {commitment.targetDate ? (
@@ -234,6 +268,8 @@ export default function RoadmapPage() {
   const [workItems, setWorkItems] = useState<WorkItem[]>([]);
   const [commitments, setCommitments] = useState<Commitment[]>([]);
   const [actions, setActions] = useState<ActionItem[]>([]);
+  const [phases, setPhases] = useState<Phase[]>([]);
+  const [phaseAssigningId, setPhaseAssigningId] = useState<string | null>(null);
   const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -260,6 +296,7 @@ export default function RoadmapPage() {
         workResult,
         commitmentResult,
         actionResult,
+        phaseResult,
       ] = await Promise.all([
         getActionPlan(projectId, { signal }),
         getGapRoadmap(projectId, { signal }),
@@ -273,6 +310,8 @@ export default function RoadmapPage() {
         // get the ranked plan rather than a blank page.
         listCommitments(projectId, undefined, { signal }).catch(() => []),
         getStaffActions(projectId, { signal }).catch(() => ({ items: [], total: 0 })),
+        // C3, Option B — optional; most projects have none yet.
+        listPhases(projectId, { signal }).catch(() => []),
       ]);
       setPlan(planResult);
       setRoadmap(roadmapResult);
@@ -282,9 +321,24 @@ export default function RoadmapPage() {
       setWorkItems(workResult);
       setCommitments(commitmentResult);
       setActions(actionResult.items);
+      setPhases(phaseResult);
     },
     [projectId],
   );
+
+  async function onCommitmentPhaseChange(commitmentId: string, phaseId: string) {
+    setPhaseAssigningId(commitmentId);
+    try {
+      if (phaseId === '__none__') {
+        await removeFromPhase(projectId, { commitmentId });
+      } else {
+        await assignToPhase(projectId, phaseId, { commitmentId });
+      }
+      await load();
+    } finally {
+      setPhaseAssigningId(null);
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -555,6 +609,9 @@ export default function RoadmapPage() {
                         commitment={commitment}
                         projectId={projectId}
                         workItems={workItems}
+                        phases={phases}
+                        onPhaseChange={(id, phaseId) => void onCommitmentPhaseChange(id, phaseId)}
+                        phaseAssigning={phaseAssigningId === commitment.id}
                       />
                     ))}
                   </ul>

@@ -206,7 +206,7 @@ Order reconciles `PLAN.md` phases, PRD §16 build sequence, and the dependency g
 - [x] **`scorecard`** — Rung 0, PRD §13 + §17. Analysis resolved §17 as option B (`docs/analysis/wave-5.md` §2): engine + operator API now, public funnel behind `SCORECARD_PUBLIC=1` (a flag, not a rebuild). Built: fresh technical audit (probe failure → partial dimensions with reasons, never blocks the run) → versioned-rubric scoring → exactly **3 named problems** derived deterministically from the run's evidence (no LLM key required — the free funnel never blocks on a paid key) → `nonObvious` flag from probe-only evidence (blocked/render/`schema audit: fail`) → `ScorecardRun` with unguessable public share token. e2e: run 201 (score 33/invisible, 3 named problems), public 403 with flag off → 200 with flag on, bad token 404, list newest-first.
 - [x] **`delivery`** — PRD 6.11. Built per analysis choices: Plunk email (pre-approved; 503 `email-unconfigured` / `email-send-failed` guards, subject operator-editable, link-first — react-pdf PDF is frontend scope), internal Lead CRM (sources bulk/api/form/scorecard, `new → reached → booked | won/lost`) with **append-only** CTA event log (`book-call`/`review-ask`/`upgrade-click`) + CSV export for any external CRM (Attio/HubSpot = later), Stripe Checkout ledger (option A): links from `STRIPE_CHECKOUT_URL_*` env, click flips the lead's log, @Public completion = webhook stand-in (SDK + signature verification = documented next iteration). e2e: all guards + click/complete chain + lead event log verified.
 
-### Wave 7 — Client Portal & Admin Console revamp (2026-09-20, C1 + §11.0 cleanup done, C2–C7 not started)
+### Wave 7 — Client Portal & Admin Console revamp (2026-09-21, C1 + §11.0 cleanup + C3 done, C2/C4-C7 status per their own concurrent passes)
 
 Full decision record: `docs/analysis/client-portal.md` v1.3 (35 sections). Build order,
 dependencies, and the required-before-code note on the engagement/timeline model: `docs/PLAN.md`
@@ -254,6 +254,45 @@ separate track (admin/client platform layer, §1.2h) from the engine-pipeline wa
   used `prisma db push` instead (confirmed schema-in-sync against the running Postgres container),
   matching what a broken `migrate dev` leaves as the only working option today. Flagging here so
   whoever picks up C2+ doesn't hit the same P3019 surprise cold.
+- [x] **C3 — engagement/timeline model.** `docs/analysis/engagement-timeline.md`'s initial
+  recommendation (Option A, relabel `Cycle` as "Phase") was tried and rejected on inspection:
+  `Cycle` is a recurring ~30-day work-period concept (its own README already documented the
+  commit/freeze/scope-change semantics that don't map onto a linear four-stage engagement
+  narrative), and `plan/page.tsx` already carried a deliberate comment explaining why it renders
+  `Cycle` to the client as "work period" for exactly this reason. Built **Option B** instead: a
+  new, minimal `Phase` model (`name`, `order`, `status` — a display hint, not a lifecycle) that
+  `Cycle`/`Commitment` optionally reference via a nullable `phaseId` (additive; no existing row
+  affected). No new approval or lifecycle mechanics — Phase inherits everything `Commitment`/
+  `ApprovalRequest` already enforce. Backend: CRUD + assign/unassign under
+  `/api/projects/:projectId/phases` (`delivery-plan` module — no new module, per the analysis
+  doc's own §4 "module ownership" conclusion), plus a new client-portal route `GET
+  /api/portal/projects/:projectId/plan/phases` serving each phase's assigned cycles/commitments
+  through the existing `PortalCycleDto`/`PortalCommitmentDto` allowlists (served separately, same
+  precedent P11 set for `/plan/commitments`, so `/plan`'s frozen shape is untouched). Frontend:
+  a Phases panel + per-cycle phase-assignment dropdown on `(ops)/projects/[projectId]/cycles`, a
+  phase-assignment dropdown per commitment on `(ops)/.../roadmap`, and a new "Your engagement"
+  section on the client `(client)/.../plan` page — no new nav entry, matching this app's existing
+  navigation discipline against duplicate object lists (`web/src/lib/navigation.ts` §3.2). Rothenhall's
+  `Diagnose → Build → Operate → Compound` marketing language is offered as an optional,
+  renameable prefill suggestion (`SUGGESTED_PHASE_NAMES`) rather than a locked-in enum, per the
+  analysis doc's §3.3 caution against making that product-copy call unilaterally. e2e-verified
+  live against a real Postgres instance on an isolated port (`:3099`, to avoid another
+  concurrently-running instance on the shared default `:3002`): created a client/project, two
+  phases (auto-incrementing `order`), a cycle and a commitment, assigned and unassigned both,
+  confirmed the both-or-neither-id 409 and the foreign-project 404, and confirmed the client
+  portal read-back through a real client login. Caught and fixed a real bug in the same pass:
+  `CommitmentDto`'s mapper (`toCommitmentDto`, an explicit field list, unlike `Cycle`'s row-spread
+  mapper) never actually mapped the new `phaseId` field despite the type declaring it — `tsc`
+  didn't catch it because the type was only updated in one place; the live read-back did. Also
+  surfaced (and worked around, not fixed — out of scope) that concurrent agents sharing the one
+  dev Postgres container can `prisma db push` each other's in-progress schema changes away
+  mid-session; recovered by re-running `db push` from this worktree's own schema. `npx tsc
+  --noEmit` clean in both `backend/` and `web/`. Full write-up:
+  `backend/src/modules/delivery-plan/README.md` (new "Phases (C3, Option B)" section + updated PRD
+  alignment table + a dedicated C3 testing-notes addendum), `docs/API.md` (new endpoints + example
+  JSON), `docs/analysis/engagement-timeline.md` (status line updated to reflect Option B shipped).
+  No dedicated smoke script added for C3 (left as an honest gap in the README) — the live run above
+  covers the same ground once, by hand.
 
 ### Standing item (not a module)
 

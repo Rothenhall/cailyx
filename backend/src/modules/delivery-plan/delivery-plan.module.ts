@@ -18,6 +18,7 @@ import {
   DeliveryPlanPortalController,
   EngagementsController,
   MilestonesController,
+  PhasesController,
   WorkItemsController,
 } from './delivery-plan.controller';
 import { DeliveryPlanService } from './delivery-plan.service';
@@ -26,6 +27,7 @@ import { DeliveryPlanService } from './delivery-plan.service';
   controllers: [
     EngagementsController,
     CyclesController,
+    PhasesController,
     CommitmentsController,
     ActionsController,
     WorkItemsController,

@@ -79,6 +79,47 @@ export const MILESTONE_STATUSES = ['planned', 'at-risk', 'met', 'missed'] as con
 /** CapacityAllocation.absenceKind */
 export const ABSENCE_KINDS = ['leave', 'holiday', 'reduced'] as const;
 
+// ─── C3, Option B — Phase (client-facing grouping over Cycle/Commitment) ──
+
+/** Phase.status — an admin-set display hint, not a workflow. There is no
+ * transition table for it (unlike CYCLE_TRANSITIONS/COMMITMENT_TRANSITIONS):
+ * per docs/analysis/engagement-timeline.md §2, Phase carries no lifecycle of
+ * its own, so any value can be set to any other value directly. */
+export type PhaseStatus = 'upcoming' | 'active' | 'complete';
+export const PHASE_STATUSES: readonly PhaseStatus[] = ['upcoming', 'active', 'complete'];
+
+/**
+ * Suggested seed vocabulary for a project's first phases — Rothenhall's own
+ * `/about` framing (docs/analysis/engagement-timeline.md §3.3). Deliberately
+ * a **suggestion** an admin can accept, edit or ignore when creating phases,
+ * never a locked-in enum: `Phase.name` is a free-text `String` column, and
+ * nothing validates against this list. Order matches the intended sequence.
+ */
+export const SUGGESTED_PHASE_NAMES: readonly string[] = ['Diagnose', 'Build', 'Operate', 'Compound'];
+
+/** Staff-facing Phase DTO. */
+export interface PhaseDto {
+  id: string;
+  projectId: string;
+  name: string;
+  order: number;
+  status: PhaseStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Client-safe Phase DTO — no operational fields exist on Phase to strip,
+ * but this stays a distinct type (rather than reusing PhaseDto) so a future
+ * staff-only field never leaks through by omission of a mapping step. */
+export interface PortalPhaseDto {
+  id: string;
+  name: string;
+  order: number;
+  status: PhaseStatus;
+  cycles: PortalCycleDto[];
+  commitments: PortalCommitmentDto[];
+}
+
 /** A single entry in Cycle.scopeChanges — appended, never rewritten, once a
  * cycle has committedAt set. */
 export interface ScopeChangeEntry {
@@ -212,6 +253,9 @@ export interface CommitmentDto {
   cancelledAt: string | null;
   cancelReason: string | null;
   progress: CommitmentProgressDto;
+  /** C3, Option B — optional client-facing Phase grouping. Null for
+   * unphased commitments. */
+  phaseId: string | null;
   createdAt: string;
   updatedAt: string;
 }

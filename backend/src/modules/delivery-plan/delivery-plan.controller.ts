@@ -51,6 +51,7 @@ import {
   UpdateCommitmentDto,
 } from './dto/commitment.dto';
 import { CreateEngagementDto, SetEngagementStatusDto, UpdateEngagementDto } from './dto/engagement.dto';
+import { AssignToPhaseDto, CreatePhaseDto, UpdatePhaseDto } from './dto/phase.dto';
 import {
   AddAcceptanceCheckDto,
   BlockWorkItemDto,
@@ -209,6 +210,86 @@ export class CyclesController {
     @Body() dto: CommitCycleDto,
   ) {
     return this.service.commitCycle(projectId, id, user.userId, dto);
+  }
+}
+
+// ── Phases (C3, Option B — client-facing grouping above Cycle/Commitment) ─
+
+/**
+ * docs/analysis/engagement-timeline.md §2. A Phase is a thin, order-only
+ * grouping label — no lifecycle, no approval mechanics of its own. Creating
+ * or assigning one never touches a Cycle's or Commitment's own status.
+ */
+@ApiTags('delivery-plan: phases')
+@ApiBearerAuth()
+@Controller('projects/:projectId/phases')
+export class PhasesController {
+  constructor(private readonly service: DeliveryPlanService) {}
+
+  @Get()
+  @ApiOperation({ summary: "A project's phases, ordered" })
+  @ApiResponse({ status: 200, description: '{ phases: PhaseDto[] }' })
+  async list(@Param('projectId') projectId: string) {
+    return this.service.listPhases(projectId);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'One phase' })
+  @ApiResponse({ status: 404, description: 'Not found, or belongs to a different project' })
+  async get(@Param('projectId') projectId: string, @Param('id') id: string) {
+    return this.service.getPhase(projectId, id);
+  }
+
+  @Post()
+  @Roles('admin', 'delivery-lead')
+  @ApiOperation({ summary: 'Create a phase' })
+  @ApiBody({ type: CreatePhaseDto })
+  @ApiResponse({ status: 201, description: 'The created phase' })
+  async create(@Param('projectId') projectId: string, @Body() dto: CreatePhaseDto) {
+    return this.service.createPhase(projectId, dto);
+  }
+
+  @Patch(':id')
+  @Roles('admin', 'delivery-lead')
+  @ApiOperation({ summary: 'Edit a phase (name, order, display status)' })
+  @ApiResponse({ status: 200, description: 'The updated phase' })
+  async update(
+    @Param('projectId') projectId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdatePhaseDto,
+  ) {
+    return this.service.updatePhase(projectId, id, dto);
+  }
+
+  @Post(':id/assign')
+  @Roles('admin', 'delivery-lead')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Assign an existing Cycle or Commitment to this phase',
+    description: 'Exactly one of cycleId/commitmentId is required. Never changes the target\'s own status.',
+  })
+  @ApiBody({ type: AssignToPhaseDto })
+  @ApiResponse({ status: 200, description: '{ assigned: true }' })
+  @ApiResponse({ status: 409, description: 'Both or neither of cycleId/commitmentId were provided' })
+  async assign(
+    @Param('projectId') projectId: string,
+    @Param('id') id: string,
+    @Body() dto: AssignToPhaseDto,
+  ) {
+    return this.service.assignToPhase(projectId, id, dto);
+  }
+
+  @Post('unassign')
+  @Roles('admin', 'delivery-lead')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Clear a Cycle or Commitment\'s phase assignment',
+    description: 'Exactly one of cycleId/commitmentId is required.',
+  })
+  @ApiBody({ type: AssignToPhaseDto })
+  @ApiResponse({ status: 200, description: '{ assigned: false }' })
+  async unassign(@Param('projectId') projectId: string, @Body() dto: AssignToPhaseDto) {
+    return this.service.removeFromPhase(projectId, dto);
   }
 }
 
@@ -654,6 +735,16 @@ export class DeliveryPlanPortalController {
   })
   async commitments(@Param('projectId') projectId: string, @CurrentUser() user: AuthedRequestUser) {
     return this.service.getPortalCommitments(this.requireClientId(user), projectId);
+  }
+
+  @Get('plan/phases')
+  @ApiOperation({
+    summary: "This client's engagement phases, each with its assigned cycles/commitments",
+    description:
+      'C3, Option B — served separately from GET .../plan so that response shape never changes, same precedent as plan/commitments.',
+  })
+  async phases(@Param('projectId') projectId: string, @CurrentUser() user: AuthedRequestUser) {
+    return this.service.getPortalPhases(this.requireClientId(user), projectId);
   }
 
   @Get('actions')

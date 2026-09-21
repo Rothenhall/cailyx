@@ -186,6 +186,31 @@ export interface PortalPlan {
   workItems: PortalWorkItem[];
 }
 
+/** C3, Option B (docs/analysis/engagement-timeline.md §2) — a client-facing
+ * engagement stage grouping Cycles/Commitments for display only. It carries
+ * no lifecycle or approval meaning of its own: `status` is an admin-set
+ * display hint, not something this screen or the server gates on. */
+export type PortalPhaseStatus = 'upcoming' | 'active' | 'complete';
+
+export interface PortalPhase {
+  id: string;
+  name: string;
+  order: number;
+  status: PortalPhaseStatus;
+  cycles: PortalCycle[];
+  commitments: PortalCommitment[];
+}
+
+/** Served from its own route, same precedent as `getPortalCommitments`, so
+ * `/plan`'s response shape never changes. */
+export async function getPortalPhases(projectId: string, options?: { signal?: AbortSignal }) {
+  const payload = await api.get<{ phases: PortalPhase[] }>(
+    `/portal/projects/${encodeURIComponent(projectId)}/plan/phases`,
+    options,
+  );
+  return unwrap<PortalPhase[]>(payload, 'phases');
+}
+
 /** Served from a separate route so `/plan`'s response shape never changes
  * (an existing smoke test allowlists it exactly). */
 export async function getPortalCommitments(projectId: string, options?: { signal?: AbortSignal }) {

@@ -21,11 +21,13 @@ import { toViewWorkStatus } from '@/lib/work-mapping';
 import { listPortalProjectSummaries, type PortalProjectSummary } from '@/services/portal';
 import {
   getPortalCommitments,
+  getPortalPhases,
   getPortalPlan,
   type CommitmentStatus,
   type PortalCommitment,
   type PortalCycle,
   type PortalMilestone,
+  type PortalPhase,
   type PortalPlan,
   type PortalWorkItem,
 } from '@/services/portal-plan';
@@ -66,6 +68,7 @@ export default function ClientPlanPage() {
   const [project, setProject] = useState<PortalProjectSummary | null>(null);
   const [plan, setPlan] = useState<PortalPlan | null>(null);
   const [commitments, setCommitments] = useState<PortalCommitment[]>([]);
+  const [phases, setPhases] = useState<PortalPhase[]>([]);
   const [checklist, setChecklist] = useState<PortalChecklist | null>(null);
   const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
 
@@ -73,16 +76,20 @@ export default function ClientPlanPage() {
     async (signal?: AbortSignal) => {
       try {
         setError(null);
-        const [projects, planResult, commitmentsResult, checklistResult] = await Promise.allSettled([
+        const [projects, planResult, commitmentsResult, phasesResult, checklistResult] = await Promise.allSettled([
           listPortalProjectSummaries({ signal }),
           getPortalPlan(projectId, { signal }),
           getPortalCommitments(projectId, { signal }),
+          // C3, Option B — optional: most projects have no phases yet, and this
+          // screen must render fine either way.
+          getPortalPhases(projectId, { signal }),
           getPortalChecklist(projectId, { signal }),
         ]);
         if (projects.status === 'rejected') throw projects.reason;
         setProject(projects.value.find((entry) => entry.id === projectId) ?? null);
         if (planResult.status === 'fulfilled') setPlan(planResult.value);
         if (commitmentsResult.status === 'fulfilled') setCommitments(commitmentsResult.value);
+        if (phasesResult.status === 'fulfilled') setPhases(phasesResult.value);
         if (checklistResult.status === 'fulfilled') setChecklist(checklistResult.value);
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === 'AbortError') return;
@@ -195,6 +202,24 @@ export default function ClientPlanPage() {
             attach one.
           </AlertDescription>
         </Alert>
+      ) : null}
+
+      {/* ── Engagement phases (C3, Option B) ─────────────────────────────── */}
+      {/* Purely a client-facing grouping over the work periods/commitments
+          below — a phase carries no status logic of its own beyond a simple
+          display hint. Only shown once the delivery team has set phases up;
+          many projects will have none, and that is not an error state. */}
+      {phases.length > 0 ? (
+        <section aria-labelledby="phases-heading" className="space-y-3">
+          <h2 id="phases-heading" className="text-subsection font-semibold tracking-tight">
+            Your engagement
+          </h2>
+          <div className="space-y-3">
+            {phases.map((phase) => (
+              <PhaseCard key={phase.id} phase={phase} />
+            ))}
+          </div>
+        </section>
       ) : null}
 
       {/* ── This work period ───────────────────────────────────────────── */}
@@ -559,6 +584,84 @@ function CycleCard({ cycle, projectId }: { cycle: PortalCycle; projectId: string
       </CardContent>
     </Card>
   );
+}
+
+/**
+ * One engagement phase (C3, Option B) — a client-facing grouping label over
+ * the work periods and commitments assigned to it. A phase has no lifecycle
+ * of its own: `status` is a simple display hint the delivery team sets
+ * directly, never something this screen infers or gates on. Cycles/
+ * commitments under it render as compact rows rather than full cards, since
+ * the full detail is already shown in the sections below this one.
+ */
+function PhaseCard({ phase }: { phase: PortalPhase }) {
+  return (
+    <Card>
+      <CardHeader className="flex-row items-start justify-between space-y-0">
+        <CardTitle className="text-subsection">{phase.name}</CardTitle>
+        <StatusPill label={phaseStatusLabel(phase.status)} tone={phaseStatusTone(phase.status)} />
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {phase.cycles.length === 0 && phase.commitments.length === 0 ? (
+          <p className="text-table text-muted-foreground">Nothing has been shared with you under this phase yet.</p>
+        ) : (
+          <>
+            {phase.cycles.length > 0 ? (
+              <div className="space-y-1">
+                <p className="text-meta font-medium text-muted-foreground">Work periods</p>
+                <ul className="space-y-1">
+                  {phase.cycles.map((cycle) => (
+                    <li key={cycle.id} className="flex flex-wrap items-center justify-between gap-2 text-table">
+                      <span>{cycle.name}</span>
+                      <StatusPill label={cycleStatusLabel(cycle.status)} tone={cycleStatusTone(cycle.status)} />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {phase.commitments.length > 0 ? (
+              <div className="space-y-1">
+                <p className="text-meta font-medium text-muted-foreground">Commitments</p>
+                <ul className="space-y-1">
+                  {phase.commitments.map((commitment) => (
+                    <li key={commitment.id} className="flex flex-wrap items-center justify-between gap-2 text-table">
+                      <span>{commitment.title}</span>
+                      <StatusPill
+                        label={commitmentStatusLabel(commitment.status)}
+                        tone={commitmentStatusTone(commitment.status)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function phaseStatusLabel(status: PortalPhase['status']): string {
+  switch (status) {
+    case 'active':
+      return 'Current';
+    case 'complete':
+      return 'Complete';
+    default:
+      return 'Upcoming';
+  }
+}
+
+function phaseStatusTone(status: PortalPhase['status']): StatusTone {
+  switch (status) {
+    case 'active':
+      return 'info';
+    case 'complete':
+      return 'success';
+    default:
+      return 'unmeasured';
+  }
 }
 
 /**
