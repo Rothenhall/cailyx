@@ -9,6 +9,66 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-21 — Client Portal Phase C5 (client lifecycle, payment-failure grace period, ownership transfer, seat permission gap)
+
+Full decision record: `docs/analysis/client-portal.md` §§5/23/27/30/32. Build order:
+`docs/PLAN.md` §11.5. Full write-up: `backend/src/modules/clients/README.md` (C5 section, PRD
+alignment, testing notes), `backend/src/modules/billing/README.md` (C5 addendum),
+`backend/src/modules/approvals/README.md` (C5 addendum), `docs/API.md`, `docs/MODULES-STATUS.md`
+(Wave 7). Continued from a prior partial attempt that had only added the `Client.status` doc
+comment and `Subscription.pastDueSince` + index (both already merged to `main`, reused as-is).
+
+- **Suspend/reactivate (§5/§23):** `POST /clients/:clientId/suspend` (admin-only) — sets
+  `Client.status = "suspended"` and immediately revokes every Google connection reachable through
+  any of the client's projects, via the existing `GoogleDelegationService.disconnect()` (real
+  revoke at Google + local delete, not just "stop calling"). `POST /clients/:clientId/reactivate`
+  flips status back to `active` without restoring Google access — the client reconnects each
+  project's GSC/GA4 from scratch, per §23's accepted tradeoff. Both write an `ActivityEvent`
+  (`'suspended'`/`'reactivated'`, new `ActivityAction` values).
+- **Payment-failure grace period (§30):** `StripeWebhookService.onInvoiceFailed` (already handled
+  `invoice.payment_failed`) now stamps `Subscription.pastDueSince` once per grace window (never
+  bumped by a retry) and clears it on recovery; `onSubscriptionUpserted` does the same and also
+  accepts the literal event `customer.subscription.past_due`. New
+  `billing/payment-failure-sweep.service.ts` (`PaymentFailureSweepService`) — an hourly in-process
+  cron, same pattern as `publishing`/`seo-audit`'s existing schedulers — auto-suspends any client
+  whose subscription has sat past-due longer than `BILLING_GRACE_PERIOD_DAYS` (default 21), via
+  the exact same `suspendClient()` path an admin's manual suspend uses. New env vars:
+  `BILLING_GRACE_PERIOD_DAYS`, `BILLING_GRACE_PERIOD_SWEEP_ENABLED` (added to `.env.example`).
+- **Ownership transfer (§32):** `POST /clients/:clientId/transfer-ownership` (admin-only) —
+  reassigns `Client.contactName`/`contactEmail` from an existing client seat or raw contact
+  fields, audit-logged (`'ownership-transferred'`, new `ActivityAction` value).
+- **Client seat permissions (§27):** audited the existing surface — seat/invite management was
+  already `client-admin`-only. The one real gap was `POST /api/portal/approvals/:id/decision`
+  (content approval before publish), now gated to `client-admin` seats; `client-collaborator`
+  seats keep view access. `approvals.service.ts` itself untouched — the gate lives in the
+  controller, via `ClientAccessService.resolveMembership`, the same pattern
+  `client-access.controller.ts` already uses for its own client-admin-only routes.
+
+**Verified live** against a real local Postgres (isolated throwaway database, since this
+environment runs several concurrent agent sessions against a shared Postgres container and
+schema drift from a neighboring session's `prisma db push` had to be worked around) and real HTTP
+calls, no mocks: create client/project → insert a fixture Google connection → suspend → confirmed
+the connection was actually deleted from Postgres, not status-flipped → audit event present →
+reactivate → transfer-ownership (both the raw-contact and the "neither field" `409` path) →
+`delivery-lead` token on suspend → `403`. Separately: a real Offer + signed
+`checkout.session.completed` webhook (HMAC-SHA256, Stripe's documented header scheme, no SDK) →
+signed `invoice.payment_failed` → subscription `past-due`, `pastDueSince` set, entitlement
+untouched → a second `invoice.payment_failed` confirmed `pastDueSince` does not move → ran the
+sweep directly (`PaymentFailureSweepService.runOnce()`, via a throwaway, not-committed
+`NestFactory.createApplicationContext` script) with a near-zero grace period → client auto-suspended,
+audit event `actorType: "scheduler"` → a second client's `invoice.paid` after a failure confirmed
+`pastDueSince` clears and the client was correctly skipped by the next sweep. Approval gating:
+legacy client-admin fallback got `404` on a bogus approval id (passed the role gate); the same
+user added as an explicit `client-collaborator` seat got a real `403` on the decision route while
+keeping `200` on the read routes. `npx tsc --noEmit` — zero errors.
+
+**Left for later, honestly:** `web/`'s client-portal UI for a suspended account's experience was
+out of scope (backend-only phase; `web/` is a separate active track — see project memory note on
+`frontend/` vs `web/`). §29 (competitor cap) and §31 (public report-link security) remain unbuilt,
+unrelated to this phase.
+
+---
+
 ## 2026-09-20 — Client Portal Stage 1: §11.0 cleanup + Phase C1 (audit trail + onboarding-gate foundation)
 
 Full decision record: `docs/analysis/client-portal.md` §§15/16/33. Build order: `docs/PLAN.md`

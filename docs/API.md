@@ -1427,6 +1427,81 @@ value on rows written via the waive action above and the `action` filter/enum on
 
 ---
 
+## Client Portal & Admin Console — Phase C5 (lifecycle, billing grace period, seat permissions, added 2026-09-21)
+
+> Full decision record: `docs/analysis/client-portal.md` §§5/23/27/30/32. Build order:
+> `docs/PLAN.md` §11.5. See `backend/src/modules/clients/README.md`, `backend/src/modules/billing/README.md`
+> and `backend/src/modules/approvals/README.md` for the full write-up — this section is the
+> endpoint reference only.
+
+### Clients Module — suspend / reactivate / ownership transfer (new endpoints)
+
+| Method | Path | Roles | Description |
+|---|---|---|---|
+| `POST` | `/api/clients/:clientId/suspend` | **admin only** | §5/§23 — set status `suspended`, revoke every Google connection reachable through the client's projects, audit-logged |
+| `POST` | `/api/clients/:clientId/reactivate` | **admin only** | §23 — set status back to `active`. Does NOT restore Google access |
+| `POST` | `/api/clients/:clientId/transfer-ownership` | **admin only** | §32 — reassign the client's primary contact, from an existing seat (`memberId`) or raw `contactName`/`contactEmail` |
+
+**`POST .../suspend`** — body `{ reason?: string }`. Response is the client plus which Google
+connections were actually revoked:
+
+```
+POST /api/clients/cmua.../suspend
+{ "reason": "non-payment, grace period elapsed" }
+→ 200 {
+    "id": "cmua...", "name": "...", "status": "suspended", ...,
+    "googleConnectionsRevoked": ["cmua<projectId>:search-console"]
+  }
+```
+
+Also called internally by the payment-failure grace-period sweep (see Billing below) with
+`actor: {type: "scheduler", label: "billing-grace-period-sweep"}` — the resulting `ActivityEvent`
+shows `actorType: "scheduler"` instead of `"user"` so the audit trail distinguishes an admin's
+manual suspend from an automatic one. 403 if the caller is not `admin`; 404 if the client doesn't
+exist.
+
+**`POST .../reactivate`** — body `{ reason?: string }`. Returns the updated client (`status:
+"active"`). Google access is **not** restored — each project's GSC/GA4 connection must be
+reconnected from scratch, same as first onboarding (§23's accepted tradeoff).
+
+**`POST .../transfer-ownership`** — body `{ memberId?: string, contactName?: string, contactEmail?: string, reason?: string }`.
+Exactly one of `memberId` (an existing `ClientMember.id` for this client — that seat's user's
+name/email become the new primary contact) or `contactName`/`contactEmail` must be supplied; a
+call with neither returns `409`. Returns the updated client. 404 if `memberId` doesn't belong to
+this client.
+
+**`PATCH /api/clients/:clientId`** still accepts `status: "suspended"` for backward compatibility,
+but does NOT revoke Google access or write the `"suspended"` audit action — use `POST .../suspend`
+for a real suspension.
+
+### Billing Module — payment-failure grace period (§30)
+
+No new HTTP endpoints — `StripeWebhookService` now also reacts to `invoice.payment_failed` (already
+handled before C5, extended to stamp `Subscription.pastDueSince` once per grace window) and
+`customer.subscription.past_due` (an explicit literal event name the task named; Stripe's real
+delivery for this transition is `customer.subscription.updated` with `status: "past_due"`, already
+handled). `GET /api/billing/subscriptions` and `GET /api/portal/billing/subscriptions` now include
+`pastDueSince: string | null` in `SubscriptionView`.
+
+An in-process hourly cron (`PaymentFailureSweepService`, `@nestjs/schedule`, same pattern as
+`PublicationSchedulerService`/`SeoAuditSchedulerService`) finds every subscription still `past-due`
+whose `pastDueSince` is older than `BILLING_GRACE_PERIOD_DAYS` (default 21) and suspends its client
+via the exact same `ClientsService.suspendClient` path an admin's manual suspend uses. `pastDueSince`
+clears back to `null` the moment a subscription is seen `active` again (`invoice.paid`/
+`invoice.payment_succeeded`, or a subscription-updated event reporting `active`/`trialing`) — this
+does **not** auto-reactivate an already-suspended client, which stays a separate, explicit admin
+action.
+
+### Approvals Module — client-admin gate on decisions (§27)
+
+`POST /api/portal/approvals/:id/decision` now requires the caller's client seat to be
+`client-admin` — a `client-collaborator` seat gets `403 {"message":"Only a client-admin seat may
+approve or request changes on content before it publishes"}`. `GET /api/portal/approvals` and
+`GET /api/portal/approvals/:id` are unchanged (both roles keep view access). No other endpoint
+shape changed.
+
+---
+
 ## Planned Modules (not yet built)
 
 | Module | Type | Endpoints |

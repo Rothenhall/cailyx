@@ -95,6 +95,32 @@ the role restriction (admin/delivery-lead only). Fixing it properly means
 either a `projectId` column on `CheckResult` or a scoped read on the service —
 both outside this pass's file set (schema changes are coordinator-owned).
 
+## C5 addendum (2026-09-21) — client-admin gate on `POST /api/portal/approvals/:id/decision`
+
+`docs/analysis/client-portal.md` §27: only a `client-admin` seat may approve
+content before it publishes; a `client-collaborator` seat keeps view access
+(`GET /api/portal/approvals`, `GET /api/portal/approvals/:id`) but is refused
+on the decision route. `ApprovalsPortalController` now injects
+`ClientAccessService` (from `client-access`, added to `ApprovalsModule`'s
+imports — no circular dependency, `ClientAccessModule` only imports
+`GoogleModule`) and resolves the caller's seat via
+`resolveMembership(clientId, userId)` before calling
+`ApprovalsService.portalDecide` — the exact same pattern
+`client-access.controller.ts` already uses for its own client-admin-only
+routes, not a new role model. `approvals.service.ts` itself is unchanged
+(Phase C3 owns that file's internals; this pass only added a guard at the
+controller boundary).
+
+Verified live (see the module-wide test run this file already lists a version
+of, C5 pass on a throwaway DB): a legacy client login with no `ClientMember`
+row (resolves as a full-scope `client-admin` per the fallback) got `404` on a
+nonexistent approval id (proving it passed the role gate); the same user added
+as an explicit `client-collaborator` seat via `POST /clients/:clientId/members`
+got a real `403 {"message":"Only a client-admin seat may approve or request
+changes on content before it publishes"}` on the identical call, while
+`GET /api/portal/approvals` still returned `200 {"requests":[]}` for that same
+collaborator — view access preserved, decision action blocked.
+
 ## Verified (2026-09-16, live on :3099, operator token)
 
 - Request lifecycle: create → **201** `pending`; list `?status=pending` 200;

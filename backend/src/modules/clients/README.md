@@ -160,6 +160,42 @@ operator route by accident. An operator hitting a `@ClientPortal()` route is
 rejected too — no shared component ever renders both operator and client
 data, enforced at the guard, not just the UI.
 
+## C5 (2026-09-21) — suspend/reactivate, payment-failure auto-suspend, ownership transfer, seat permissions
+
+`docs/analysis/client-portal.md` §§5/23/27/30/32, `docs/PLAN.md` §11.5. Four additions, one of
+them entirely outside this module:
+
+- **`ClientsService.suspendClient(clientId, actor, reason?)`** — sets `Client.status =
+  "suspended"`, then calls `GoogleDelegationService.disconnect()` (from `client-access`, newly
+  imported here — no circular dependency, `ClientAccessModule` only imports `GoogleModule`) once
+  per distinct `(userId, service)` Google connection reachable through any of the client's
+  projects (found via `GoogleProjectResource`, deduped by `connectionId` since one connection can
+  be mapped to several of the client's projects). `disconnect()` is the same path the client-access
+  module already uses for a client's own self-service disconnect — nothing about Google token
+  revocation was re-implemented here. `actor` accepts `{type: 'user'}` (an admin, via the
+  controller) or `{type: 'scheduler'}` (the billing grace-period sweep, §30 — see
+  `billing/payment-failure-sweep.service.ts`), so both paths produce the same suspend behavior and
+  the same audit-event shape, differing only in `actorType`.
+- **`ClientsService.reactivateClient(clientId, actorUserId, reason?)`** — sets status back to
+  `"active"`. Deliberately does **not** touch any Google connection: §23's accepted tradeoff is
+  that a reactivated client reconnects each project's GSC/GA4 from scratch, matching the doc
+  comment already on `Client.status` in `schema.prisma`.
+- **`ClientsService.transferOwnership(clientId, actorUserId, dto)`** — §32. Reassigns
+  `Client.contactName`/`contactEmail` either from an existing `ClientMember` seat's `User` row
+  (`dto.memberId`) or from raw `dto.contactName`/`contactEmail`. Human-mediated admin action, not
+  client self-service, matching the decision that billing/legal contact changes deserve a real
+  person's attention.
+- **§27 client seat permission differentiation is NOT in this module.** Seat/invite management was
+  already `client-admin`-only (`client-access` module, built in an earlier pass). The one gap this
+  phase found and closed was content-approval decisions (`POST /api/portal/approvals/:id/decision`)
+  — see `backend/src/modules/approvals/README.md`'s C5 addendum. Client-portal billing
+  (`billing-portal.controller.ts`) has no mutations to gate (read-only by design, per
+  `billing/README.md`).
+
+Every new action writes an `ActivityEvent` via the same `ActivityService` this module already
+depended on for C1's waive action — no new audit mechanism. New `ActivityAction` values:
+`'suspended'`, `'reactivated'`, `'ownership-transferred'`.
+
 ## REST API
 
 | Method | Endpoint | Roles | Description |
@@ -167,7 +203,10 @@ data, enforced at the guard, not just the UI.
 | `GET` | `/clients` | any operator | List with progress overview (score, band, open gaps, onboarding state) |
 | `POST` | `/clients` | delivery-lead | Create a client |
 | `GET` | `/clients/:clientId` | any operator | Client detail + its projects |
-| `PATCH` | `/clients/:clientId` | delivery-lead | Update name/contact/status/owner/notes |
+| `PATCH` | `/clients/:clientId` | delivery-lead | Update name/contact/status/owner/notes. Accepts `status: "suspended"` for backward compatibility, but does NOT revoke Google access or audit-log a suspend — use `POST .../suspend` |
+| `POST` | `/clients/:clientId/suspend` | **admin only** | C5/§5/§23 — suspend the client and revoke every reachable Google connection |
+| `POST` | `/clients/:clientId/reactivate` | **admin only** | C5/§23 — reactivate; does NOT restore Google access |
+| `POST` | `/clients/:clientId/transfer-ownership` | **admin only** | C5/§32 — reassign the primary contact |
 | `POST` | `/clients/:clientId/projects` | delivery-lead | Add a project, run the Day-1 pipeline (202-shaped 201: returns immediately, `onboardingStatus: "running"`) |
 | `GET` | `/clients/:clientId/projects/:projectId/onboarding-wizard` | any operator | Read the onboarding-wizard gate state (C1) |
 | `POST` | `/clients/:clientId/projects/:projectId/onboarding-wizard/waive` | **admin only** | Waive the Google-connect gate for this project (C1/§15), writes an audit event |
@@ -186,6 +225,24 @@ the run's artifacts and the legacy onboarding columns.
 
 C1 adds `ActivityModule` (`../activity/activity.module`) as a new dependency,
 for `ActivityService.record()` — used only by `waiveOnboardingWizard()`.
+
+C5 adds `ClientAccessModule` (`../client-access/client-access.module`) — for
+`GoogleDelegationService`, used only by `suspendClient()`'s Google-revocation
+sweep. `billing`'s `PaymentFailureSweepService` in turn imports `ClientsModule`
+to call `suspendClient()`; there is no cycle (`ClientAccessModule` only
+imports `GoogleModule`, and nothing this module imports depends on `billing`).
+
+## PRD alignment (C5 — `docs/analysis/client-portal.md` §§5/23/27/30/32)
+
+| Requirement | Status | Notes |
+|---|---|---|
+| §5 admin: suspend/offboard a client | ✅ | `POST /clients/:clientId/suspend`, admin-only, audited |
+| §23 offboarding: revoke Google tokens immediately on suspend | ✅ | Real revoke via `GoogleDelegationService.disconnect()` (Google-side revoke + local delete + cascaded delegations), not just "stop calling". Verified live — see Testing notes. |
+| §23 reactivate does not restore Google access | ✅ | `reactivateClient()` only flips status; no Google code path touched |
+| §27 client seat permission differentiation | ✅ | Seat/invite management already client-admin-only (pre-existing, `client-access`); content-approval decisions newly gated this phase (`approvals` module, see its README) |
+| §30 payment-failure grace period, then auto-suspend | ✅ | `billing/payment-failure-sweep.service.ts`, hourly cron, `BILLING_GRACE_PERIOD_DAYS` (default 21). Verified live end-to-end against a real signed webhook sequence — see Testing notes. |
+| §32 account-ownership transfer | ✅ | `POST /clients/:clientId/transfer-ownership`, admin-only, human-mediated, audited |
+| §33 audit trail for all of the above | ✅ | Reused `ActivityService`; new actions `suspended`/`reactivated`/`ownership-transferred` |
 
 ## PRD alignment (C1 — `docs/analysis/client-portal.md` §§15/16/33)
 
@@ -253,3 +310,64 @@ if (!owns || owns.clientId !== clientId) throw new ForbiddenException('That proj
 | `POST /clients/{A}/messages` `{ projectId: <B's project> }` | `403 {"message":"That project does not belong to this client","error":"Forbidden","statusCode":403}` |
 | `POST /clients/{A}/messages` `{ projectId: "nonexistent-project-id" }` | `403` — same message; the response does not confirm whether the id exists |
 | `POST /clients/{A}/messages` `{ body }` (no projectId) | `201`, `projectId: null` — client-wide message unchanged |
+
+## C5 (2026-09-21) — Testing notes
+
+Verified end-to-end against a live local backend and a real (isolated, throwaway) Postgres
+database, using signed HMAC-SHA256 test webhook payloads matching Stripe's documented header
+scheme (`t=<ts>,v1=<hmac>`), real HTTP calls, no mocks:
+
+**Suspend / reactivate / Google revocation (§5/§23):**
+1. Created a client + project via the real API, then inserted a fixture `GoogleConnection` +
+   `GoogleProjectResource` row (mapped to the project) directly in the dev DB, matching the
+   pattern `client-access/README.md`'s own delegation tests already use for exercising Google
+   code paths without live OAuth credentials.
+2. `POST /clients/:clientId/suspend {"reason":"C5 verification run"}` → `200`, `status:
+   "suspended"`, `googleConnectionsRevoked: ["<projectId>:search-console"]`.
+3. Confirmed directly in Postgres: both the `GoogleConnection` and its cascaded
+   `GoogleProjectResource` row were actually deleted (real revoke, not a status flip).
+4. `GET /api/activity?clientId=...&action=suspended` → one event, `actorType: "user"`,
+   `changes: {status: {before: "active", after: "suspended"}, googleConnectionsRevoked: [...]}`.
+5. `POST .../reactivate {"reason":"resolved"}` → `200`, `status: "active"`. No Google-related
+   table touched by this call (confirmed by code inspection — no Google import in the method).
+6. `POST .../transfer-ownership {"contactName":"New Contact","contactEmail":"new@..."}` → `200`
+   with the updated contact fields. `POST .../transfer-ownership {}` (neither `memberId` nor
+   contact fields) → `409` with the explicit message.
+7. A `delivery-lead` operator token on `POST .../suspend` → `403 {"message":"Role 'delivery-lead'
+   cannot access this resource"}`. Unknown `clientId` → `404`.
+
+**Payment-failure grace period, end to end (§30):**
+1. Created a real `Offer` (`c5-verify-offer`, entitlement key `c5-test-entitlement`) and a client.
+2. Sent a signed `checkout.session.completed` webhook (`client_reference_id` = the client,
+   `metadata.offerCode` = the offer) → `200`, `entitlementsGranted: 1`; `GET
+   /api/billing/subscriptions?clientId=...` showed `status: "active"`, `pastDueSince: null`.
+3. Sent a signed `invoice.payment_failed` webhook for the same subscription → `200`; the
+   subscription flipped to `status: "past-due"`, `pastDueSince` set to the delivery time; the
+   entitlement stayed `status: "active"` (access is NOT cut on first failure, per §30).
+4. Sent a **second** `invoice.payment_failed` for the same subscription (simulating a Stripe
+   retry within the grace window) → `pastDueSince` **did not move** — confirms "set once, not
+   bumped on retries."
+5. With `BILLING_GRACE_PERIOD_DAYS` set to a fractional value so the already-elapsed few seconds
+   exceeded the grace window, ran `PaymentFailureSweepService.runOnce()` directly (via a throwaway
+   `NestFactory.createApplicationContext` script, deleted afterward — not committed) → `{checked:
+   1, suspended: ["<clientId>"]}`. `GET /clients/:clientId` confirmed `status: "suspended"`;
+   `GET /api/activity?clientId=...&action=suspended` showed `actorType: "scheduler"`,
+   `actorLabel: "billing-grace-period-sweep"` — distinguishing an automatic suspend from an
+   admin's manual one in the audit trail.
+6. On a second client: `checkout.session.completed` → `invoice.payment_failed` (past-due,
+   `pastDueSince` set) → `invoice.paid` → `pastDueSince` cleared back to `null`, `status: "active"`
+   — confirms recovery clears the grace-period clock. This client was correctly skipped by a
+   subsequent sweep run (status was `active`, not `past-due`).
+
+**Seat permission gating (§27), via `approvals`:** see `backend/src/modules/approvals/README.md`'s
+C5 addendum for the full sequence (legacy client-admin fallback → `404` on a nonexistent approval;
+an explicit `client-collaborator` seat on the same client → real `403` on the decision route,
+`200` on the read routes).
+
+**Environment note:** this dev environment runs several concurrent agent worktrees against the
+same shared local Postgres container (`localhost:5436`), and another agent's `prisma db push`
+repeatedly reverted this session's schema mid-test. Verification was completed against an isolated
+throwaway database (`cailyx_c5verify`) on the same Postgres instance to get a stable run; this is a
+local-environment note only; `backend/.env` is gitignored and the production/shared dev schema is
+unaffected by this. `npx tsc --noEmit` — zero errors, verified against the shared repo schema
+after merging in the already-approved C2/C5 schema-stub commits from `main`.
