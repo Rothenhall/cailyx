@@ -3,9 +3,11 @@
 > **Status:** ✅ Built
 > **Phases:** G06 (`design_plan.md` — engagements, cycles, work items,
 > milestones, capacity, verification) · P01 (client-safe portal projections,
-> §3.5) · P11 (§6.1–§6.3 commitments, §5.6 needs-your-action)
+> §3.5) · P11 (§6.1–§6.3 commitments, §5.6 needs-your-action) · **Plan C3**
+> (`docs/analysis/engagement-timeline.md` — Phase grouping, Option B)
 > **Spec:** `docs/analysis/design-plan-implementation.md` (G06). This README
-> is the module's first written spec for the P01/P11 additions.
+> is the module's first written spec for the P01/P11 additions, and now also
+> covers C3's Phase addition.
 
 ## Purpose
 
@@ -25,16 +27,21 @@ endpoint returns the operational record (internal notes included), and every
 portal endpoint goes through an explicit allowlist that is a different
 function, not a filtered spread.
 
+**C3 adds `Phase`** — a thin, order-only grouping label above `Cycle`/
+`Commitment`, for the client-facing "which stage of the engagement am I in"
+narrative. See "Phases (C3, Option B)" below.
+
 ## Architecture
 
 ```
 delivery-plan/
-├── delivery-plan.controller.ts   # 8 controllers, 50 endpoints, one file
-├── delivery-plan.service.ts      # the whole module's logic (1655 lines)
+├── delivery-plan.controller.ts   # 9 controllers, endpoints, one file
+├── delivery-plan.service.ts      # the whole module's logic
 ├── delivery-plan.types.ts        # status vocabularies + transition tables + DTOs
-├── delivery-plan.module.ts       # 8 controllers, 1 provider/export, no imports
+├── delivery-plan.module.ts       # 9 controllers, 1 provider/export, no imports
 ├── dto/engagement.dto.ts         # create/update/status
 ├── dto/cycle.dto.ts              # create/update/status/commit/scope-change
+├── dto/phase.dto.ts              # create/update/assign/unassign (C3)
 ├── dto/commitment.dto.ts         # create/update/status + agree/scope-change/metric/complete/cancel
 ├── dto/work-item.dto.ts          # create/update/submit/verify/block/checks
 ├── dto/capacity.dto.ts           # allocations
@@ -146,6 +153,74 @@ Every later addition, removal or cancellation is an **append** to
 happens to scope afterwards. Attaching work to an already-committed cycle
 without `scopeChangeReason` is a 409, and so is removing it; a closed cycle
 refuses the attachment outright (`Cannot attach work to a closed cycle`).
+
+## Phases (C3, Option B — docs/analysis/engagement-timeline.md §2)
+
+`docs/analysis/engagement-timeline.md` first recommended Option A — relabel
+`Cycle` client-facing as "Phase," no new model. That was **tried and
+rejected**: `Cycle` is a recurring ~30-day work-period concept (see this
+module's own "Cycles" section above — commit freezes a denominator, scope
+changes append), not a linear engagement stage, and the client-portal
+`plan/page.tsx` already carried a deliberate comment explaining why it reads
+`Cycle` to the client as "work period" for exactly this reason. Forcing a
+four-stage engagement narrative onto that model would have meant either
+distorting `Cycle`'s real semantics or quietly redefining what "work period"
+means — neither acceptable. **Option B** is what's built: `Phase` is a new,
+minimal model that sits *above* `Cycle`/`Commitment` for display only.
+
+**What `Phase` is not.** It has no lifecycle, no approval mechanics, and no
+new gate. `Phase.status` (`upcoming | active | complete`) is a plain
+admin-set display hint — there is no transition table for it, unlike
+`CYCLE_TRANSITIONS`/`COMMITMENT_TRANSITIONS` — and assigning or clearing a
+`Cycle`/`Commitment`'s `phaseId` never touches that row's own status,
+commit state, or agreement. Everything a client is allowed to see or do with
+a phased `Cycle`/`Commitment` is still governed entirely by that row's own
+rules (and, for content, by `approvals`) — Phase adds a label, not a gate.
+
+**Assignment is explicit per row**, not inferred transitively. A `Commitment`
+does not automatically inherit its `Cycle`'s `phaseId` — each row carries its
+own nullable `phaseId`, assigned independently via `POST
+.../phases/:id/assign`. This keeps the mental model simple ("what does this
+row say its phase is") at the cost of an admin needing to assign both a cycle
+and its commitments if they want them grouped together; the alternative
+(commitments silently inheriting their cycle's phase) was judged more
+surprising, especially once a commitment's cycle is later reassigned.
+
+**Suggested names, not an enum.** `docs/analysis/engagement-timeline.md`
+§3.3 flagged adopting Rothenhall's own `Diagnose → Build → Operate →
+Compound` marketing language as a product-copy decision, not an engineering
+one, and cautioned against making that call unilaterally where a safer
+option exists. `SUGGESTED_PHASE_NAMES` in `delivery-plan.types.ts` (and
+mirrored in `web/src/services/delivery-plan.ts`) is exactly that safer
+option: a prefill an admin can click to fill the "new phase" name field, or
+ignore entirely. `Phase.name` is a free-text column; nothing validates
+against the list, so it is a seedable suggestion, not a locked-in value.
+
+### Endpoints — `@Controller('projects/:projectId/phases')`
+
+| Method | Path | Roles | Returns |
+|---|---|---|---|
+| GET | `/` | operator | `{ phases: PhaseDto[] }`, ordered by `order` then `createdAt` |
+| GET | `/:id` | operator | one phase |
+| POST | `/` | admin, delivery-lead | created phase (`order` defaults to end of list, `status` defaults `upcoming`) |
+| PATCH | `/:id` | admin, delivery-lead | edit name/order/status |
+| POST | `/:id/assign` | admin, delivery-lead | assign one existing `cycleId` **or** `commitmentId` to this phase; 409 if both or neither given |
+| POST | `unassign` | admin, delivery-lead | clear one `cycleId`'s or `commitmentId`'s phase assignment |
+
+Client portal — `@ClientPortal()`, `@Controller('portal/projects/:projectId')`:
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/plan/phases` | `{ phases: PortalPhaseDto[] }` — each phase with its client-safe `cycles`/`commitments`, through the exact same `PortalCycleDto`/`PortalCommitmentDto` allowlists `/plan` and `/plan/commitments` already use |
+
+Served from its own route, same precedent P11 set for `/plan/commitments`:
+`/plan`'s response shape is frozen by `portal-plan.smoke.sh`'s recursive
+allowlist, so a new grouping concept gets a new route rather than changing
+an already-shipped contract. Eligibility mirrors `/plan`/`/plan/commitments`
+exactly — a cycle only appears if it holds at least one client-visible work
+item, and a commitment only appears if its own cycle clears that bar and its
+status is not `draft`/`proposed`. A phase with nothing eligible under it is
+still listed (an empty phase group is real information, not hidden).
 
 ## Work items — verification is evidence, not a checkbox
 
@@ -276,7 +351,7 @@ all' is consistent"*. Only `delivery-blocker` is `blocking`. `GET
 …/actions/overview` returns at most `limit` cards (default 3) **with the true
 `total`**, so the count is never a lie about how much is behind it.
 
-## Endpoints (50)
+## Endpoints (56 — see also the "Phases" section above for the 6 C3 routes)
 
 Roles: **operator** = any staff role; a client token gets 403
 `Client accounts cannot access this resource` on every route that is not
@@ -429,6 +504,9 @@ zero configuration surface.
 | §3.5 — publication is not implied by approval or discovery | ➖ | Not this module's surface: publishing lives in `publishing`, account discovery in `digital-presence` |
 | `design_plan.md` G06 — cycles, work items, verification, milestones, capacity | ✅ | Plus the pause policy, dependency-cycle check and timezone rule |
 | §6.4/§6.5 — the one content calendar | ➖ | Another module (`content-calendar`); this README names the boundary rather than implying coverage |
+| **Plan C3** — `docs/analysis/engagement-timeline.md` §2, Option B: a thin Phase grouping over Cycle/Commitment, client-facing display only, no new lifecycle/approval | ✅ | `Phase` model + `phaseId` on `Cycle`/`Commitment` (nullable, additive); CRUD + assign/unassign under `/projects/:projectId/phases`; portal `GET .../plan/phases` |
+| `client-portal.md` §10 — "Phase — a named stage of the ongoing engagement", client-visible grouping | ✅ | Served through the existing `PortalCycleDto`/`PortalCommitmentDto` allowlists — no new client-safe serializer duplicated |
+| C3 §3.3 — phase-name vocabulary is a product-copy decision, not locked in | ✅ | `SUGGESTED_PHASE_NAMES` (`Diagnose/Build/Operate/Compound`) is a prefill suggestion in the admin create-phase form, never validated against |
 
 ## What was verified, and what was not
 
@@ -464,3 +542,68 @@ while this README was written: other agents were mid-flight on shared source
 and the dev database, so a failure could not have been attributed to this
 module. Everything above is a claim about what the scripts assert, not a
 statement that they pass today.
+
+### C3 (Phase) — verified live, 2026-09-21, against real Postgres
+
+No smoke script was added for C3 (out of scope for this pass — a small
+enough surface that a live run stood in for one; see the honest gap this
+leaves, below). Driven with `curl` against the backend on an **isolated
+port** (`PORT=3099`), specifically to avoid another agent's concurrently
+running instance on the default `:3002` (a real hazard discovered mid-pass —
+see the note below on the shared dev database).
+
+1. Created a fresh `Client` + `Project` + client-portal login via the
+   existing `clients` module.
+2. `POST /api/projects/:id/phases` — created "Diagnose" (`order: 0`) then
+   "Build" (`order: 1`, auto-incremented). `GET` listed both, ordered.
+3. `POST /api/projects/:id/cycles` — created a cycle. `POST
+   .../phases/:phaseId/assign {cycleId}` → `{assigned:true}`; `GET
+   .../cycles/:id` confirmed `phaseId` set. `POST .../phases/unassign
+   {cycleId}` → `{assigned:false}`; re-`GET` confirmed `phaseId: null`.
+4. Created a client-visible `WorkItem`, a `Commitment` linking it, assigned
+   the commitment to the same phase, then moved it `draft → proposed →
+   agreed` (`POST .../agree {confirm:true}`) so it clears the portal's
+   `notIn ['draft','proposed']` filter.
+5. `POST .../phases/:id/assign {}` (neither id) → **409** "Provide exactly
+   one of cycleId or commitmentId to assign to a phase." — the ambiguous-
+   request refusal.
+6. `GET /api/projects/:id/phases/:phaseId` on a foreign/nonexistent project
+   → **404** `Project not found`.
+7. **Operator read-back**: `GET .../commitments` showed `phaseId` on the
+   commitment; `GET .../cycles/:id` showed `phaseId` on the cycle.
+8. **Portal read-back**, logged in as the client user created in step 1:
+   `GET /api/portal/projects/:id/plan/phases` returned
+   `{"phases":[{"id":"…","name":"Diagnose","order":0,"status":"upcoming","cycles":[{…"currentCount":1,"committedCount":0…}],"commitments":[{…"status":"agreed",…"accountableLead":"Your Cailyx team"…}]}]}`
+   — the cycle and commitment came through the exact existing
+   `PortalCycleDto`/`PortalCommitmentDto` shapes, no new serializer, no
+   internal field leaked.
+
+**A real bug this run caught and fixed**: `CommitmentDto` (the staff type)
+declared `phaseId` but `toCommitmentDto()` never mapped it — a plain
+`private toCommitmentDto(row): CommitmentDto` object literal missing one
+field, which `tsc` did not catch because the field had only been added to
+the *type*, and the live `GET .../commitments` response silently omitted
+`phaseId` until this was caught by hand and fixed (`Cycle`'s DTO was fine —
+its mapper spreads the row). Worth naming because it is exactly the class of
+bug a live read-back catches and a type-check alone does not.
+
+**A real hazard this run surfaced**: several worktree agents (this one plus
+concurrent C2/C5 work) share the *same* local Postgres container
+(`cailyx-postgres` on `:5436`). Another agent's `prisma db push` — run from
+a schema.prisma copy that did not yet have `Phase`/`phaseId` — dropped this
+pass's `Phase` table and `Commitment.phaseId` column mid-verification twice
+(`P2021 the table public.Phase does not exist`, then `P2022 the column
+Commitment.phaseId does not exist`). Both were recovered by re-running `npx
+prisma db push` from this worktree's schema before continuing. This is a
+property of the shared dev database during concurrent multi-agent work, not
+a defect in this change; it is called out here so a future reader is not
+confused by a schema drifting under them mid-session, and because a proper
+migration file (once `prisma migrate dev`'s pre-existing `P3019`
+sqlite/postgres `migration_lock.toml` mismatch — see
+`docs/PRODUCTION-READINESS.md` — is fixed) would close this gap for good.
+
+**Left undone, honestly**: no dedicated smoke script (`backend/smoke/*.sh`)
+for Phase CRUD/assignment/portal-read exists yet, unlike P01/P11's two
+suites. The live run above covers the same ground once, by hand; a repeatable
+script is the natural next increment if Phase usage grows past a few
+projects.

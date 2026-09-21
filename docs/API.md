@@ -1249,6 +1249,12 @@ marked converted and linked.
 | `PATCH` | `/api/projects/:projectId/cycles/:id` | admin, delivery-lead | update (409 on a closed cycle) |
 | `PATCH` | `/api/projects/:projectId/cycles/:id/status` | admin, delivery-lead | transition; 409 for `committed` — use `/commit` |
 | `POST` | `/api/projects/:projectId/cycles/:id/commit` | admin, delivery-lead | commit the cycle and freeze the denominator |
+| `GET` | `/api/projects/:projectId/phases` | operator | `{ phases }`, ordered by `order` then `createdAt` — Plan C3 |
+| `GET` | `/api/projects/:projectId/phases/:id` | operator | one phase |
+| `POST` | `/api/projects/:projectId/phases` | admin, delivery-lead | create (`order` defaults to end of list, `status` defaults `upcoming`) |
+| `PATCH` | `/api/projects/:projectId/phases/:id` | admin, delivery-lead | edit name/order/status |
+| `POST` | `/api/projects/:projectId/phases/:id/assign` | admin, delivery-lead | assign one existing `cycleId` **or** `commitmentId` to this phase; 409 if both or neither given |
+| `POST` | `/api/projects/:projectId/phases/unassign` | admin, delivery-lead | clear one `cycleId`'s or `commitmentId`'s phase assignment |
 | `GET` | `/api/projects/:projectId/commitments` | operator | `?cycleId= &status=` |
 | `GET` | `/api/projects/:projectId/commitments/:id` | operator | one commitment with derived progress |
 | `POST` | `/api/projects/:projectId/commitments` | admin, delivery-lead | create |
@@ -1290,10 +1296,38 @@ request):
 |---|---|---|
 | `GET` | `/plan` | `{ engagement, cycles, milestones, workItems }` — deliberately without a `commitments` key, so this shape never changes under a shipped client contract |
 | `GET` | `/plan/commitments` | `{ commitments }` — everything not `draft`/`proposed`, completed ones included |
+| `GET` | `/plan/phases` | `{ phases }` — Plan C3, each phase carrying its assigned `cycles`/`commitments` through the same `PortalCycleDto`/`PortalCommitmentDto` shapes as above; served separately so `/plan`'s shape never changes, same precedent as `/plan/commitments` |
 | `GET` | `/work` | client-visible work items |
 | `POST` | `/work/:workItemId/evidence` | append evidence as the client; returns the portal work DTO |
 | `GET` | `/actions` | the client's own needs-your-action queue |
 | `GET` | `/actions/overview` | the same, capped (`?limit=`, default 3) with the true `total` |
+
+**Phase (Plan C3) is a display-only grouping, not a new gate.** `POST
+.../phases/:id/assign` example request/response:
+
+```json
+// POST /api/projects/:projectId/phases/:phaseId/assign
+{ "cycleId": "cm...cycle" }
+
+// 200
+{ "assigned": true }
+```
+
+```json
+// GET /api/portal/projects/:projectId/plan/phases -> 200
+{
+  "phases": [
+    {
+      "id": "cm...phase",
+      "name": "Diagnose",
+      "order": 0,
+      "status": "upcoming",
+      "cycles": [ { "id": "cm...cycle", "name": "Cycle 1", "status": "planning", "committedCount": 0, "currentCount": 1, "deliveredCount": 0, "scopeChanges": [] } ],
+      "commitments": [ { "id": "cm...commit", "title": "Fix top crawlability issues", "status": "agreed", "accountableLead": "Your Cailyx team" } ]
+    }
+  ]
+}
+```
 
 **"Agreed" cannot be written by a status edit.** Two states are reachable
 only through their dedicated actions:

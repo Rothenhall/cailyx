@@ -9,6 +9,45 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-21 — Client Portal Phase C3: engagement Phase grouping (Option B)
+
+Full decision record: `docs/analysis/engagement-timeline.md`. Full write-up:
+`backend/src/modules/delivery-plan/README.md` ("Phases (C3, Option B)" section, PRD alignment
+table, dedicated C3 testing-notes addendum), `docs/API.md`, `docs/MODULES-STATUS.md` (Wave 7).
+
+Option A (relabel `Cycle` client-facing as "Phase") was approved first, then tried and rejected:
+`Cycle` is a recurring ~30-day work-period concept — its own README already documents the
+commit/freeze/scope-change semantics — not a linear engagement stage, and `plan/page.tsx` already
+carried a deliberate comment explaining why the client reads `Cycle` as "work period" for exactly
+this reason. Built **Option B** instead:
+
+- **Backend** (`delivery-plan` module — no new module): a new, minimal `Phase` model (`name`,
+  `order`, a display-only `status` with no transition table) that `Cycle`/`Commitment` optionally
+  reference via a nullable, additive `phaseId`. No new lifecycle or approval mechanics — Phase
+  inherits everything `Commitment`/`ApprovalRequest` already enforce. CRUD + assign/unassign under
+  `/api/projects/:projectId/phases`; a new client-portal route
+  `GET /api/portal/projects/:projectId/plan/phases` serves each phase's assigned cycles/commitments
+  through the existing `PortalCycleDto`/`PortalCommitmentDto` allowlists (served separately from
+  `/plan`, same precedent P11 set for `/plan/commitments`).
+- **Frontend**: a Phases panel + per-cycle phase-assignment dropdown on the operator cycles board,
+  a phase-assignment dropdown per commitment on the roadmap's 30-day-plan section, and a new "Your
+  engagement" section on the client plan page. No new nav entry (matches this app's existing
+  navigation discipline against duplicate object lists). Rothenhall's `Diagnose → Build → Operate →
+  Compound` language is offered as an optional, renameable prefill suggestion
+  (`SUGGESTED_PHASE_NAMES`), never a locked-in enum.
+- **Verified live** against a real Postgres instance on an isolated port (to avoid another
+  concurrently-running backend instance on the shared default dev port): created a client/project,
+  two phases, a cycle and a commitment; assigned and unassigned both; confirmed the
+  both-or-neither-id 409 and the foreign-project 404; confirmed the client-portal read-back through
+  a real client login. Caught and fixed a real bug in the same pass: `CommitmentDto`'s mapper never
+  actually mapped the new `phaseId` field despite the type declaring it (`Cycle`'s row-spread
+  mapper had it automatically) — `tsc` didn't catch it because only the type was updated in the
+  first commit; the live read-back did. `npx tsc --noEmit` clean in both `backend/` and `web/`.
+- **Left for later**: no dedicated smoke script for Phase yet (the live run above stands in for
+  one this pass); a proper Prisma migration file is still blocked on the pre-existing
+  `migrate dev` P3019 sqlite/postgres `migration_lock.toml` mismatch (`prisma db push` used
+  instead, same workaround C1 already documented).
+
 ## 2026-09-20 — Client Portal Stage 1: §11.0 cleanup + Phase C1 (audit trail + onboarding-gate foundation)
 
 Full decision record: `docs/analysis/client-portal.md` §§15/16/33. Build order: `docs/PLAN.md`

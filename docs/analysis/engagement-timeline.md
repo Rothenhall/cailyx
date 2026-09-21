@@ -1,7 +1,19 @@
 # Engagement / Timeline Model (Phase C3) — Analysis & Recommendation
 
-> Status: **approved 2026-09-20 — Option A** (relabel `Cycle` as "Phase," no new model, no
-> migration). Required by
+> Status: **implemented 2026-09-21 — Option B.** Option A (below) was approved first and tried,
+> then rejected on inspection: `Cycle` is a recurring ~30-day work-period concept, not a linear
+> engagement stage (`plan/page.tsx` already carried a deliberate comment explaining why it renders
+> `Cycle` to the client as "work period" for exactly this reason), so relabeling it client-facing
+> would have meant distorting its real semantics rather than adding a clean grouping. Built instead:
+> a new, minimal `Phase` model (name, order, a display-only status) that `Cycle`/`Commitment`
+> optionally reference via a nullable `phaseId` — no new lifecycle, no new approval mechanics, it
+> inherits everything `Commitment`/`ApprovalRequest` already enforce. Full write-up:
+> `backend/src/modules/delivery-plan/README.md` ("Phases (C3, Option B)" section) and
+> `docs/MODULES-STATUS.md`'s Wave 7 C3 entry (build details, endpoints, e2e verification). This
+> doc's own §2 Option B writeup below is what was actually built; §3.3's phase-name-vocabulary
+> question was resolved as "suggested, not locked in" (`SUGGESTED_PHASE_NAMES`).
+>
+> Required by
 > `docs/PLAN.md` §11.3 and `docs/analysis/client-portal.md` §10, both of which explicitly say
 > C3 needs its own analysis pass — DB shape, module ownership — before implementation. This is
 > that pass.
@@ -159,3 +171,9 @@ way this doc re-checked C3 — it may turn out smaller than assumed too, for the
 
 **Approved 2026-09-20: Option A.** Proceeding with the §3 verification/decision items as Phase
 C3's actual (small) scope.
+
+**Update, 2026-09-21: Option A rejected after the §3.1 verification pass** (`Cycle`'s recurring
+work-period semantics do not map onto a linear engagement stage — see the status line at the top
+of this doc), **Option B approved and implemented instead.** See
+`backend/src/modules/delivery-plan/README.md` and `docs/MODULES-STATUS.md`'s Wave 7 C3 entry for
+the build, endpoints and e2e verification.
