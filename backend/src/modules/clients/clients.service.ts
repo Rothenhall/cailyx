@@ -44,6 +44,11 @@ import { BacklinksService } from '../backlinks/backlinks.service';
 import { FindingsService } from '../findings/findings.service';
 import { DeliveryPlanService } from '../delivery-plan/delivery-plan.service';
 import { ActivityService } from '../activity/activity.service';
+// C5 (`docs/analysis/client-portal.md` §5/§23) — suspendClient() reuses this
+// module's own disconnect() rather than re-implementing Google token
+// revocation here.
+import { GoogleDelegationService } from '../client-access/google-delegation.service';
+import type { GoogleService } from '../google/google.types';
 import type { UserType } from '../auth/auth.types';
 import type {
   ClientDto,
@@ -52,9 +57,16 @@ import type {
   ClientProjectSummaryDto,
   ClientLoginCreatedDto,
   ClientMessageDto,
+  ClientSuspensionResultDto,
   OnboardingWizardState,
 } from './clients.types';
-import type { CreateClientDto, UpdateClientDto, CreateClientProjectDto, CreateClientLoginDto } from './dto/clients.dto';
+import type {
+  CreateClientDto,
+  UpdateClientDto,
+  CreateClientProjectDto,
+  CreateClientLoginDto,
+  TransferOwnershipDto,
+} from './dto/clients.dto';
 
 const BCRYPT_ROUNDS = 10;
 /** Bounded wait for a queued stage before the pipeline moves on and marks that
@@ -99,6 +111,12 @@ export class ClientsService {
      * nothing else in this module writes to it (that's out of scope for C1).
      */
     private readonly activity: ActivityService,
+    /**
+     * C5 (`docs/analysis/client-portal.md` §5/§23) — suspendClient() calls
+     * `disconnect()` on this for every Google connection reachable through
+     * the client's projects. Never re-implements OAuth revocation here.
+     */
+    private readonly googleDelegation: GoogleDelegationService,
   ) {}
 
   // ─── Client CRUD ───────────────────────────────────────────────────
@@ -145,6 +163,194 @@ export class ClientsService {
       },
     });
     return this.toClientDto(row);
+  }
+
+  // ─── Lifecycle: suspend / reactivate (C5 — client-portal.md §5/§23/§30) ─
+
+  /**
+   * Suspend a client: sets `Client.status = "suspended"`, immediately
+   * revokes every Google connection reachable through any of this client's
+   * projects (§23 — a real revoke at Google, not just "stop calling"), and
+   * writes an audit event (§33).
+   *
+   * Idempotent-ish: calling this on an already-suspended client re-runs the
+   * Google-revocation sweep (harmless — `disconnect()` on an already-gone
+   * connection is a no-op) and re-records the event, the same "re-record
+   * rather than reject" shape as `waiveOnboardingWizard`.
+   *
+   * `actor` lets this be called either by an admin (`{type: 'user', id}`) or
+   * by the payment-failure grace-period sweep acting as the system
+   * (`{type: 'scheduler', id: null, label: 'billing-grace-period-sweep'}`) —
+   * §30's auto-suspend explicitly reuses this same path rather than
+   * duplicating it.
+   */
+  async suspendClient(
+    clientId: string,
+    actor: { type: 'user' | 'scheduler' | 'system'; id?: string | null; label?: string | null },
+    reason?: string,
+  ): Promise<ClientSuspensionResultDto> {
+    const client = await this.requireClient(clientId);
+    const previousStatus = client.status;
+
+    const updated = await this.prisma.client.update({ where: { id: clientId }, data: { status: 'suspended' } });
+
+    const revoked = await this.revokeGoogleAccessForClient(clientId);
+
+    await this.activity.record({
+      actor: { type: actor.type, id: actor.id ?? null, label: actor.label ?? null },
+      action: 'suspended',
+      resource: { type: 'client', id: clientId },
+      clientId,
+      summary: `Suspended client${reason ? `: ${reason}` : ''}`,
+      changes: {
+        status: { before: previousStatus, after: 'suspended' },
+        googleConnectionsRevoked: revoked,
+      },
+      origin: actor.type === 'user' ? 'api' : 'scheduler',
+      clientVisible: false,
+    });
+
+    this.logger.log(`Client ${clientId} suspended by ${actor.type}:${actor.id ?? 'n/a'} — ${revoked.length} Google connection(s) revoked`);
+    return { ...this.toClientDto(updated), googleConnectionsRevoked: revoked };
+  }
+
+  /**
+   * Reactivate a suspended client. Sets `Client.status = "active"` — does
+   * NOT restore Google access (§23's accepted tradeoff): the client
+   * reconnects each project's GSC/GA4 from scratch, same as first onboarding.
+   */
+  async reactivateClient(clientId: string, actorUserId: string, reason?: string): Promise<ClientDto> {
+    const client = await this.requireClient(clientId);
+    const previousStatus = client.status;
+
+    const updated = await this.prisma.client.update({ where: { id: clientId }, data: { status: 'active' } });
+
+    await this.activity.record({
+      actor: { type: 'user', id: actorUserId },
+      action: 'reactivated',
+      resource: { type: 'client', id: clientId },
+      clientId,
+      summary: `Reactivated client${reason ? `: ${reason}` : ''} — Google access does not auto-restore; the client reconnects from scratch.`,
+      changes: { status: { before: previousStatus, after: 'active' } },
+      origin: 'api',
+      clientVisible: false,
+    });
+
+    this.logger.log(`Client ${clientId} reactivated by ${actorUserId}`);
+    return this.toClientDto(updated);
+  }
+
+  /**
+   * Revokes every Google connection reachable through any project of this
+   * client (§23). A connection is identified by the `GoogleProjectResource`
+   * mappings on the client's projects; each distinct `(userId, service)`
+   * connection is disconnected exactly once even if it is mapped to several
+   * of the client's projects. Best-effort per connection — one failure does
+   * not stop the rest, matching the Day-1 pipeline's own "a stage failing
+   * does not fail the whole run" convention.
+   *
+   * @returns `"<projectId>:<service>"` labels for everything actually revoked.
+   */
+  private async revokeGoogleAccessForClient(clientId: string): Promise<string[]> {
+    const projects = await this.prisma.project.findMany({ where: { clientId }, select: { id: true } });
+    if (projects.length === 0) return [];
+    const projectIds = projects.map((p) => p.id);
+
+    const mappings = await this.prisma.googleProjectResource.findMany({
+      where: { projectId: { in: projectIds } },
+      select: { projectId: true, service: true, connectionId: true },
+    });
+    if (mappings.length === 0) return [];
+
+    // Dedup by connectionId — the same operator/client Google account can be
+    // mapped to more than one of this client's projects, and disconnect()
+    // revokes the whole connection (all its project mappings + delegations
+    // cascade), so a second disconnect call on the same connection is
+    // redundant, not more thorough.
+    const byConnection = new Map<string, { userId: string; service: GoogleService; projectIds: string[] }>();
+    for (const m of mappings) {
+      const conn = await this.prisma.googleConnection.findUnique({ where: { id: m.connectionId }, select: { userId: true, service: true } });
+      if (!conn) continue;
+      const entry = byConnection.get(m.connectionId) ?? { userId: conn.userId, service: conn.service as GoogleService, projectIds: [] };
+      entry.projectIds.push(m.projectId);
+      byConnection.set(m.connectionId, entry);
+    }
+
+    const revoked: string[] = [];
+    for (const [connectionId, entry] of byConnection) {
+      try {
+        const impact = await this.googleDelegation.disconnect(entry.userId, entry.service);
+        if (impact) {
+          for (const p of entry.projectIds) revoked.push(`${p}:${entry.service}`);
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Suspend: failed to revoke Google connection ${connectionId} (${entry.service}) for client ${clientId}: ${(err as Error).message}`,
+        );
+      }
+    }
+    return revoked;
+  }
+
+  // ─── Ownership transfer (C5 — client-portal.md §32) ────────────────
+
+  /**
+   * Reassign which seat/contact is this client's primary contact
+   * (`Client.contactName`/`contactEmail`). Human-mediated admin action, not
+   * client self-service. Either names an existing `ClientMember` seat
+   * (`memberId`, whose `User` row's name/email become the new primary
+   * contact) or supplies raw `contactName`/`contactEmail` directly.
+   */
+  async transferOwnership(clientId: string, actorUserId: string, dto: TransferOwnershipDto): Promise<ClientDto> {
+    const client = await this.requireClient(clientId);
+
+    let newContactName: string | undefined;
+    let newContactEmail: string | undefined;
+    let sourceLabel: string;
+
+    if (dto.memberId) {
+      const member = await this.prisma.clientMember.findUnique({ where: { id: dto.memberId } });
+      if (!member || member.clientId !== clientId) {
+        throw new NotFoundException(`Seat ${dto.memberId} not found for client ${clientId}`);
+      }
+      const user = await this.prisma.user.findUnique({ where: { id: member.userId } });
+      if (!user) throw new NotFoundException(`User for seat ${dto.memberId} not found`);
+      newContactName = user.name;
+      newContactEmail = user.email;
+      sourceLabel = `seat ${member.id} (${user.email})`;
+    } else if (dto.contactName || dto.contactEmail) {
+      newContactName = dto.contactName;
+      newContactEmail = dto.contactEmail;
+      sourceLabel = 'manually supplied contact details';
+    } else {
+      throw new ConflictException('Provide either memberId or contactName/contactEmail to transfer ownership to.');
+    }
+
+    const previous = { contactName: client.contactName, contactEmail: client.contactEmail };
+    const updated = await this.prisma.client.update({
+      where: { id: clientId },
+      data: {
+        ...(newContactName !== undefined ? { contactName: newContactName } : {}),
+        ...(newContactEmail !== undefined ? { contactEmail: newContactEmail } : {}),
+      },
+    });
+
+    await this.activity.record({
+      actor: { type: 'user', id: actorUserId },
+      action: 'ownership-transferred',
+      resource: { type: 'client', id: clientId },
+      clientId,
+      summary: `Transferred primary contact to ${sourceLabel}${dto.reason ? `: ${dto.reason}` : ''}`,
+      changes: {
+        contactName: { before: previous.contactName, after: updated.contactName },
+        contactEmail: { before: previous.contactEmail, after: updated.contactEmail },
+      },
+      origin: 'api',
+      clientVisible: false,
+    });
+
+    this.logger.log(`Client ${clientId} primary contact reassigned by ${actorUserId} (${sourceLabel})`);
+    return this.toClientDto(updated);
   }
 
   // ─── Onboarding: "add client -> run the pipeline" ─────────────────

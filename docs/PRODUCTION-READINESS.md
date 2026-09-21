@@ -408,6 +408,9 @@ per-campaign `budgetUsd` conservatively, and keep the cost dashboard (§7) in vi
 | `PLUNK_API_KEY` | unset | optional | §3 |
 | `SCORECARD_PUBLIC` | unset | `1` if using public scorecards | §3 |
 | `REPORT_BRAND_NAME` / `_TAGLINE` | unset | optional white-label | §3 |
+| `STRIPE_WEBHOOK_SECRET` | unset | 🔑 **required** to accept real Stripe billing events (webhook is `503` without it — nothing is trusted or stored) | `billing` module; also gap-flagged in `backend/src/modules/billing/README.md` (`.env.example` needed updating even before C5) |
+| `BILLING_GRACE_PERIOD_DAYS` | unset (defaults 21) | tune, or leave default | C5/§30 — days a subscription may sit `past-due` before the hourly sweep auto-suspends its client (revokes Google tokens too, §23) |
+| `BILLING_GRACE_PERIOD_SWEEP_ENABLED` | unset (defaults true) | set `false` on any non-primary backend instance to avoid double-suspending | C5/§30 — same "one dispatcher" caution as `PUBLISHING_SCHEDULER_ENABLED` below |
 
 ### Frontend (`frontend/.env`)
 

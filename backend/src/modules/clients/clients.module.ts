@@ -41,6 +41,11 @@ import { DeliveryPlanModule } from '../delivery-plan/delivery-plan.module';
 // mechanism (actor, action, target, timestamp, redacted metadata, plus
 // admin-only read/export routes) — see clients.service.ts's import comment.
 import { ActivityModule } from '../activity/activity.module';
+// C5 (`docs/analysis/client-portal.md` §5/§23) — suspendClient() revokes
+// Google access for every project of the client via GoogleDelegationService's
+// own disconnect path (never re-implemented here). No circular dependency:
+// ClientAccessModule imports only GoogleModule.
+import { ClientAccessModule } from '../client-access/client-access.module';
 import { ClientsService } from './clients.service';
 import { ClientsOnboardingExecutors } from './clients.onboarding-executors';
 import { ClientsController } from './clients.controller';
@@ -66,6 +71,7 @@ import { ClientsController } from './clients.controller';
     GrowthExecutionModule,
     BacklinksModule,
     ActivityModule,
+    ClientAccessModule,
   ],
   controllers: [ClientsController],
   providers: [ClientsService, ClientsOnboardingExecutors],

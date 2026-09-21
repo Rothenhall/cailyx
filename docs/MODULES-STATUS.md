@@ -206,7 +206,7 @@ Order reconciles `PLAN.md` phases, PRD §16 build sequence, and the dependency g
 - [x] **`scorecard`** — Rung 0, PRD §13 + §17. Analysis resolved §17 as option B (`docs/analysis/wave-5.md` §2): engine + operator API now, public funnel behind `SCORECARD_PUBLIC=1` (a flag, not a rebuild). Built: fresh technical audit (probe failure → partial dimensions with reasons, never blocks the run) → versioned-rubric scoring → exactly **3 named problems** derived deterministically from the run's evidence (no LLM key required — the free funnel never blocks on a paid key) → `nonObvious` flag from probe-only evidence (blocked/render/`schema audit: fail`) → `ScorecardRun` with unguessable public share token. e2e: run 201 (score 33/invisible, 3 named problems), public 403 with flag off → 200 with flag on, bad token 404, list newest-first.
 - [x] **`delivery`** — PRD 6.11. Built per analysis choices: Plunk email (pre-approved; 503 `email-unconfigured` / `email-send-failed` guards, subject operator-editable, link-first — react-pdf PDF is frontend scope), internal Lead CRM (sources bulk/api/form/scorecard, `new → reached → booked | won/lost`) with **append-only** CTA event log (`book-call`/`review-ask`/`upgrade-click`) + CSV export for any external CRM (Attio/HubSpot = later), Stripe Checkout ledger (option A): links from `STRIPE_CHECKOUT_URL_*` env, click flips the lead's log, @Public completion = webhook stand-in (SDK + signature verification = documented next iteration). e2e: all guards + click/complete chain + lead event log verified.
 
-### Wave 7 — Client Portal & Admin Console revamp (2026-09-21, C1 + §11.0 cleanup + C3 done, C2/C4-C7 status per their own concurrent passes)
+### Wave 7 — Client Portal & Admin Console revamp (2026-09-21, C1 + §11.0 cleanup + C3 + C5 done, C2/C4/C6/C7 in progress or not started)
 
 Full decision record: `docs/analysis/client-portal.md` v1.3 (35 sections). Build order,
 dependencies, and the required-before-code note on the engagement/timeline model: `docs/PLAN.md`
@@ -293,6 +293,43 @@ separate track (admin/client platform layer, §1.2h) from the engine-pipeline wa
   JSON), `docs/analysis/engagement-timeline.md` (status line updated to reflect Option B shipped).
   No dedicated smoke script added for C3 (left as an honest gap in the README) — the live run above
   covers the same ground once, by hand.
+- [x] **C5 — client lifecycle (suspend/reactivate), payment-failure grace period, ownership
+  transfer, client seat permission gap.** §§5/23/27/30/32. Continued from a prior partial attempt
+  that had only added the `Client.status` doc-comment note and `Subscription.pastDueSince` +
+  index (both already on `main` — reused as-is, not redone).
+  - **Suspend/reactivate (§5/§23):** `POST /clients/:clientId/suspend` (admin-only) sets
+    `Client.status = "suspended"` and immediately revokes every Google connection reachable
+    through any of the client's projects (real revoke via `GoogleDelegationService.disconnect()`,
+    verified in Postgres that the `GoogleConnection` row was actually deleted, not just
+    status-flipped). `POST .../reactivate` flips status back without restoring Google access
+    (§23's accepted tradeoff). Both audit-logged via the existing `activity` module.
+  - **Payment-failure grace period (§30):** `StripeWebhookService` already handled
+    `invoice.payment_failed`; extended to stamp `Subscription.pastDueSince` once per grace window
+    (not bumped on retries) and to clear it on recovery. New `PaymentFailureSweepService`
+    (`billing` module, hourly `@Cron`, same pattern as `publishing`/`seo-audit`'s schedulers)
+    auto-suspends any client whose subscription has been past-due longer than
+    `BILLING_GRACE_PERIOD_DAYS` (default 21) — via the identical `ClientsService.suspendClient`
+    path an admin's manual suspend uses, so Google revocation and the audit trail both fire the
+    same way. e2e-verified against a real signed Stripe webhook sequence (checkout → payment-failed
+    → sweep → auto-suspend, with the audit event showing `actorType: "scheduler"`) — see
+    `clients/README.md`'s C5 testing notes for the full run.
+  - **Ownership transfer (§32):** `POST /clients/:clientId/transfer-ownership` (admin-only),
+    reassigns the primary contact from an existing seat or raw contact fields, audit-logged.
+  - **Client seat permissions (§27):** found that seat/invite management was already
+    client-admin-only (pre-existing `client-access` work); the one real gap was content-approval
+    decisions (`POST /api/portal/approvals/:id/decision`), now gated to `client-admin` seats only
+    (`ApprovalsModule` now imports `ClientAccessModule` to resolve the caller's seat role — no
+    changes to `approvals.service.ts` internals, per this phase's explicit scope limit). Verified
+    live: a `client-collaborator` seat gets a real `403` on the decision route, `200` on the read
+    routes.
+  - **Not done / deferred, honestly:** the public-facing gate messaging in `web/` for a suspended
+    client's portal experience was out of scope (backend-only phase; `web/` is a separate, actively
+    developed track per this session's memory note); per-tier competitor caps (§29) and public
+    report-link security (§31) remain unbuilt, unrelated to this phase's scope. `npx tsc --noEmit`
+    clean. Full write-up: `backend/src/modules/clients/README.md` (C5 section, PRD alignment,
+    testing notes), `backend/src/modules/billing/README.md` (C5 addendum),
+    `backend/src/modules/approvals/README.md` (C5 addendum), `docs/API.md` (new endpoint
+    reference).
 
 ### Standing item (not a module)
 

@@ -106,6 +106,7 @@ interface SubscriptionRow {
   currentPeriodEnd: Date | null;
   cancelAt: Date | null;
   canceledAt: Date | null;
+  pastDueSince: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -227,6 +228,7 @@ export class BillingService {
       currentPeriodEnd: row.currentPeriodEnd ? row.currentPeriodEnd.toISOString() : null,
       cancelAt: row.cancelAt ? row.cancelAt.toISOString() : null,
       canceledAt: row.canceledAt ? row.canceledAt.toISOString() : null,
+      pastDueSince: row.pastDueSince ? row.pastDueSince.toISOString() : null,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -594,6 +596,21 @@ export class BillingService {
   }
 
   /**
+   * C5 (`docs/analysis/client-portal.md` §30) — subscriptions still `past-due`
+   * whose grace period (`pastDueSince` + `graceDays`) has elapsed. Read by
+   * `PaymentFailureSweepService`; this method only reads, it never suspends
+   * anything itself (that stays `ClientsService.suspendClient`'s job).
+   */
+  async listPastDueBeyondGracePeriod(graceDays: number): Promise<SubscriptionView[]> {
+    const cutoff = new Date(Date.now() - graceDays * 24 * 60 * 60 * 1000);
+    const rows = await this.prisma.subscription.findMany({
+      where: { status: 'past-due', pastDueSince: { not: null, lte: cutoff } },
+      orderBy: { pastDueSince: 'asc' },
+    });
+    return rows.map((row) => this.toSubscriptionView(row));
+  }
+
+  /**
    * Create or update the local subscription row for a provider event.
    *
    * Keyed on `Subscription.providerId` (unique). `clientId` is required and
@@ -610,6 +627,17 @@ export class BillingService {
     currentPeriodEnd?: Date | null;
     cancelAt?: Date | null;
     canceledAt?: Date | null;
+    /**
+     * C5 (`docs/analysis/client-portal.md` §30) — when this subscription
+     * FIRST went past-due. Omit (`undefined`) to leave the column untouched
+     * (the common case: most status transitions have nothing to say about
+     * it); pass `null` to explicitly clear it (subscription seen
+     * active/paid again); pass a `Date` to set it. Callers, not this method,
+     * decide which — this method never infers it from `status` on its own,
+     * so "set once, not bumped on retries" stays a caller-level decision
+     * (`StripeWebhookService`) rather than being silently re-derived here.
+     */
+    pastDueSince?: Date | null;
   }): Promise<SubscriptionView> {
     const data = {
       clientId: input.clientId,
@@ -620,6 +648,7 @@ export class BillingService {
       currentPeriodEnd: input.currentPeriodEnd ?? null,
       cancelAt: input.cancelAt ?? null,
       canceledAt: input.canceledAt ?? null,
+      ...(input.pastDueSince !== undefined ? { pastDueSince: input.pastDueSince } : {}),
     };
 
     const row = await this.prisma.subscription.upsert({

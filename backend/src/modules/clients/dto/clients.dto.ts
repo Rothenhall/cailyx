@@ -56,9 +56,13 @@ export class UpdateClientDto {
   @IsEmail()
   contactEmail?: string;
 
-  @ApiPropertyOptional({ enum: ['active', 'paused', 'churned'] })
+  @ApiPropertyOptional({
+    enum: ['active', 'paused', 'churned', 'suspended'],
+    description:
+      '"suspended" is accepted here for backward compatibility, but is not how suspension is meant to be triggered — use POST /clients/:clientId/suspend instead, which also revokes Google access (§5/§23) and writes an audit event.',
+  })
   @IsOptional()
-  @IsIn(['active', 'paused', 'churned'])
+  @IsIn(['active', 'paused', 'churned', 'suspended'])
   status?: string;
 
   @ApiPropertyOptional()
@@ -137,6 +141,56 @@ export class WaiveOnboardingWizardDto {
   @ApiPropertyOptional({
     description: 'Free-text reason recorded on the audit event (e.g. "agency handoff pending, IT ticket open").',
   })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  reason?: string;
+}
+
+/** C5 (§5/§23/§30) — admin (or the payment-failure sweep) suspending a client. */
+export class SuspendClientDto {
+  @ApiPropertyOptional({
+    description: 'Free-text reason recorded on the audit event (e.g. "non-payment, grace period elapsed" or "client requested pause").',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  reason?: string;
+}
+
+/** C5 (§5/§23) — admin reactivating a suspended client. Does NOT restore Google access — the client reconnects from scratch. */
+export class ReactivateClientDto {
+  @ApiPropertyOptional({ description: 'Free-text reason recorded on the audit event.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  reason?: string;
+}
+
+/**
+ * C5 (§32) — reassign which seat/contact is this Client's primary contact.
+ * Either name an existing client seat (`memberId`, whose User row's
+ * name/email become the new primary contact) or supply raw
+ * `contactName`/`contactEmail` directly — exactly one path, never both.
+ */
+export class TransferOwnershipDto {
+  @ApiPropertyOptional({ description: "A ClientMember.id belonging to this client — that seat's user becomes the new primary contact." })
+  @IsOptional()
+  @IsString()
+  memberId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  contactName?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsEmail()
+  contactEmail?: string;
+
+  @ApiPropertyOptional({ description: 'Free-text reason recorded on the audit event (e.g. "previous contact left the company").' })
   @IsOptional()
   @IsString()
   @MaxLength(2000)

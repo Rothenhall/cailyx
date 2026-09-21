@@ -98,6 +98,8 @@ export interface SubscriptionView {
   currentPeriodEnd: string | null;
   cancelAt: string | null;
   canceledAt: string | null;
+  /** C5 (`docs/analysis/client-portal.md` §30) — when this subscription first went past-due, or null if it is not currently in a grace period. */
+  pastDueSince: string | null;
   createdAt: string;
   updatedAt: string;
 }

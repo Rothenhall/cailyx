@@ -28,6 +28,13 @@ export const ACTIVITY_ACTIONS = [
   // UI) can find every waive event directly, since §33 names the waive action
   // explicitly as one of the sensitive actions this shared log must cover.
   'waived',
+  // C5 (2026-09-21, docs/analysis/client-portal.md §5/§23/§30/§32) — client
+  // suspend/reactivate (admin action or the payment-failure grace-period
+  // sweep acting as the "system" actor) and primary-contact/ownership
+  // transfer. Distinct verbs so the audit trail can filter these directly.
+  'suspended',
+  'reactivated',
+  'ownership-transferred',
 ] as const;
 
 export class ListActivityQueryDto {

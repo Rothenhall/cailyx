@@ -18,6 +18,9 @@ import {
   CreateClientLoginDto,
   PostClientMessageDto,
   WaiveOnboardingWizardDto,
+  SuspendClientDto,
+  ReactivateClientDto,
+  TransferOwnershipDto,
 } from './dto/clients.dto';
 
 @ApiTags('Clients')
@@ -57,6 +60,55 @@ export class ClientsController {
   @ApiResponse({ status: 404, description: 'Client not found' })
   async update(@Param('clientId') clientId: string, @Body() body: UpdateClientDto) {
     return this.clients.updateClient(clientId, body);
+  }
+
+  @Post(':clientId/suspend')
+  @Roles('admin')
+  @ApiOperation({
+    summary: 'Suspend a client (admin only)',
+    description:
+      'C5 (docs/analysis/client-portal.md §5/§23/§30). Sets status to "suspended" and immediately revokes every Google connection reachable through any of this client\'s projects — a real revoke at Google, not just "stop calling". Writes an audit event (GET /api/activity, action "suspended"). Also used by the payment-failure grace-period sweep as the "system" actor.',
+  })
+  @ApiBody({ type: SuspendClientDto })
+  @ApiResponse({ status: 200, description: 'The suspended client plus which Google connections were revoked' })
+  @ApiResponse({ status: 403, description: 'Caller is not admin' })
+  @ApiResponse({ status: 404, description: 'Client not found' })
+  async suspend(@Param('clientId') clientId: string, @Body() body: SuspendClientDto, @Req() req: Request) {
+    const user = req.user as AuthedRequestUser;
+    return this.clients.suspendClient(clientId, { type: 'user', id: user.userId }, body.reason);
+  }
+
+  @Post(':clientId/reactivate')
+  @Roles('admin')
+  @ApiOperation({
+    summary: 'Reactivate a suspended client (admin only)',
+    description:
+      'C5 (docs/analysis/client-portal.md §5/§23). Sets status back to "active". Does NOT restore Google access — the client reconnects each project\'s GSC/GA4 from scratch (accepted tradeoff, §23). Writes an audit event (action "reactivated").',
+  })
+  @ApiBody({ type: ReactivateClientDto })
+  @ApiResponse({ status: 200, description: 'The reactivated client' })
+  @ApiResponse({ status: 403, description: 'Caller is not admin' })
+  @ApiResponse({ status: 404, description: 'Client not found' })
+  async reactivate(@Param('clientId') clientId: string, @Body() body: ReactivateClientDto, @Req() req: Request) {
+    const user = req.user as AuthedRequestUser;
+    return this.clients.reactivateClient(clientId, user.userId, body.reason);
+  }
+
+  @Post(':clientId/transfer-ownership')
+  @Roles('admin')
+  @ApiOperation({
+    summary: "Reassign this client's primary contact (admin only)",
+    description:
+      'C5 (docs/analysis/client-portal.md §32). Human-mediated admin action — either names an existing client seat (memberId, whose user becomes the new primary contact) or supplies contactName/contactEmail directly. Writes an audit event (action "ownership-transferred").',
+  })
+  @ApiBody({ type: TransferOwnershipDto })
+  @ApiResponse({ status: 200, description: 'The updated client' })
+  @ApiResponse({ status: 403, description: 'Caller is not admin' })
+  @ApiResponse({ status: 404, description: 'Client not found, or memberId does not belong to this client' })
+  @ApiResponse({ status: 409, description: 'Neither memberId nor contactName/contactEmail was supplied' })
+  async transferOwnership(@Param('clientId') clientId: string, @Body() body: TransferOwnershipDto, @Req() req: Request) {
+    const user = req.user as AuthedRequestUser;
+    return this.clients.transferOwnership(clientId, user.userId, body);
   }
 
   /**

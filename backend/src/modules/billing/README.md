@@ -21,6 +21,7 @@ billing/
   billing-portal.controller.ts   @ClientPortal() reads — subscriptions, entitlements, invoices, portal state
   billing.service.ts             the ledger: offers, grants, revocations, subscriptions, checkout status, capability
   stripe-webhook.service.ts      signature verification, replay guard, event dispatch
+  payment-failure-sweep.service.ts  C5 — hourly grace-period sweep, auto-suspend via ClientsService
   diagnostic-intake.service.ts   public intake: challenge, consent, receipt, scorecard CTA
   billing.types.ts               status vocabularies + view shapes
   lib/stripe-signature.util.ts   HMAC-SHA256 + timingSafeEqual + timestamp tolerance (pure)
@@ -299,3 +300,49 @@ exercised:
 Not verified here: anything requiring a real Stripe account (a genuine provider
 payload's byte-exact raw body, live API reads) and any check on a client-type
 JWT — the dev database still has no `type: "client"` user.
+
+## C5 addendum (2026-09-21) — payment-failure grace period → auto-suspend
+
+`docs/analysis/client-portal.md` §30. Extends `stripe-webhook.service.ts` and adds one new file;
+does not touch signature verification or the replay guard (both untouched, per the task scope).
+
+- **`StripeWebhookService.onInvoiceFailed`** (already existed, handling `invoice.payment_failed`)
+  now also stamps `Subscription.pastDueSince` — **once**, on the transition into past-due, never
+  bumped by a later retry of the same still-unresolved failure (Stripe's Smart Retries can fire
+  several `invoice.payment_failed` events for one grace window). `onSubscriptionUpserted` (already
+  handling `customer.subscription.created`/`updated`) now does the same when a status transition
+  lands on `past-due`, and additionally accepts the literal event type
+  `customer.subscription.past_due` — not an event Stripe actually sends (the real delivery is
+  `customer.subscription.updated` with `status: "past_due"`, already covered), but the task named
+  it explicitly, so it is routed through the identical path rather than left unhandled.
+  `onInvoicePaid`/a subscription seen `active`/`trialing` clears `pastDueSince` back to `null`.
+  `BillingService.upsertSubscriptionFromProvider` gained an optional `pastDueSince` parameter
+  (`undefined` = leave untouched, `null` = clear, a `Date` = set) — the caller decides, this method
+  never infers it from `status` on its own.
+- **New: `payment-failure-sweep.service.ts` (`PaymentFailureSweepService`)** — an in-process
+  `@Cron(CronExpression.EVERY_HOUR)` job, the same pattern `PublicationSchedulerService`
+  (`publishing`) and `SeoAuditSchedulerService` (`seo-audit`) already use (no Redis/BullMQ needed;
+  the schedule lives in the database via `pastDueSince`, so it survives a restart). Each tick reads
+  `BillingService.listPastDueBeyondGracePeriod(graceDays)` (new read method: `status: "past-due"`
+  AND `pastDueSince <= now - graceDays`) and suspends each subscription's `Client` via
+  `ClientsService.suspendClient(clientId, {type: 'scheduler', label: 'billing-grace-period-sweep'},
+  reason)` — the identical path an admin's manual `POST /clients/:clientId/suspend` uses, so
+  Google-token revocation (§23) and the audit trail (§33) both happen exactly the same way either
+  time. Already-suspended clients are skipped (idempotent). `runOnce()` is exposed separately from
+  the `@Cron` `tick()` so a script can trigger exactly one sweep pass on demand (used for
+  verification — see `clients/README.md`'s C5 testing notes for the full live run).
+- **New env vars**: `BILLING_GRACE_PERIOD_DAYS` (default 21 — Stripe's own Smart Retries window,
+  per §30, not a bespoke schedule) and `BILLING_GRACE_PERIOD_SWEEP_ENABLED` (default true, stands
+  the cron down for a second instance). Both added to `.env.example`.
+- **`BillingModule` now imports `ClientsModule`** for `ClientsService`. No circular dependency:
+  `ClientsModule` (and everything it in turn imports — `JobsModule`, `ActivityModule`,
+  `ClientAccessModule`, etc.) does not import `BillingModule`.
+- **`SubscriptionView`/`SubscriptionRow` gained `pastDueSince: string | null` / `Date | null`** —
+  now returned by every existing subscription read (`GET /api/billing/subscriptions`,
+  `GET /api/portal/billing/subscriptions`, etc.), no new endpoint needed for visibility.
+
+Verified live against a real signed webhook sequence (HMAC-SHA256, Stripe's documented header
+scheme, no SDK) — see `clients/README.md`'s C5 testing notes for the full run
+(checkout → payment-failed → grace-period sweep → auto-suspend → audit event with
+`actorType: "scheduler"`; a second retry confirmed `pastDueSince` does not get bumped; a recovered
+subscription confirmed `pastDueSince` clears on `invoice.paid`).

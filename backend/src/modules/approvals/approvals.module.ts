@@ -10,6 +10,11 @@
  */
 
 import { Module } from '@nestjs/common';
+// C5 (`docs/analysis/client-portal.md` §27) — ApprovalsPortalController.decide
+// resolves the caller's seat role via ClientAccessService before allowing a
+// decision. No circular dependency: ClientAccessModule imports only
+// GoogleModule.
+import { ClientAccessModule } from '../client-access/client-access.module';
 import {
   ApprovalCheckResultsController,
   ApprovalsPortalController,
@@ -18,6 +23,7 @@ import {
 import { ApprovalsService } from './approvals.service';
 
 @Module({
+  imports: [ClientAccessModule],
   controllers: [ProjectApprovalsController, ApprovalCheckResultsController, ApprovalsPortalController],
   providers: [ApprovalsService],
   exports: [ApprovalsService],

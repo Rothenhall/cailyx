@@ -376,6 +376,14 @@ export class StripeWebhookService {
         return this.onCheckoutCompleted(eventRowId, facts, base);
       case 'customer.subscription.created':
       case 'customer.subscription.updated':
+      // C5 (docs/analysis/client-portal.md §30). Stripe's real-world delivery
+      // for this transition is `customer.subscription.updated` with
+      // `status: "past_due"` (handled above via subscriptionStatus()) — this
+      // literal event name is not one Stripe actually sends, but the task
+      // names it explicitly, so it is accepted and routed through the exact
+      // same path rather than left unhandled if a caller (or a future Stripe
+      // API version) ever does send it.
+      case 'customer.subscription.past_due':
         return this.onSubscriptionUpserted(facts, base);
       case 'customer.subscription.deleted':
         return this.onSubscriptionDeleted(facts, base);
@@ -502,6 +510,11 @@ export class StripeWebhookService {
     }
 
     const status = this.subscriptionStatus(facts.subscriptionStatus) ?? existing?.status ?? 'incomplete';
+    // C5 (§30) — set pastDueSince once, on the transition INTO past-due
+    // (never bumped on a later retry of the same grace window); clear it the
+    // moment the subscription is seen in a non-past-due state again.
+    const pastDueSince =
+      status === 'past-due' ? (existing?.pastDueSince ?? new Date()) : status === 'active' || status === 'trialing' ? null : existing?.pastDueSince ?? null;
     const subscription = await this.billing.upsertSubscriptionFromProvider({
       providerId: facts.subscriptionId,
       clientId,
@@ -512,6 +525,7 @@ export class StripeWebhookService {
       currentPeriodEnd: unixSecondsToDate(facts.currentPeriodEnd),
       cancelAt: unixSecondsToDate(facts.cancelAt),
       canceledAt: unixSecondsToDate(facts.canceledAt),
+      pastDueSince,
     });
 
     // A subscription that reaches a terminal state ends access; a
@@ -567,6 +581,11 @@ export class StripeWebhookService {
       currentPeriodEnd: unixSecondsToDate(facts.currentPeriodEnd) ?? existing.currentPeriodEnd,
       cancelAt: unixSecondsToDate(facts.cancelAt) ?? existing.cancelAt,
       canceledAt: unixSecondsToDate(facts.canceledAt) ?? new Date(),
+      // C5 (§30) — a canceled subscription is no longer a grace-period
+      // candidate; the payment-failure sweep only ever queries status
+      // "past-due", but clearing this keeps the column meaning "currently in
+      // a live grace window" rather than "was ever past-due".
+      pastDueSince: null,
     });
 
     const revoked = await this.billing.revokeEntitlementsForSubscription(
@@ -615,6 +634,12 @@ export class StripeWebhookService {
       currentPeriodEnd: unixSecondsToDate(facts.currentPeriodEnd) ?? existing.currentPeriodEnd,
       cancelAt: unixSecondsToDate(facts.cancelAt) ?? existing.cancelAt,
       canceledAt: existing.canceledAt,
+      // C5 (§30) — payment resolved: clear the grace-period clock. If the
+      // client was already auto-suspended by the sweep, this does NOT
+      // reactivate them — reactivation is a separate, explicit admin action
+      // (`ClientsService.reactivateClient`), not an automatic side effect of
+      // a payment finally clearing.
+      pastDueSince: null,
     });
 
     return {
@@ -651,6 +676,12 @@ export class StripeWebhookService {
       currentPeriodEnd: existing.currentPeriodEnd,
       cancelAt: existing.cancelAt,
       canceledAt: existing.canceledAt,
+      // C5 (§30) — set ONCE, on the transition into past-due: a second
+      // `invoice.payment_failed` within the same still-unresolved grace
+      // window (Stripe retries several times before giving up) must not push
+      // the grace-period clock forward, or a client could stay perpetually
+      // one retry away from suspension.
+      pastDueSince: existing.pastDueSince ?? new Date(),
     });
 
     return {
@@ -658,7 +689,7 @@ export class StripeWebhookService {
       ...base,
       clientId: existing.clientId,
       subscriptionId: subscription.id,
-      note: 'Payment failed; subscription marked past-due. Access is NOT cut here — the grace policy is an operator decision.',
+      note: `Payment failed; subscription marked past-due (grace period started ${(existing.pastDueSince ?? new Date()).toISOString()}). Access is NOT cut here — a scheduled sweep auto-suspends after BILLING_GRACE_PERIOD_DAYS if still unresolved.`,
     };
   }
 
