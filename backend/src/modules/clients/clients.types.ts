@@ -5,7 +5,13 @@
  * @module clients.types
  */
 
-export type ClientStatus = 'active' | 'paused' | 'churned';
+/**
+ * C5 (`docs/analysis/client-portal.md` §5/§23/§30) adds `suspended` —
+ * written only by `ClientsService.suspendClient` (an explicit admin action,
+ * or the payment-failure grace-period sweep acting as the "system" actor),
+ * never by the generic `PATCH /clients/:clientId`.
+ */
+export type ClientStatus = 'active' | 'paused' | 'churned' | 'suspended';
 export type OnboardingStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 /**
@@ -98,6 +104,12 @@ export interface ClientMessageDto {
   authorType: 'operator' | 'client';
   body: string;
   createdAt: string;
+}
+
+/** C5 (§5/§23) — the result of a suspend/reactivate call: the client plus which Google connections were touched. */
+export interface ClientSuspensionResultDto extends ClientDto {
+  /** `"<projectId>:<service>"` pairs whose Google connection was revoked as part of this suspend. Empty on reactivate. */
+  googleConnectionsRevoked: string[];
 }
 
 export interface ClientLoginCreatedDto {
