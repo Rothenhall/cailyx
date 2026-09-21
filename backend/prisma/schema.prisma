@@ -1496,8 +1496,12 @@ model ContentRequest {
   /// low | normal | high
   priority          String   @default("normal")
   note              String?
-  /// The GrowthAsset created from this request — set once, at creation.
-  growthAssetId     String
+  /// The GrowthAsset created from this request. Nullable only for the brief
+  /// window between the two writes `ContentRequestsService.create` makes
+  /// (create request -> create asset -> link back) — same
+  /// create-then-link shape as `Opportunity.linkedGrowthAssetId`; never null
+  /// once `create` returns.
+  growthAssetId     String?
   createdAt         DateTime @default(now())
 
   @@index([projectId])

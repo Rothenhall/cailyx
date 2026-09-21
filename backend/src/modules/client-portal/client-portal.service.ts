@@ -18,6 +18,11 @@ import { PrismaService } from '../database/prisma.service';
 import { ReportLifecycleService } from '../reporting/report-lifecycle.service';
 import { ContentWorkspaceService } from '../content-workspace/content-workspace.service';
 import { WritingStyleService } from '../writing-style/writing-style.service';
+import { QuerySetService } from '../query-set/query-set.service';
+import { PromptRequestsService } from '../prompt-requests/prompt-requests.service';
+import { ContentRequestsService } from '../content-requests/content-requests.service';
+import type { CreatePromptRequestInput } from '../prompt-requests/prompt-requests.types';
+import type { CreateContentRequestInput } from '../content-requests/content-requests.types';
 import type { PortalProjectDto, PortalReportSummaryDto, PortalMessageDto } from './client-portal.types';
 
 @Injectable()
@@ -27,6 +32,9 @@ export class ClientPortalService {
     private readonly reportLifecycle: ReportLifecycleService,
     private readonly contentWorkspace: ContentWorkspaceService,
     private readonly writingStyle: WritingStyleService,
+    private readonly querySet: QuerySetService,
+    private readonly promptRequests: PromptRequestsService,
+    private readonly contentRequests: ContentRequestsService,
   ) {}
 
   /** Every client-project route re-checks ownership here — never trusts a client-supplied projectId. */
@@ -69,6 +77,56 @@ export class ClientPortalService {
   async getWritingStyle(clientId: string, projectId: string) {
     await this.assertOwnsProject(clientId, projectId);
     return this.writingStyle.getActive(projectId);
+  }
+
+  // ─── C4 §13/§20 — prompt visibility + add/delete request queue ──────
+
+  /**
+   * The real, active query set — read-only (§3, §13). Deliberately reuses
+   * `QuerySetService.list(projectId, 'active')` rather than a client-safe
+   * projection: unlike content, there is no draft/internal vocabulary to
+   * strip here — an active set IS the measured prompt list, and §13 is
+   * explicit that the client sees "the real list of active prompts... not a
+   * summary or count."
+   */
+  async listPrompts(clientId: string, projectId: string) {
+    await this.assertOwnsProject(clientId, projectId);
+    const sets = await this.querySet.list(projectId, 'active');
+    return { sets };
+  }
+
+  async listPromptRequests(clientId: string, projectId: string) {
+    await this.assertOwnsProject(clientId, projectId);
+    const requests = await this.promptRequests.listForClient(clientId, projectId);
+    return { requests };
+  }
+
+  async createPromptRequest(
+    clientId: string,
+    projectId: string,
+    userId: string,
+    input: Omit<CreatePromptRequestInput, 'projectId' | 'clientId' | 'requestedByUserId'>,
+  ) {
+    await this.assertOwnsProject(clientId, projectId);
+    return this.promptRequests.create({ ...input, projectId, clientId, requestedByUserId: userId });
+  }
+
+  // ─── C4 §14/§22 — structured "request new content" form ─────────────
+
+  async listContentRequests(clientId: string, projectId: string) {
+    await this.assertOwnsProject(clientId, projectId);
+    const requests = await this.contentRequests.listForClient(clientId, projectId);
+    return { requests };
+  }
+
+  async createContentRequest(
+    clientId: string,
+    projectId: string,
+    userId: string,
+    input: Omit<CreateContentRequestInput, 'projectId' | 'clientId' | 'requestedByUserId'>,
+  ) {
+    await this.assertOwnsProject(clientId, projectId);
+    return this.contentRequests.create({ ...input, projectId, clientId, requestedByUserId: userId });
   }
 
   async listProjects(clientId: string): Promise<{ projects: PortalProjectDto[] }> {

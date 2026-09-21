@@ -70,6 +70,8 @@ import { DeliveryPlanModule } from './modules/delivery-plan/delivery-plan.module
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { ContentModule } from './modules/content/content.module';
 import { ContentWorkspaceModule } from './modules/content-workspace/content-workspace.module';
+import { PromptRequestsModule } from './modules/prompt-requests/prompt-requests.module';
+import { ContentRequestsModule } from './modules/content-requests/content-requests.module';
 import { WritingStyleModule } from './modules/writing-style/writing-style.module';
 import { ContentGenerationModule } from './modules/content-generation/content-generation.module';
 import { ApprovalsModule } from './modules/approvals/approvals.module';
@@ -228,6 +230,8 @@ import { OrganizationModule } from './modules/organization/organization.module';
     NotificationsModule,     // G08
     ContentModule,           // G09
     ContentWorkspaceModule,  // P08 — canonical content workspace on top of G09/G10/G11
+    PromptRequestsModule,    // C4 — prompt add/delete request queue (client-portal.md §13/§20)
+    ContentRequestsModule,   // C4 — structured "request new content" form (client-portal.md §14/§22)
     WritingStyleModule,      // P09 — versioned writing style profile (§13.8)
     ContentGenerationModule, // P09 — durable, resumable content generation (§13.7)
     ApprovalsModule,         // G10

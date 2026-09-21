@@ -12,6 +12,9 @@ import { ReportingModule } from '../reporting/reporting.module';
 import { AuthModule } from '../auth/auth.module';
 import { ContentWorkspaceModule } from '../content-workspace/content-workspace.module';
 import { WritingStyleModule } from '../writing-style/writing-style.module';
+import { QuerySetModule } from '../query-set/query-set.module';
+import { PromptRequestsModule } from '../prompt-requests/prompt-requests.module';
+import { ContentRequestsModule } from '../content-requests/content-requests.module';
 import { ClientPortalService } from './client-portal.service';
 import { ClientPortalController } from './client-portal.controller';
 
@@ -21,7 +24,18 @@ import { ClientPortalController } from './client-portal.controller';
   // resolved every client session as anonymous. ContentWorkspaceModule (P08)
   // supplies the client-safe shared-revision read for `GET .../content*`.
   // WritingStyleModule (P09) supplies the read-only active-style route.
-  imports: [ReportingModule, AuthModule, ContentWorkspaceModule, WritingStyleModule],
+  // QuerySetModule (C4) supplies the read-only active-prompt list (§13).
+  // PromptRequestsModule/ContentRequestsModule (C4) supply the two request
+  // mechanisms (§13/§20, §14/§22).
+  imports: [
+    ReportingModule,
+    AuthModule,
+    ContentWorkspaceModule,
+    WritingStyleModule,
+    QuerySetModule,
+    PromptRequestsModule,
+    ContentRequestsModule,
+  ],
   controllers: [ClientPortalController],
   providers: [ClientPortalService],
   exports: [ClientPortalService],
