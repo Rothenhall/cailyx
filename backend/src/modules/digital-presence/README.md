@@ -396,6 +396,14 @@ on the `FREE` plan) and require `confirmSpend: true` on every call — configuri
 `APIFY_API_KEY` alone never causes a run. `GET /presence`'s `socialActivity[]`
 only reads rows a prior explicit run already stored.
 
+**Only `confirmed` accounts are scraped** (2026-09-22, discoverability-pipeline
+Brand-Voice Quality Rule #1). `socialActivity()` filters `state: 'confirmed'` —
+never `unverified` or `needs-confirmation`. Scraping an unverified account risks
+building a brand voice from a *different company's* posts, so this is a
+data-integrity gate. (The SERP-sweep "already held" set is a separate query and
+deliberately still counts any non-`candidate` account — that's dedup, not
+scraping.)
+
 ## Consumers
 
 - `frontend/src/app/v2/_components/DigitalPresence.tsx` — card above Audits

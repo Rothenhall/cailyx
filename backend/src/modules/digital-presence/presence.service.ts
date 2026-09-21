@@ -581,9 +581,17 @@ export class PresenceService {
 
     // Enrich the accounts this module already defines (digital-presence.md's
     // own framing) — never a fresh guess at a handle.
+    //
+    // Brand-voice Quality Rule #1 (discoverability-pipeline-plan.md): only
+    // scrape channels that cleared identity verification. `state: 'confirmed'`
+    // is the only verified state — `unverified` and `needs-confirmation` are
+    // NOT (and `candidate` never was). Scraping an unverified account risks
+    // building a "brand voice" from a different company's posts, so this is a
+    // data-integrity gate, not a convenience filter. The account states here
+    // are `candidate | unverified | needs-confirmation | confirmed`.
     const presencePlatforms = platforms.map((p) => APIFY_TO_PRESENCE_PLATFORM[p]);
     const accounts = await this.prisma.presenceAccount.findMany({
-      where: { projectId, platform: { in: presencePlatforms }, state: { not: 'candidate' }, entity: { not: 'personal' } },
+      where: { projectId, platform: { in: presencePlatforms }, state: 'confirmed', entity: { not: 'personal' } },
     });
     const accountByPlatform = new Map(accounts.map((a) => [a.platform, a]));
 

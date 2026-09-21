@@ -227,14 +227,25 @@ entirely.
   it's usable for real content.
 
 ### Steps
-1. **Fix the verification-status filter first** — smallest, highest-integrity-risk fix
-   in this whole plan. Change `socialActivity()`'s query to `state: 'confirmed'` only
-   (matching this module's own `state` semantics: `confirmed | unverified | missing`),
-   or `{ in: ['confirmed'] }` if a `probable` status exists elsewhere in the presence
-   verification flow (the doc's own text allows `verified` OR `probable` — check
-   `presence.discovery.service.ts`'s exact status vocabulary before choosing the filter,
-   since this module's states don't obviously map 1:1 onto the spec's `verified/probable/
-   possible/rejected` four-way split).
+1. **Fix the verification-status filter first** — ✅ **DONE 2026-09-22.** Changed
+   `socialActivity()`'s query (`presence.service.ts` ~line 586) from
+   `state: { not: 'candidate' }` to `state: 'confirmed'`. Verified the actual state
+   vocabulary before choosing the filter: these accounts are
+   `candidate | unverified | needs-confirmation | confirmed` (no `probable`/`verified`
+   alias exists here), so `confirmed` is the only cleared-verification state and a plain
+   equality is correct (not `{ in: [...] }`). Left the sibling `state: { not: 'candidate' }`
+   query at ~line 216 untouched — it's a SERP-sweep dedup set (which platforms are already
+   held), where counting a found-but-unverified account is correct, not a second scrape bug.
+   **Verified live against the prod DB** (Docker unavailable this session; service/DB-level
+   test, not the shell smoke suite — see note): seeded a labelled test project with all four
+   account states, confirmed the fixed query returns only the 1 `confirmed` account while the
+   old filter returned 3 (confirmed + unverified + needs-confirmation). `npx tsc --noEmit`
+   clean. Cleaned up the test project.
+   > **Verification-method note:** the shell smoke suites (`digital-presence.smoke.sh`, etc.)
+   > log in as the dev fixture admin `smoke@cailyx.test`, which does **not** exist on the
+   > prod DB (and creating a test admin in prod was declined). So this plan's steps are
+   > verified with targeted service/DB-level tests against prod + `tsc`, not the shell smoke
+   > suites, for as long as verification runs against prod rather than a local Postgres.
 2. **Add the deterministic statistical layer** — pure computation over already-stored
    `PresencePost.caption` text (sentence/word counts, regex-based emoji/hashtag/
    exclamation/question counting, simple person-pronoun regex, n-gram frequency for
@@ -262,8 +273,8 @@ layer + prompt update. 4–5 are a genuine schema/workflow addition.
 
 Per AGENTS.md's "one module at a time," in priority order:
 
-1. **Brand-voice verification-status fix** (small, fixes a real correctness bug, ship
-   independently of everything else here).
+1. **Brand-voice verification-status fix** — ✅ **DONE 2026-09-22** (see Brand Voice step 1).
+   `socialActivity()` now scrapes only `confirmed` accounts. Verified live vs prod DB, tsc clean.
 2. **Stage 3 fix #1** (`objection-trust` branding split) — small, independent, ships fast.
 3. **Stage 2** (competitor discovery query patterns) — needed before Stage 4 scoring can
    use `evidenceKind` diversity meaningfully, and before Stage 3's branded buckets have

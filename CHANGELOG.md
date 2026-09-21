@@ -9,6 +9,30 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-22 — Discoverability pipeline: brand-voice verification-status fix (Step 1)
+
+Full plan: `docs/analysis/discoverability-pipeline-plan.md` (Recommended build order,
+step 1). First and most independent fix of the discoverability-pipeline second half.
+
+`digital-presence`'s `socialActivity()` (the paid Apify scrape trigger) filtered
+accounts with `state: { not: 'candidate' }`, which scraped `unverified` and
+`needs-confirmation` accounts too — not just verified ones. Per the workflow spec's
+Brand-Voice Quality Rule #1 ("only scrape channels that cleared identity
+verification"), scraping an unverified account risks building a brand voice from a
+different company's posts. Changed the query to `state: 'confirmed'` (the only
+cleared-verification state — the vocabulary here is `candidate | unverified |
+needs-confirmation | confirmed`; no `probable`/`verified` alias). Left the sibling
+SERP-sweep "already held" query (`state: { not: 'candidate' }`) untouched — that's a
+dedup set of found platforms, where counting an unverified find is correct.
+
+No schema change, no new dependency. `npx tsc --noEmit` clean. Verified live against
+the prod DB (Docker was unavailable locally this session, so verification ran against
+Supabase prod with the user's approval, service/DB-level not the shell smoke suites —
+`smoke@cailyx.test` doesn't exist on prod and a test admin wasn't created there):
+seeded a labelled test project with all four account states, confirmed the fixed query
+returns only the 1 `confirmed` account vs the old filter's 3. Test data cleaned up.
+`backend/src/modules/digital-presence/README.md` updated.
+
 ## 2026-09-22 — Site Context Pipeline v2 Phase 1: JSON-LD, fact types/confidence, category consolidation, identity resolution
 
 Full decision record: `docs/analysis/site-context-v2.md`. Reworks
