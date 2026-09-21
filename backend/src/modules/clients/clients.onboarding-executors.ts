@@ -71,6 +71,9 @@ import { GrowthExecutionService } from '../growth-execution/growth-execution.ser
 import { EntityAuditService } from '../entity-audit/entity-audit.service';
 import { BacklinksService } from '../backlinks/backlinks.service';
 import { FindingsService } from '../findings/findings.service';
+// C2 (`docs/analysis/client-portal.md` §2/§18) — reportStage() calls the same
+// portal-ready-email hook the legacy pipeline uses, rather than duplicating it.
+import { ClientsService } from './clients.service';
 
 /**
  * Bounded wait for a queued stage, matching the legacy pipeline's own budget.
@@ -117,6 +120,7 @@ export class ClientsOnboardingExecutors implements OnModuleInit {
     private readonly entityAudit: EntityAuditService,
     private readonly backlinksService: BacklinksService,
     private readonly findingsService: FindingsService,
+    private readonly clientsService: ClientsService,
   ) {}
 
   /**
@@ -446,12 +450,23 @@ export class ClientsOnboardingExecutors implements OnModuleInit {
         where: { id: ctx.projectId },
         data: { onboardingStatus: 'completed', onboardingStep: null, onboardingError: null },
       });
+      // C2 §2/§18 — same best-effort portal-ready-email hook the legacy
+      // pipeline fires on completion, never thrown back into the run.
+      await this.clientsService.sendPortalReadyEmail(ctx.projectId).catch((err) => {
+        this.logger.warn(`Durable Day-1 run: portal-ready email step crashed for ${ctx.projectId}: ${(err as Error).message}`);
+      });
       return { attempted: 1, succeeded: 1, artifacts: { reportId: report.id, reportSlug: report.slug } };
     } catch (err) {
       const message = (err as Error).message;
       await this.prisma.project.update({
         where: { id: ctx.projectId },
         data: { onboardingStatus: 'failed', onboardingStep: 'report', onboardingError: message },
+      });
+      // §18: a failed report stage still fires the portal-ready email — the
+      // client is not permanently locked out of a portal they are paying for
+      // just because the Day-1 deliverable itself degraded.
+      await this.clientsService.sendPortalReadyEmail(ctx.projectId).catch((emailErr) => {
+        this.logger.warn(`Durable Day-1 run: portal-ready email step crashed for ${ctx.projectId}: ${(emailErr as Error).message}`);
       });
       throw err;
     }

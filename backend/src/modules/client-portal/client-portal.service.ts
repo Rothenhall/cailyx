@@ -13,12 +13,14 @@
  * @module client-portal.service
  */
 
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { ReportLifecycleService } from '../reporting/report-lifecycle.service';
 import { ContentWorkspaceService } from '../content-workspace/content-workspace.service';
 import { WritingStyleService } from '../writing-style/writing-style.service';
 import type { PortalProjectDto, PortalReportSummaryDto, PortalMessageDto } from './client-portal.types';
+// Type-only — erased at compile time, no module/DI coupling to `clients`.
+import type { OnboardingWizardState } from '../clients/clients.types';
 
 @Injectable()
 export class ClientPortalService {
@@ -35,6 +37,119 @@ export class ClientPortalService {
     if (!project || project.clientId !== clientId) {
       throw new ForbiddenException('That project does not belong to this client');
     }
+  }
+
+  // ─── C2 onboarding wizard (docs/analysis/client-portal.md §2/§11/§16/§17,
+  // corrected order — the report and the rest of the portal are reachable
+  // right after details are confirmed; GSC/GA4 connect is prompted AFTER,
+  // not before. See `../../../web/src/app/(client)/client/projects/[projectId]/layout.tsx`
+  // for the gate that reads this state; it blocks only `not-started`/
+  // `confirming-details`, never `connecting-gsc`/`connecting-ga4`.) ────────
+  //
+  // State lives on `Project.onboardingWizardState` (C1's column,
+  // `not-started | confirming-details | connecting-gsc | connecting-ga4 |
+  // done | waived`) and is checked here for every transition, never on the
+  // client — a client calling these out of order gets 409, not a state jump.
+  // Deliberately scoped to `projectId`, never the caller's own userId (§17):
+  // a colleague accepting a seat invite on an already-onboarded project reads
+  // `done`/`waived` immediately, same as the person who actually did the
+  // connecting.
+
+  /** Read the current wizard gate state for one of this client's projects. */
+  async getOnboardingWizardState(clientId: string, projectId: string): Promise<{ projectId: string; state: OnboardingWizardState }> {
+    await this.assertOwnsProject(clientId, projectId);
+    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { onboardingWizardState: true } });
+    return { projectId, state: project.onboardingWizardState as OnboardingWizardState };
+  }
+
+  /**
+   * Step (a): confirm/edit details. Does not itself write business-profile
+   * fields — the client edits those through the existing
+   * `PUT`/`POST .../business-profile[/confirm]` endpoints (§12, reused
+   * as-is) — this only advances the gate once a confirmed profile exists, so
+   * "confirming details" cannot be skipped by simply calling this route.
+   *
+   * The transition target is `connecting-gsc` (unchanged from C1's state
+   * machine), but — this is the corrected part — the project-level gate no
+   * longer blocks on that state, so the client can see their Day-1 report
+   * and use the rest of the portal immediately after this call returns.
+   */
+  async confirmDetailsStep(clientId: string, projectId: string): Promise<{ projectId: string; state: OnboardingWizardState }> {
+    await this.assertOwnsProject(clientId, projectId);
+    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { onboardingWizardState: true } });
+    const state = project.onboardingWizardState as OnboardingWizardState;
+
+    if (state === 'done' || state === 'waived') {
+      throw new ConflictException(`Onboarding is already ${state} for this project — there is nothing to confirm.`);
+    }
+    if (state !== 'not-started' && state !== 'confirming-details') {
+      throw new ConflictException(`Cannot confirm details from state "${state}" — that step has already been passed.`);
+    }
+
+    const confirmedProfile = await this.prisma.businessProfile.findFirst({
+      where: { projectId, confirmedAt: { not: null } },
+      orderBy: { version: 'desc' },
+    });
+    if (!confirmedProfile) {
+      throw new ConflictException(
+        'No confirmed business profile on file yet. Review and confirm your details (POST .../business-profile/confirm) before continuing.',
+      );
+    }
+
+    const updated = await this.prisma.project.update({
+      where: { id: projectId },
+      data: { onboardingWizardState: 'connecting-gsc' satisfies OnboardingWizardState },
+    });
+    return { projectId, state: updated.onboardingWizardState as OnboardingWizardState };
+  }
+
+  /** Step (b): mark Google Search Console connected, gated on a real, live project-mapped connection actually existing. */
+  async connectGscDoneStep(clientId: string, projectId: string): Promise<{ projectId: string; state: OnboardingWizardState }> {
+    return this.advanceGoogleStep(clientId, projectId, 'connecting-gsc', 'search-console', 'connecting-ga4', 'Google Search Console');
+  }
+
+  /** Step (c): mark Google Analytics 4 connected, gated the same way; the terminal transition into `done`. */
+  async connectGa4DoneStep(clientId: string, projectId: string): Promise<{ projectId: string; state: OnboardingWizardState }> {
+    return this.advanceGoogleStep(clientId, projectId, 'connecting-ga4', 'analytics', 'done', 'Google Analytics');
+  }
+
+  private async advanceGoogleStep(
+    clientId: string,
+    projectId: string,
+    requiredState: OnboardingWizardState,
+    service: 'search-console' | 'analytics',
+    nextState: OnboardingWizardState,
+    serviceLabel: string,
+  ): Promise<{ projectId: string; state: OnboardingWizardState }> {
+    await this.assertOwnsProject(clientId, projectId);
+    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { onboardingWizardState: true } });
+    const state = project.onboardingWizardState as OnboardingWizardState;
+
+    if (state === 'done' || state === 'waived') {
+      throw new ConflictException(`Onboarding is already ${state} for this project.`);
+    }
+    if (state !== requiredState) {
+      throw new ConflictException(`Cannot connect ${serviceLabel} from state "${state}" — expected "${requiredState}".`);
+    }
+
+    // A live, project-mapped resource must actually exist — not merely "the
+    // client clicked next". Reuses the same `GoogleProjectResource` row the
+    // existing connections UI reads/writes; no new OAuth mechanics here, just
+    // the gating check.
+    const mapped = await this.prisma.googleProjectResource.findUnique({
+      where: { projectId_service: { projectId, service } },
+    });
+    if (!mapped) {
+      throw new ConflictException(
+        `${serviceLabel} is not connected yet for this project. Complete the OAuth connection (POST .../integrations/google/authorize, then map a resource) before continuing.`,
+      );
+    }
+
+    const updated = await this.prisma.project.update({
+      where: { id: projectId },
+      data: { onboardingWizardState: nextState satisfies OnboardingWizardState },
+    });
+    return { projectId, state: updated.onboardingWizardState as OnboardingWizardState };
   }
 
   /**

@@ -96,6 +96,8 @@ export interface BusinessProfileData {
   brandName: string | null;
   legalName: string | null;
   description: string | null;
+  /** C2 (`docs/analysis/client-portal.md` §12) — business category / type, e.g. "SaaS", "local plumbing services". Distinct from `Project.category`. */
+  category: string | null;
   services: string[];
   icp: IcpShape;
   /** Legacy flat market list — kept for backward-compat readers. Superseded by `targets` for anything that needs real granularity/provider support (P04). */
@@ -194,6 +196,7 @@ export const BUSINESS_INFO_FIELDS = [
   'brandName',
   'legalName',
   'description',
+  'category',
   'services',
   'icp.segments',
   'icp.roles',

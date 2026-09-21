@@ -1542,6 +1542,99 @@ shape changed.
 
 ---
 
+## Client Portal & Admin Console — Phase C2 (onboarding wizard, corrected order, added 2026-09-21)
+
+> Full decision record: `docs/analysis/client-portal.md` §§2/11/12/17/18. Build order:
+> `docs/PLAN.md` §11.2. See `backend/src/modules/client-portal/README.md`,
+> `backend/src/modules/clients/README.md`, `backend/src/modules/client-access/README.md`
+> and `backend/src/modules/business-profile/README.md` for the full write-up.
+>
+> **This corrects the report-vs-Google-connect ordering from two earlier attempts** at C2
+> (one preserved, uncommitted, on branch `worktree-agent-aeb71c76ff99ed6d7`), which made
+> GSC+GA4 connection a hard gate blocking the Day-1 report and the whole portal. The real,
+> reviewed order (per `client-onbaording.excalidraw`): confirm details → the report and rest
+> of the portal are already reachable → connect GSC → connect GA4 → done.
+> `Project.onboardingWizardState`'s enum values (C1) are unchanged — only what each state
+> blocks changed, in the web client's gate.
+
+### Client Portal Module — onboarding-wizard endpoints (new)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/portal/projects/:projectId/onboarding-wizard` | Read the wizard gate state for this project |
+| `POST` | `/api/portal/projects/:projectId/onboarding-wizard/confirm-details` | Step (a): advance past confirm/edit details |
+| `POST` | `/api/portal/projects/:projectId/onboarding-wizard/connect-gsc-done` | Step (b): advance past connecting Google Search Console |
+| `POST` | `/api/portal/projects/:projectId/onboarding-wizard/connect-ga4-done` | Step (c): advance past connecting Google Analytics 4 — terminal, into `done` |
+
+All four are `@ClientPortal()` — client-type login only, scoped to the caller's own `clientId`
+off the JWT; `projectId` ownership is re-checked on every call (`assertOwnsProject`). The state
+machine is unchanged from C1: `not-started | confirming-details | connecting-gsc |
+connecting-ga4 | done | waived`.
+
+**`GET .../onboarding-wizard`**
+```
+GET /api/portal/projects/cmub.../onboarding-wizard
+→ 200 { "projectId": "cmub769n4001jaxnhd91qkjut", "state": "not-started" }
+```
+
+**`POST .../onboarding-wizard/confirm-details`** — 409 unless a CONFIRMED business-profile
+version already exists for the project (`POST .../business-profile/confirm`, reused as-is).
+Advances to `"connecting-gsc"`. From this point on, the report and the rest of the portal are
+reachable — this is the corrected part; nothing in the backend ever gated `/api/portal/reports`
+on wizard state, and the web gate now matches that.
+```
+POST /api/portal/projects/cmub.../onboarding-wizard/confirm-details
+→ 200 { "projectId": "cmub769n4001jaxnhd91qkjut", "state": "connecting-gsc" }
+```
+
+**`POST .../onboarding-wizard/connect-gsc-done`** / **`.../connect-ga4-done`** — 409 unless a
+live, project-mapped `GoogleProjectResource` row for that service already exists (the same row
+`connections/page.tsx`'s OAuth authorize/callback flow writes — no new OAuth mechanics here,
+only the gating check). `connect-ga4-done` is the terminal transition, into `"done"`.
+```
+POST /api/portal/projects/cmub.../onboarding-wizard/connect-gsc-done   (no mapping yet)
+→ 409 { "statusCode": 409, "error": "Conflict",
+        "message": "Google Search Console is not connected yet for this project. Complete the OAuth connection (POST .../integrations/google/authorize, then map a resource) before continuing." }
+
+POST /api/portal/projects/cmub.../onboarding-wizard/connect-gsc-done   (mapping exists)
+→ 200 { "projectId": "cmub769n4001jaxnhd91qkjut", "state": "connecting-ga4" }
+```
+
+### Client Access Module — `createSystemInvite()` (service-only, no new HTTP endpoint)
+
+`ClientAccessService.createSystemInvite(clientId, email, projectIds, createdBySystemLabel)` —
+called directly by `clients`' Day-1-pipeline-completion hook, never over HTTP. Same
+invite-link mechanics as `POST /api/clients/:clientId/invites`, with a system `createdBy`
+label instead of an operator id, and `{ alreadyHasLogin: true }` instead of throwing when the
+recipient already has a login.
+
+### Clients Module — auto-email on Day-1 pipeline completion
+
+No new endpoint. When the Day-1 pipeline (`POST /clients/:clientId/projects`'s background run,
+either the legacy or the durable G07/A7 path) reaches its report stage — success OR
+honest-partial failure — `ClientsService.sendPortalReadyEmail(projectId)` fires automatically:
+creates an invite via `createSystemInvite()` above, then sends a Plunk email ("your Cailyx
+portal is ready, click here to log in" — no PDF, no report attachment). Best-effort: a missing
+contact email, an existing login, or an unconfigured `PLUNK_SECRET_KEY` are logged, never
+surfaced as an API error.
+
+### Business Profile Module — new `category` field
+
+`GET/PUT /api/projects/:projectId/business-profile` and its portal equivalent
+(`GET/PUT /api/portal/projects/:projectId/business-profile`) now read/write `category` (business
+category/type, e.g. `"SaaS"`) alongside the existing `brandName`/`legalName`/`description`
+fields — no new endpoint, the field was simply missing from the existing merge-patch/confirm
+shapes. Also appears in `GET .../business-profile/overview`'s `about` section (confirmed /
+suggested / gap), suggested from `SiteContext.category` (already extracted, previously unused
+for this purpose).
+```
+PUT /api/projects/cmub.../business-profile
+{ "category": "SaaS" }
+→ 200 { "profile": { ..., "data": { ..., "category": "SaaS", ... } }, "warnings": [] }
+```
+
+---
+
 ## Planned Modules (not yet built)
 
 | Module | Type | Endpoints |

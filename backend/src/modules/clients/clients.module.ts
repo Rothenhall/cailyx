@@ -45,6 +45,9 @@ import { ActivityModule } from '../activity/activity.module';
 // Google access for every project of the client via GoogleDelegationService's
 // own disconnect path (never re-implemented here). No circular dependency:
 // ClientAccessModule imports only GoogleModule.
+// C2 (`docs/analysis/client-portal.md` §2/§18) — the auto-email-on-Day-1-
+// completion hook calls ClientAccessService.createSystemInvite() directly,
+// not the HTTP endpoint.
 import { ClientAccessModule } from '../client-access/client-access.module';
 import { ClientsService } from './clients.service';
 import { ClientsOnboardingExecutors } from './clients.onboarding-executors';

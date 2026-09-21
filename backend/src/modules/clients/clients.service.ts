@@ -49,6 +49,7 @@ import { ActivityService } from '../activity/activity.service';
 // revocation here.
 import { GoogleDelegationService } from '../client-access/google-delegation.service';
 import type { GoogleService } from '../google/google.types';
+import { ClientAccessService } from '../client-access/client-access.service';
 import type { UserType } from '../auth/auth.types';
 import type {
   ClientDto,
@@ -117,6 +118,14 @@ export class ClientsService {
      * the client's projects. Never re-implements OAuth revocation here.
      */
     private readonly googleDelegation: GoogleDelegationService,
+    /**
+     * C2 (`docs/analysis/client-portal.md` §2/§18) — the auto-email-on-Day-1-
+     * completion flow creates the primary contact's invite link via
+     * `createSystemInvite()` (a service call, never the HTTP endpoint),
+     * mirroring the canonical invite-link flow rather than the deprecated
+     * temp-password login.
+     */
+    private readonly clientAccess: ClientAccessService,
   ) {}
 
   // ─── Client CRUD ───────────────────────────────────────────────────
@@ -668,6 +677,93 @@ export class ClientsService {
       const message = (err as Error).message;
       await this.prisma.project.update({ where: { id: projectId }, data: { onboardingStatus: 'failed', onboardingStep: 'report', onboardingError: message } });
       this.logger.error(`Day-1 pipeline failed for ${projectId} at report generation: ${message}`);
+    }
+
+    // C2 (`docs/analysis/client-portal.md` §2/§18) — "the Day-1 pipeline
+    // finishes" fires the portal-ready email whether the run above completed
+    // cleanly or degraded/failed at the report stage. Every EARLIER stage in
+    // this pipeline already degrades gracefully and keeps going (this file's
+    // module doc, the rule the whole pipeline follows) — only report
+    // generation itself is fatal, and even then the client still needs to be
+    // able to log in and reach the (project-gated) onboarding wizard rather
+    // than being permanently unable to reach their account. Never allowed to
+    // throw back into the pipeline.
+    await this.sendPortalReadyEmail(projectId).catch((err) => {
+      this.logger.warn(`Day-1 pipeline: portal-ready email step crashed for ${projectId}: ${(err as Error).message}`);
+    });
+  }
+
+  /**
+   * C2 — on Day-1 pipeline completion (success OR honest-partial), creates an
+   * invite link for the project's primary contact (`Client.contactEmail`) via
+   * `ClientAccessService.createSystemInvite` — the canonical invite-link flow,
+   * never the deprecated temp-password path — and emails "your Cailyx portal
+   * is ready, click here to log in" via Plunk. Explicitly NOT a PDF and NOT
+   * the report as an attachment — just the login link (§2). Best-effort:
+   * a missing contact email, an existing login, or an unconfigured mailer are
+   * all logged, never thrown back into the pipeline.
+   *
+   * Public (not private) so `ClientsOnboardingExecutors.reportStage` — the
+   * durable-run twin of this legacy pipeline's report stage (G07/A7) — can
+   * call the exact same hook rather than duplicating it, on both the
+   * success and failed-but-still-let-them-in paths.
+   */
+  async sendPortalReadyEmail(projectId: string): Promise<void> {
+    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { id: true, clientId: true } });
+    if (!project?.clientId) return; // exploratory/pre-client project — no portal to notify anyone about
+
+    const client = await this.prisma.client.findUnique({ where: { id: project.clientId }, select: { contactEmail: true } });
+    if (!client?.contactEmail) {
+      this.logger.warn(`Day-1 pipeline: client ${project.clientId} has no primary contact email on file — portal-ready email not sent.`);
+      return;
+    }
+
+    let loginUrl: string;
+    try {
+      const result = await this.clientAccess.createSystemInvite(project.clientId, client.contactEmail, [project.id], `system:day1-pipeline:${projectId}`);
+      if ('alreadyHasLogin' in result) {
+        const origin = this.config.get<string>('CLIENT_PORTAL_ORIGIN') ?? this.config.get<string>('CORS_ORIGIN') ?? 'http://localhost:3000';
+        loginUrl = `${origin.split(',')[0].trim()}/login`;
+      } else {
+        loginUrl = result.acceptUrl;
+      }
+    } catch (err) {
+      this.logger.warn(`Day-1 pipeline: could not create invite link for ${client.contactEmail} (client ${project.clientId}): ${(err as Error).message}`);
+      return;
+    }
+
+    const { sent, error } = await this.sendPortalReadyPlunkEmail(client.contactEmail, loginUrl);
+    if (!sent) {
+      this.logger.warn(`Day-1 pipeline: portal-ready email to ${client.contactEmail} not sent: ${error}`);
+    } else {
+      this.logger.log(`Day-1 pipeline: portal-ready email sent to ${client.contactEmail} for project ${projectId}`);
+    }
+  }
+
+  /**
+   * C2 — the literal "your Cailyx portal is ready, click here to log in"
+   * email (§2). Reuses the same Plunk mailer `ClientAccessService` already
+   * uses for invite emails, rather than adding a second email provider —
+   * deliberately not that class's invite-copy method, because this email's
+   * copy is different (portal-ready, not "you're invited").
+   */
+  private async sendPortalReadyPlunkEmail(to: string, loginUrl: string): Promise<{ sent: boolean; error: string | null }> {
+    const apiKey = this.config.get<string>('PLUNK_SECRET_KEY');
+    if (!apiKey) return { sent: false, error: 'PLUNK_SECRET_KEY not configured' };
+    try {
+      const res = await fetch('https://api.useplunk.com/v1/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          to,
+          subject: 'Your Cailyx portal is ready',
+          body: `<p>Your Cailyx client portal is ready.</p><p><a href="${loginUrl}">Click here to log in</a></p>`,
+        }),
+      });
+      if (!res.ok) return { sent: false, error: `Plunk returned ${res.status}` };
+      return { sent: true, error: null };
+    } catch (err) {
+      return { sent: false, error: (err as Error).message };
     }
   }
 
