@@ -1542,6 +1542,84 @@ shape changed.
 
 ---
 
+## Client Portal & Admin Console — Phase C6 (governance, cost control & security, added 2026-09-21)
+
+> Full decision record: `docs/analysis/client-portal.md` §§28/29/31. Build order:
+> `docs/PLAN.md` §11.6. See `backend/src/modules/business-profile/README.md` (§29) and
+> `backend/src/modules/reporting/README.md` (§31) for the full write-up — this section is the
+> endpoint reference only.
+
+### §29 — Competitor cap (business-profile)
+
+No new endpoint. The existing client draft-save now enforces a per-plan-tier cap on the number of
+competitors a client can directly add:
+
+| Method | Path | Roles | Description |
+|---|---|---|---|
+| `PUT` | `/api/portal/projects/:projectId/business-profile` | `@ClientPortal()` | Save a draft. **New:** a save that would push the competitor count above the owning client's plan-tier cap returns `422`. |
+
+Per-tier caps (proposed as part of this work — `client-portal.md` §29 left the numbers open;
+retunable from `backend/src/modules/business-profile/lib/competitor-cap.util.ts`):
+`starter` 5 · `growth` 15 · `scale` 50 · `enterprise` unlimited. A project not yet attached to a
+client is treated as `starter`. The cap blocks **only a save that increases** the count — a client
+already over the cap can still remove competitors or edit other fields.
+
+The `422` body is machine-readable so the portal renders it as an upsell, not a validation error:
+
+```
+PUT /api/portal/projects/abc123/business-profile
+{ "competitors": [ {"name":"A"}, {"name":"B"}, {"name":"C"}, {"name":"D"}, {"name":"E"}, {"name":"F"} ] }
+→ 422 {
+    "error": "competitor-cap-exceeded",
+    "message": "The starter plan allows up to 5 tracked competitors. Remove one, or upgrade the plan to track more.",
+    "planTier": "starter",
+    "competitorCap": 5,
+    "requestedCount": 6
+  }
+```
+
+### §31 — Public report-link security (reporting)
+
+The token share link (`ReportShareLink`, which already carried `expiresAt` + revocation) gains an
+**optional password**. Expiry and revocation are unchanged.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/projects/:projectId/reports/:slug/share-links` | `admin`, `delivery-lead` | Mint a link. **New:** optional `password` (4–72 chars). |
+| `GET` | `/api/reports/shared/:token` | public | Render the report — or, for a protected link with no valid unlock cookie, a password-prompt page. |
+| `POST` | `/api/reports/shared/:token/unlock` | public | **New.** Submit the password; on success sets a short-lived HttpOnly unlock cookie and returns the report HTML. |
+| `GET` | `/api/reports/shared/:token.pdf` | public | Render the PDF. **New:** `401` for a protected link not yet unlocked via the HTML link. |
+| `GET` / `DELETE` | `/api/projects/:projectId/reports/:slug/share-links[/:linkId]` | `admin`, `delivery-lead` | List / revoke. Each link now reports `hasPassword: boolean` (the hash itself is never returned). |
+
+**Create with a password:**
+
+```
+POST /api/projects/abc123/reports/q3-2026/share-links
+{ "expiresInHours": 168, "password": "acme-2026" }
+→ 201 {
+    "id": "cmv...", "token": "<43-char base64url — shown once>",
+    "url": "/api/reports/shared/<token>",
+    "expiresAt": "2026-09-28T...Z", "hasPassword": true, "viewCount": 0, ...
+  }
+```
+
+**Opening a protected link:** `GET /api/reports/shared/:token` returns the report HTML directly for
+an unprotected link; for a protected one with no valid `cailyx_report_unlock` cookie it returns a
+self-contained password-prompt page (200). The recipient's password is submitted only via
+`POST .../unlock` (form body, never a URL). A wrong password re-serves the prompt at `401`. A
+correct one sets the HttpOnly, `SameSite=Lax`, path-scoped (`/api/reports/shared`), 30-minute
+unlock cookie (an HMAC-`JWT_SECRET`-signed grant bound to that one link id) and serves the report;
+the same cookie lets the sibling `.pdf` download without re-prompting. Password stored only as a
+bcrypt hash (cost 10) — never returned, never recoverable (revoke + re-mint to change it).
+
+### §28 — Data-freshness ("as of [date]") labeling
+
+Frontend-only (`web/`). No backend change: every score/metric/data panel in the client portal now
+carries a visible "as of [date]" built from the timestamp its data already carries, via a shared
+`AsOf` component (`web/src/components/patterns/AsOf.tsx`). No endpoint shape changed.
+
+---
+
 ## Client Portal & Admin Console — Phase C2 (onboarding wizard, corrected order, added 2026-09-21)
 
 > Full decision record: `docs/analysis/client-portal.md` §§2/11/12/17/18. Build order:

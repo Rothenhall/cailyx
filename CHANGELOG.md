@@ -9,6 +9,49 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-21 — Client Portal Phase C6: governance, cost control & security (code-complete, live verification pending)
+
+Full decision record: `docs/analysis/client-portal.md` §§28/29/31. Build order: `docs/PLAN.md`
+§11.6. Full write-up: `backend/src/modules/business-profile/README.md` (§29),
+`backend/src/modules/reporting/README.md` (§31), `docs/API.md` (C6 section),
+`docs/MODULES-STATUS.md` (Wave 7). Branch `phase-c6-governance` — committed locally, **not merged,
+not pushed**.
+
+All three C6 items shipped as code; `npx tsc --noEmit` clean (`backend/`) and `npm run typecheck`
+clean (`web/`), Prisma client regenerated for the schema change.
+
+- **§29 — competitor cap** (`business-profile`): the number of competitors a client can directly
+  add is now capped per plan tier — `starter` 5 / `growth` 15 / `scale` 50 / `enterprise` unlimited
+  (proposed by this build; §29 left the numbers open — all in
+  `business-profile/lib/competitor-cap.util.ts`, retunable). `saveDraft` blocks only a save that
+  *increases* the count past the cap, reads `Client.planTier` directly, and rejects with a
+  `CompetitorCapExceededException` (422, machine-readable body) that the portal renders as an
+  upsell. Finished the small preserved skeleton on branch `worktree-agent-a1e4e5fbfd6f6fcbe` rather
+  than rebuilding it.
+- **§31 — public report-link password** (`reporting`): the token share link already had expiry +
+  revocation; added the optional **password** (`ReportShareLink.passwordHash`, bcrypt cost 10).
+  Optional `password` on link creation; a public password-prompt page on the token render; a new
+  `POST /api/reports/shared/:token/unlock` that verifies the password and sets a 30-min HttpOnly,
+  path-scoped, HMAC-`JWT_SECRET`-signed unlock cookie (keeps the password out of URLs; lets the
+  `.pdf` download without re-prompting; the PDF route 401s while locked). No new dependency, no new
+  env var. Operator UI: password field + "Password" pill on the report review screen. Deliberately
+  the token surface, not `scorecard`'s simpler unguessable-only token (per §31).
+- **§28 — data-freshness labeling** (`web/` only): a shared `AsOf` component threaded into the
+  client Performance panels (Technical / Organic / AI), Competitors (its one-off date formatter
+  normalized onto the shared helper), and the read-only Digital Marketing pages (Brand Profile,
+  Brand Voice, Ideation). Not applied to the frozen report reader (its figures are "as released",
+  not "as of today") or to Dashboard/Results (already carried freshness signals).
+
+**Verification — PENDING, and not simulated.** The plan requires a real end-to-end run against a
+live backend + Postgres. This session had no reachable Postgres: Docker Desktop's WSL engine would
+not finish starting (its `docker-desktop` distro stayed `Stopped` for ~15 min despite the app's
+processes running — a first-run instance likely needs interactive acceptance/sign-in), no native
+Postgres is installed, and the Supabase URL in `.env` is marked paused/IPv6-only. At the user's
+direction ("commit now, verify later") the code was committed locally without the live run. Exact
+verification steps are recorded in `business-profile/README.md` (§29), `reporting/README.md` (§31),
+and `docs/MODULES-STATUS.md` (Wave 7). `docs/PLAN.md` §11.6/§11.9 should be flipped to done only
+after that run passes.
+
 ## 2026-09-21 — Client Portal Phase C3: engagement Phase grouping (Option B)
 
 Full decision record: `docs/analysis/engagement-timeline.md`. Full write-up:

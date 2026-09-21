@@ -206,7 +206,7 @@ Order reconciles `PLAN.md` phases, PRD §16 build sequence, and the dependency g
 - [x] **`scorecard`** — Rung 0, PRD §13 + §17. Analysis resolved §17 as option B (`docs/analysis/wave-5.md` §2): engine + operator API now, public funnel behind `SCORECARD_PUBLIC=1` (a flag, not a rebuild). Built: fresh technical audit (probe failure → partial dimensions with reasons, never blocks the run) → versioned-rubric scoring → exactly **3 named problems** derived deterministically from the run's evidence (no LLM key required — the free funnel never blocks on a paid key) → `nonObvious` flag from probe-only evidence (blocked/render/`schema audit: fail`) → `ScorecardRun` with unguessable public share token. e2e: run 201 (score 33/invisible, 3 named problems), public 403 with flag off → 200 with flag on, bad token 404, list newest-first.
 - [x] **`delivery`** — PRD 6.11. Built per analysis choices: Plunk email (pre-approved; 503 `email-unconfigured` / `email-send-failed` guards, subject operator-editable, link-first — react-pdf PDF is frontend scope), internal Lead CRM (sources bulk/api/form/scorecard, `new → reached → booked | won/lost`) with **append-only** CTA event log (`book-call`/`review-ask`/`upgrade-click`) + CSV export for any external CRM (Attio/HubSpot = later), Stripe Checkout ledger (option A): links from `STRIPE_CHECKOUT_URL_*` env, click flips the lead's log, @Public completion = webhook stand-in (SDK + signature verification = documented next iteration). e2e: all guards + click/complete chain + lead event log verified.
 
-### Wave 7 — Client Portal & Admin Console revamp (2026-09-21, C1 + §11.0 cleanup + C2 + C3 + C4 + C5 + C7 done, plus a client-nav restructure outside the C1-C7 sequence; C6 in progress)
+### Wave 7 — Client Portal & Admin Console revamp (2026-09-21, C1 + §11.0 cleanup + C2 + C3 + C4 + C5 + C7 done, plus a client-nav restructure outside the C1-C7 sequence; C6 code-complete, live verification pending)
 
 Full decision record: `docs/analysis/client-portal.md` v1.3 (35 sections). Build order,
 dependencies, and the required-before-code note on the engagement/timeline model: `docs/PLAN.md`
@@ -499,6 +499,56 @@ separate track (admin/client platform layer, §1.2h) from the engine-pipeline wa
   `backend/src/modules/content-requests/README.md`,
   `backend/src/modules/content-workspace/README.md` (new — this module never
   had one before), `docs/API.md` (new endpoint reference).
+
+- [~] **C6 — governance, cost control & security (§§28/29/31).** Code-complete on
+  all three items; `npx tsc --noEmit` clean (`backend/`) and `npm run typecheck`
+  clean (`web/`). **Live e2e verification is PENDING** — this session had no
+  reachable Postgres (Docker Desktop's WSL engine would not start and no native
+  Postgres was installed; the Supabase URL in `.env` is paused/IPv6-only), and
+  per the plan's own discipline the run was not simulated. Committed locally on
+  branch `phase-c6-governance` (not merged, not pushed) at the user's direction
+  ("commit now, verify later").
+  - **§29 competitor cap** (`business-profile`): per-tier caps on client-added
+    competitors — `starter` 5 / `growth` 15 / `scale` 50 / `enterprise` unlimited
+    (proposed by this build; §29 left the numbers open — all in
+    `business-profile/lib/competitor-cap.util.ts`, retunable). `saveDraft` blocks
+    only a save that *increases* the count past the cap, reading `Client.planTier`
+    directly (the `refresh-cadence` pattern, not C4's `Offer`-text derivation);
+    rejects with a dedicated `CompetitorCapExceededException` (422,
+    machine-readable body) that the client portal renders as an upsell
+    (`web/.../business-info/page.tsx` via `competitorCapExceeded()`). Salvaged and
+    finished the preserved branch `worktree-agent-a1e4e5fbfd6f6fcbe`'s util +
+    service edit (added the `CompetitorCapExceededException` its own docstring
+    referenced but that didn't exist yet). **Verify:** steps in
+    `business-profile/README.md`'s "C6 §29 verification status".
+  - **§31 public report-link password** (`reporting`): `ReportShareLink` already
+    had expiry + revocation; added the optional **password** (`passwordHash`,
+    bcrypt cost 10 — a user-chosen secret, unlike the token's sha256). Optional
+    `password` on `POST .../share-links`; a public password-prompt page on
+    `GET /reports/shared/:token` for a protected link; new
+    `POST /reports/shared/:token/unlock` that verifies the password and sets a
+    30-min HttpOnly, path-scoped, HMAC-`JWT_SECRET`-signed unlock cookie (keeps
+    the password out of URLs and lets the sibling `.pdf` download without
+    re-prompting; the PDF route 401s when locked-and-not-unlocked). No new
+    dependency (Express `res.cookie` + manual cookie parse), no new env var
+    (reuses `JWT_SECRET`). Operator UI: password field + "Password" pill on the
+    review screen. **Verify:** steps in `reporting/README.md`'s "C6 §31
+    verification status".
+  - **§28 data-freshness labeling** (`web/` only, no backend change): a shared
+    `AsOf` component (`web/src/components/patterns/AsOf.tsx`, built on the
+    existing `Timestamp`/`formatDate`) threaded into the client Performance
+    panels (Technical / Visibility-Organic / Visibility-AI in
+    `results/tab-panels.tsx`), Competitors (its one-off `toLocaleDateString`
+    normalized onto the shared `formatDate`), and the read-only Digital Marketing
+    pages (Brand Profile, Brand Voice, Ideation). Deliberately **not** applied to
+    the frozen report reader (its figures are intentionally "as released", not
+    "as of today"). Dashboard/Results already carried freshness signals and were
+    left as-is. **Verify:** visual check of the client portal once a backend is
+    up; also covered by the `web` production build.
+  - **Full write-up:** `backend/src/modules/business-profile/README.md` (§29
+    section), `backend/src/modules/reporting/README.md` (§31 section), `docs/API.md`
+    (C6 section), `CHANGELOG.md`. `docs/PLAN.md` §11.6/§11.9 to be flipped to done
+    only after the live run passes.
 
 ### Standing item (not a module)
 

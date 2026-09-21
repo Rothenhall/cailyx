@@ -389,12 +389,12 @@ External integrations:
 
 ## 11. Client Portal & Admin Console — Implementation / Revamp Plan (2026-09-20)
 
-> **Status as of 2026-09-21: §11.0 cleanup, C1, C2, C3, C5, C7 done and merged to `main`. C4
-> done and merged to `main`. C6 barely started (one file, uncommitted-to-main, preserved on
-> branch `worktree-agent-a1e4e5fbfd6f6fcbe`) — interrupted by an account rate limit before any
-> of its three items (§29/§31/§28) were finished or verified.** A client-nav restructure (not a
-> lettered phase) also shipped and is merged. See §11.9 below for the exact resume point and a
-> ready-to-paste prompt for a fresh session.
+> **Status as of 2026-09-21: §11.0 cleanup, C1, C2, C3, C4, C5, C7 done and merged to `main`. C6
+> now CODE-COMPLETE (all three items §29/§31/§28), typecheck-clean on `backend/` and `web/`, on
+> branch `phase-c6-governance` — committed locally, NOT merged, and with its required live
+> backend+Postgres verification still PENDING (no reachable Postgres this session).** A client-nav
+> restructure (not a lettered phase) also shipped and is merged. See §11.9 below for the exact
+> resume point (the remaining verification gate).
 >
 > Everything below is sequencing on top of decisions already made and recorded in
 > `docs/analysis/client-portal.md` v1.3 (35 sections) — that doc is the *what and why*; this
@@ -521,18 +521,26 @@ Depends on C1's audit log.
 - [ ] Client seat permission differentiation: gate billing/seat-management/content-approval
   endpoints to `client-admin` only, `client-collaborator` gets view + request access — §27.
 
-### 11.6 Phase C6 — Governance, cost control & security — ⚠️ BARELY STARTED, NOT merged (see §11.9 — resume here)
+### 11.6 Phase C6 — Governance, cost control & security — ⚠️ CODE-COMPLETE, live verification PENDING, NOT merged (branch `phase-c6-governance`; see §11.9)
 
 **Why here:** lower urgency than C1–C5 (nothing here is currently a live risk the way the
 Google-gate lockout or unaudited suspend was), but each is a small, mostly independent slice —
 good fill-in work, no strict internal ordering required.
 
-- [ ] Competitor-cap enforcement tied to plan tier — needs the actual per-tier numbers proposed
-  as part of this work (PRD's "3 to 8" is a suggestion, not a tier table) — §29.
-- [ ] Public report-share link: add expiry + optional client-set password, as its own token model
-  extension (deliberately not reusing `scorecard`'s simpler unguessable-only token) — §31.
-- [ ] Data-freshness ("as of [date]") labeling across score/metric/data panels in the client
-  portal — broad but low-risk, touches many pages, no backend gap to close — §28.
+- [x] Competitor-cap enforcement tied to plan tier — §29. Done in code (2026-09-21): per-tier caps
+  `starter` 5 / `growth` 15 / `scale` 50 / `enterprise` unlimited (proposed by this build, in
+  `business-profile/lib/competitor-cap.util.ts`), enforced in `saveDraft` with a 422
+  `CompetitorCapExceededException` + client-portal upsell. Finished the preserved-branch skeleton.
+- [x] Public report-share link: expiry (already existed) + optional password — §31. Done in code
+  (2026-09-21): `ReportShareLink.passwordHash` (bcrypt), public password-prompt + `POST
+  .../unlock` with a signed HttpOnly unlock cookie, operator UI. Token surface, not `scorecard`'s.
+- [x] Data-freshness ("as of [date]") labeling — §28. Done in code (2026-09-21): shared `AsOf`
+  component threaded through the client Performance / Competitors / Digital-Marketing panels.
+
+> **Verification gate NOT yet passed.** All three typecheck clean on `backend/` and `web/`, but the
+> plan's required live e2e run against a real backend + Postgres has not happened — no reachable
+> Postgres this session (Docker engine wouldn't start; no native Postgres; Supabase paused). Do the
+> run (steps in each module README + `MODULES-STATUS.md` Wave 7), then flip this and §11.9 to done.
 
 ### 11.7 Phase C7 — Refresh-cadence automation — ✅ DONE, merged to main
 
@@ -580,14 +588,23 @@ C5, C7, and a client-nav restructure (not a lettered phase — see `CHANGELOG.md
 was verified with a real `npx tsc --noEmit` (backend) and `npm run typecheck` (web) pass
 afterward, regenerating the Prisma client where a schema change required it.
 
-**Not done:** C6 (§11.6 — governance, cost control & security). Barely started before an account
-rate limit interrupted the agent building it: only `backend/src/modules/business-profile/lib/
-competitor-cap.util.ts` exists (skeleton, unverified, uncommitted to `main`) plus a partial edit
-to `business-profile.service.ts`. That work is preserved, not lost, on git branch
-`worktree-agent-a1e4e5fbfd6f6fcbe` (not merged — check it out or `git show` individual files from
-it before rebuilding, to avoid redoing the small amount that exists). None of C6's three items
-(§29 competitor cap, §31 public report-link security, §28 data-freshness labeling) are complete
-or verified.
+**C6 (§11.6 — governance, cost control & security): CODE-COMPLETE, live verification PENDING, on
+branch `phase-c6-governance` (committed locally, not merged, not pushed).** Updated 2026-09-21: a
+later session finished all three items on top of `main`, reusing the small preserved skeleton from
+`worktree-agent-a1e4e5fbfd6f6fcbe` (the `competitor-cap.util.ts` + `business-profile.service.ts`
+edit) rather than rebuilding it.
+- §29 competitor cap — per-tier caps enforced in `business-profile` `saveDraft` (422 + upsell).
+- §31 public report-link — optional password on `ReportShareLink` (bcrypt), public prompt +
+  `POST .../unlock` + signed HttpOnly unlock cookie, operator UI. Expiry/revocation already existed.
+- §28 data-freshness — shared `AsOf` component across the client Performance / Competitors /
+  Digital-Marketing panels.
+
+Both `backend/` (`npx tsc --noEmit`) and `web/` (`npm run typecheck`) are clean. **What remains is
+only the verification gate:** the plan's required real end-to-end run against a live backend +
+Postgres was not possible this session (Docker Desktop's engine would not start, no native Postgres,
+Supabase paused/IPv6-only), so it was deliberately NOT simulated. Run it (steps in
+`business-profile/README.md` §29, `reporting/README.md` §31, and `MODULES-STATUS.md` Wave 7), then
+mark §11.6 and this section done and merge `phase-c6-governance`.
 
 **A worked example worth reading before starting C6:** Phase C4 was built on an old base (before
 C2/C3/C5/C7 and the nav restructure existed) and needed real merge-conflict resolution plus a
