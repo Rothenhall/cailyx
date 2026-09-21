@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { AsOf } from '@/components/patterns/AsOf';
 import { EmptyState } from '@/components/patterns/EmptyState';
 import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
 import { PageHeader } from '@/components/patterns/PageHeader';
@@ -104,6 +105,11 @@ export default function ClientBrandVoicePage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-subsection">{style.name}</CardTitle>
+            {/* C6 §28 — when this writing style was confirmed (or created, if never confirmed). */}
+            <AsOf
+              value={style.confirmedAt ?? style.createdAt}
+              label={style.confirmedAt ? 'Confirmed as of' : 'Created'}
+            />
           </CardHeader>
           <CardContent className="space-y-4 pt-2">
             {style.summary ? (

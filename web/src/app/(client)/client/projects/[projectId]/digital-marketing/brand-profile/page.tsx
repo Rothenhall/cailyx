@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/patterns/EmptyState';
 import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
+import { AsOf } from '@/components/patterns/AsOf';
 import { PageHeader } from '@/components/patterns/PageHeader';
 import { ScopeBanner } from '@/components/patterns/ScopeBanner';
 import { StatusPill } from '@/components/patterns/StatusPill';
@@ -113,6 +114,11 @@ export default function ClientBrandProfilePage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-subsection">Overview</CardTitle>
+            {/* C6 §28 — when these facts were last confirmed (or last edited, for a draft). */}
+            <AsOf
+              value={profile.profile?.confirmedAt ?? profile.profile?.updatedAt}
+              label={profile.profile?.confirmedAt ? 'Confirmed as of' : 'Draft as of'}
+            />
           </CardHeader>
           <CardContent className="space-y-4 pt-2">
             <Field label="Brand name" value={data.brandName} />

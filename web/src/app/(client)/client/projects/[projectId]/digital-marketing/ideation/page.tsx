@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { AsOf } from '@/components/patterns/AsOf';
 import { EmptyState } from '@/components/patterns/EmptyState';
 import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
 import { PageHeader } from '@/components/patterns/PageHeader';
@@ -96,7 +97,10 @@ export default function ClientIdeationPage() {
           </CardContent>
         </Card>
       ) : (
-        <ul className="divide-y divide-border rounded-md border border-border">
+        <>
+          {/* C6 §28 — freshness of the ideas queue: the most recently measured idea. */}
+          <AsOf value={latestMeasuredAt(opportunities)} />
+          <ul className="divide-y divide-border rounded-md border border-border">
           {opportunities.map((opportunity) => (
             <li key={opportunity.id} className="space-y-1 p-3">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -114,8 +118,20 @@ export default function ClientIdeationPage() {
               <p className="text-meta text-muted-foreground">{opportunity.reason}</p>
             </li>
           ))}
-        </ul>
+          </ul>
+        </>
       )}
     </div>
   );
+}
+
+/** C6 §28 — the most recent `measuredAt` across the ideas, for the queue's "as of" stamp. Null when none carries one. */
+function latestMeasuredAt(opportunities: Opportunity[]): string | null {
+  let latest: string | null = null;
+  for (const opportunity of opportunities) {
+    if (opportunity.measuredAt && (latest === null || opportunity.measuredAt > latest)) {
+      latest = opportunity.measuredAt;
+    }
+  }
+  return latest;
 }

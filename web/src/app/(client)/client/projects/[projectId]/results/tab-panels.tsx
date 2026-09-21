@@ -6,9 +6,10 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/patterns/EmptyState';
+import { AsOf } from '@/components/patterns/AsOf';
 import { MetricTile } from '@/components/patterns/MetricTile';
 import { Timestamp } from '@/components/patterns/Timestamp';
-import { formatNumber, notMeasuredLabel } from '@/lib/format';
+import { formatDate, formatNumber, notMeasuredLabel } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import type {
   AiVisibilityTabData,
@@ -349,6 +350,8 @@ export function WebsiteTechnicalPanel({ section }: { section: OverviewSection<We
   return (
     <EmptyOrData section={section} emptyCopy="We have not checked your website yet.">
       <div className="space-y-5">
+        {/* C6 §28 — freshness stamp for this panel's data. */}
+        <AsOf value={data.sourceAvailability.technicalCheck.lastCheckedAt} />
         <div className="grid gap-4 sm:grid-cols-2">
           <MetricTile
             label="Site health"
@@ -426,6 +429,15 @@ export function WebsiteOrganicPanel({
       ) : (
         <EmptyOrData section={websiteSection} emptyCopy="We have not checked your search performance yet.">
           <div className="space-y-5">
+            {/* C6 §28 — freshness of the Google data: the most recent sync, or the window end when no sync time is known. */}
+            <AsOf
+              value={
+                data.sourceAvailability.searchConsole.lastSyncAt ??
+                data.sourceAvailability.analytics.lastSyncAt ??
+                data.google.clicksWindow?.endDate ??
+                null
+              }
+            />
             <div id="google" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               <MetricTile label="Clicks from Google" value={data.google.clicks} unit="clicks" direction="neutral" />
               <MetricTile
@@ -559,6 +571,9 @@ function AiVisibilityTab({ section }: { section: OverviewSection<AiVisibilityTab
         />
 
         <p className="text-table">{data.headline}</p>
+
+        {/* C6 §28 — freshness of this AI-visibility check. */}
+        <AsOf value={data.generatedAt ?? data.period.finishedAt} />
 
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {/* Appeared and recommended are two different counts and stay two
@@ -906,10 +921,9 @@ function DiffBlock({
   );
 }
 
+/** C6 §28 — routed through the shared `formatDate` so competitor freshness reads the same as every other "as of" date, degrading to the shared not-measured label. */
 function formatIsoDate(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return 'at a date we could not read';
-  return date.toLocaleDateString();
+  return formatDate(iso);
 }
 
 /** Local empty-state re-export: the tabs use the §3.5 not-measured variant. */
