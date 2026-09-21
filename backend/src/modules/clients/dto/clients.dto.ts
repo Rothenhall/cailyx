@@ -35,6 +35,14 @@ export class CreateClientDto {
   @IsString()
   @MaxLength(2000)
   notes?: string;
+
+  @ApiPropertyOptional({
+    enum: ['starter', 'growth', 'scale', 'enterprise'],
+    description: 'Defaults to "starter" when omitted.',
+  })
+  @IsOptional()
+  @IsIn(['starter', 'growth', 'scale', 'enterprise'])
+  planTier?: string;
 }
 
 export class UpdateClientDto {
@@ -75,6 +83,15 @@ export class UpdateClientDto {
   @IsString()
   @MaxLength(2000)
   notes?: string;
+
+  @ApiPropertyOptional({
+    enum: ['starter', 'growth', 'scale', 'enterprise'],
+    description:
+      'Drives the refresh-cadence module\'s automatic measurement/scoring cadence (C7): starter=weekly, growth/scale=daily, enterprise=daily.',
+  })
+  @IsOptional()
+  @IsIn(['starter', 'growth', 'scale', 'enterprise'])
+  planTier?: string;
 }
 
 /** "Add client → run the pipeline" — the exact call the onboarding flow described. */

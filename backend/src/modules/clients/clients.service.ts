@@ -138,6 +138,7 @@ export class ClientsService {
         contactEmail: dto.contactEmail ?? null,
         ownerUserId: dto.ownerUserId ?? null,
         notes: dto.notes ?? null,
+        ...(dto.planTier !== undefined ? { planTier: dto.planTier } : {}),
       },
     });
     this.logger.log(`Client created: ${row.id} (${row.name})`);
@@ -169,6 +170,7 @@ export class ClientsService {
         ...(dto.status !== undefined ? { status: dto.status } : {}),
         ...(dto.ownerUserId !== undefined ? { ownerUserId: dto.ownerUserId } : {}),
         ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+        ...(dto.planTier !== undefined ? { planTier: dto.planTier } : {}),
       },
     });
     return this.toClientDto(row);
@@ -924,6 +926,7 @@ export class ClientsService {
     status: string;
     ownerUserId: string | null;
     notes: string | null;
+    planTier: string;
     createdAt: Date;
     updatedAt: Date;
   }): ClientDto {
@@ -935,6 +938,7 @@ export class ClientsService {
       status: row.status as ClientDto['status'],
       ownerUserId: row.ownerUserId,
       notes: row.notes,
+      planTier: row.planTier as ClientDto['planTier'],
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };

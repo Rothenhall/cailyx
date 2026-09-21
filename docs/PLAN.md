@@ -534,8 +534,15 @@ foundation exists, but has no urgent dependents. Reuses `scheduling`/`monitoring
 BullMQ cadence infrastructure; needs its own short scoping pass on exactly which pipeline stages
 re-run on cadence (probably not the full Day-1 flowchart every time) before implementation.
 
-- [ ] Scheduled job, keyed to each client's plan tier (Starter weekly, Growth/Scale daily),
+- [x] Scheduled job, keyed to each client's plan tier (Starter weekly, Growth/Scale daily),
   triggering the appropriate subset of the measurement/scoring pipeline automatically — §19.
+  Done 2026-09-21: new `refresh-cadence` module. Scoping pass landed on measurement + scoring
+  only (not the full Day-1 flowchart), reusing an hourly cron-poll pattern already established by
+  `technical-audit`/`seo-audit` (own `ScheduleConfig.refresh*` columns, not the BullMQ path or
+  the shared `cadence` column). Enterprise mapped to daily, not real-time — flagged as a known
+  gap rather than invented (see `backend/src/modules/refresh-cadence/README.md`). Full write-up,
+  scoping rationale and live-verification notes there; `docs/MODULES-STATUS.md` Wave 7 and
+  `docs/API.md` updated.
 
 ### 11.8 Suggested order and why
 

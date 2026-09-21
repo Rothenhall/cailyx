@@ -32,6 +32,7 @@ import { FindingsModule } from './modules/findings/findings.module';
 import { AttributionModule } from './modules/attribution/attribution.module';
 import { CrawlerMonitorModule } from './modules/crawler-monitor/crawler-monitor.module';
 import { MonitoringModule } from './modules/monitoring/monitoring.module';
+import { RefreshCadenceModule } from './modules/refresh-cadence/refresh-cadence.module';
 import { PageAnalysisModule } from './modules/page-analysis/page-analysis.module';
 import { MentionTrackingModule } from './modules/mention-tracking/mention-tracking.module';
 import { SleeperRefreshModule } from './modules/sleeper-refresh/sleeper-refresh.module';
@@ -150,6 +151,8 @@ import { OrganizationModule } from './modules/organization/organization.module';
     CrawlerMonitorModule,
     AttributionModule,
     MonitoringModule,
+    // C7 — automatic measurement+scoring refresh cadence, derived from plan tier
+    RefreshCadenceModule,
 
     // Wave 4 — content & outreach tools (SOP-6/7/10/8)
     PageAnalysisModule,

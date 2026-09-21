@@ -206,7 +206,7 @@ Order reconciles `PLAN.md` phases, PRD §16 build sequence, and the dependency g
 - [x] **`scorecard`** — Rung 0, PRD §13 + §17. Analysis resolved §17 as option B (`docs/analysis/wave-5.md` §2): engine + operator API now, public funnel behind `SCORECARD_PUBLIC=1` (a flag, not a rebuild). Built: fresh technical audit (probe failure → partial dimensions with reasons, never blocks the run) → versioned-rubric scoring → exactly **3 named problems** derived deterministically from the run's evidence (no LLM key required — the free funnel never blocks on a paid key) → `nonObvious` flag from probe-only evidence (blocked/render/`schema audit: fail`) → `ScorecardRun` with unguessable public share token. e2e: run 201 (score 33/invisible, 3 named problems), public 403 with flag off → 200 with flag on, bad token 404, list newest-first.
 - [x] **`delivery`** — PRD 6.11. Built per analysis choices: Plunk email (pre-approved; 503 `email-unconfigured` / `email-send-failed` guards, subject operator-editable, link-first — react-pdf PDF is frontend scope), internal Lead CRM (sources bulk/api/form/scorecard, `new → reached → booked | won/lost`) with **append-only** CTA event log (`book-call`/`review-ask`/`upgrade-click`) + CSV export for any external CRM (Attio/HubSpot = later), Stripe Checkout ledger (option A): links from `STRIPE_CHECKOUT_URL_*` env, click flips the lead's log, @Public completion = webhook stand-in (SDK + signature verification = documented next iteration). e2e: all guards + click/complete chain + lead event log verified.
 
-### Wave 7 — Client Portal & Admin Console revamp (2026-09-21, C1 + §11.0 cleanup + C2 + C3 + C5 done, plus a client-nav restructure outside the C1-C7 sequence; C4/C6/C7 not started)
+### Wave 7 — Client Portal & Admin Console revamp (2026-09-21, C1 + §11.0 cleanup + C2 + C3 + C5 + C7 done, plus a client-nav restructure outside the C1-C7 sequence; C4/C6 in progress or not started)
 
 Full decision record: `docs/analysis/client-portal.md` v1.3 (35 sections). Build order,
 dependencies, and the required-before-code note on the engagement/timeline model: `docs/PLAN.md`
@@ -429,6 +429,41 @@ separate track (admin/client platform layer, §1.2h) from the engine-pipeline wa
   in the build's route table. Full write-up:
   `backend/src/modules/opportunities/README.md` (2026-09-21 addendum),
   `docs/API.md` (new portal endpoint), `CHANGELOG.md`.
+- [x] **C7 — refresh-cadence automation.** New `refresh-cadence` module (not folded into
+  `measurement`/`scoring`/`monitoring` — needed its own hourly scheduler + `ScheduleConfig`
+  columns, and importing `monitoring` would have meant importing its alert-triage surface for no
+  reason). Scoping decision (required by `docs/PLAN.md` §11.7 before code): a cadence tick
+  re-runs **only** `measurement` (one new run, current active query set, replaying the most
+  recently used surface+geo) + `scoring` — never the Day-1 flowchart (competitor discovery,
+  backlinks, tech-stack scan, etc. stay one-time). Added `Client.planTier`
+  (`starter|growth|scale|enterprise`, default `starter` — nothing existing encoded a tier;
+  `billing`'s `Offer`/`Entitlement` are price/feature-key tables, not a tier label, and billing
+  was out of scope to touch) settable via the existing generic `PATCH /clients/:clientId`.
+  Cadence-per-tier: starter=weekly, growth/scale=daily; **enterprise mapped to daily, not
+  real-time** — flagged as a known gap in the module README, since `docs/PLAN.md`'s own
+  architecture notes say real-time monitoring is future work, not this phase's to build.
+  Automation runs via the same hourly-`@nestjs/schedule`-cron-poll pattern
+  `technical-audit`/`seo-audit` already use (their own dedicated `ScheduleConfig` columns,
+  `refreshCadence`/`refreshNextRunAt`/`refreshActive`/`refreshLastRunAt`/`refreshLastError` —
+  not the shared `cadence` column `technical-audit` and `monitoring` already collide on, and not
+  the BullMQ path, which only `technical-audit`'s own scheduler actually drains under this repo's
+  default `SCHEDULING_BACKEND=cron`). No cadence-config endpoint — `GET
+  /api/projects/:projectId/refresh-cadence` (read-only status) + `POST .../run-now` (operator
+  override) only. `MeasurementService.executeRun`'s `MEASUREMENT_MAX_COST_PER_RUN` cap is
+  unmodified; a cap trip is now also surfaced as a refresh failure (a real gap live verification
+  caught: `executeRun` doesn't throw on an internally-failed run, so an early version of this
+  module silently reported success — fixed to check the run's final status). `npx tsc --noEmit`
+  clean; `npx nest build` clean. Live-verified against a real backend process + the shared dev
+  Postgres (`docker-compose`'s `cailyx-postgres`): real `Client`+`Project` through a real
+  completed Day-1 pipeline, real `QuerySet`+baseline `MeasurementRun` (mock surface), `PATCH
+  planTier` → cadence status updated, `run-now` → new measurement+score run pair confirmed via
+  `GET`, and the scheduler's own `tick()` invoked directly (same compiled code, same live DB) to
+  confirm the due-row poll → scoped refresh → `nextRunAt`/`lastRunAt` bookkeeping end-to-end. Not
+  verified: the real hourly cron actually firing unattended over a multi-hour wait (impractical
+  in-session; the identical `@Cron(EVERY_HOUR)` mechanism is already relied on by
+  `technical-audit`/`seo-audit`). Full write-up incl. the complete scoping rationale:
+  `backend/src/modules/refresh-cadence/README.md`. `docs/API.md` updated with the new endpoint
+  reference.
 
 ### Standing item (not a module)
 

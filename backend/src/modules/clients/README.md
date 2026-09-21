@@ -324,6 +324,25 @@ confirmed the state persisted as `{"state":"waived"}` → `GET
 documentation-only, not a functional break. `npx tsc --noEmit` clean
 (zero errors) after all C1 changes.
 
+## C7 (2026-09-21) — `planTier` field, for `refresh-cadence`
+
+`Client` gained `planTier` (`starter | growth | scale | enterprise`, default
+`starter`) — nothing already encoded a plan tier (`docs/analysis/client-portal.md`
+§5's "set plan/tier — ✅ already built" claim did not hold up under a direct
+check, the same kind of gap this repo's own audit passes keep finding
+elsewhere; `billing`'s `Offer`/`Entitlement` tables are price/feature-key
+mappings, not a tier label, and `billing` was out of scope to touch for C7).
+Added to `CreateClientDto`/`UpdateClientDto` (`@IsIn` whitelist) and returned
+on every existing client DTO — no new endpoint, no new route, just a field on
+the existing `POST/GET/PATCH /clients...` surface. The only consumer today is
+the new `refresh-cadence` module, which reads it directly via `PrismaService`
+(not imported into this module, and this module does not import it either —
+see `refresh-cadence/README.md`'s module-boundary note). `npx tsc --noEmit`
+clean; live-verified as part of C7's end-to-end run (`PATCH planTier` →
+returned in the response → picked up by `refresh-cadence`'s cadence
+derivation) — see `backend/src/modules/refresh-cadence/README.md` for the
+full verification record.
+
 ## G19/D26 — operator message write validates project ownership (2026-09-16)
 
 **Before:** `POST /clients/:clientId/messages` accepted an optional `projectId`
