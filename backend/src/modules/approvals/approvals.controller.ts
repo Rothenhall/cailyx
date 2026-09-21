@@ -30,11 +30,17 @@
  * @module approvals.controller
  */
 
-import { BadRequestException, Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { ClientPortal, Roles } from '../../common/decorators/auth.decorators';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthedRequestUser } from '../auth/strategies/jwt.strategy';
+// C5 (`docs/analysis/client-portal.md` §27) — only a client-admin seat may
+// approve/request-changes on content before it publishes; a
+// client-collaborator seat keeps view access but not this action. Reuses
+// ClientAccessService.resolveMembership exactly as client-access.controller.ts
+// already does for its own client-admin-only routes — no new role model.
+import { ClientAccessService } from '../client-access/client-access.service';
 import { ApprovalsService } from './approvals.service';
 import {
   CancelApprovalDto,
@@ -202,7 +208,10 @@ export class ApprovalCheckResultsController {
 @ClientPortal()
 @Controller('portal/approvals')
 export class ApprovalsPortalController {
-  constructor(private readonly service: ApprovalsService) {}
+  constructor(
+    private readonly service: ApprovalsService,
+    private readonly clientAccess: ClientAccessService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: "This client's approval requests, newest first" })
@@ -225,12 +234,13 @@ export class ApprovalsPortalController {
   @Post(':id/decision')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Approve or request changes on this client\'s own request',
+    summary: 'Approve or request changes on this client\'s own request (client-admin seat only)',
     description:
-      'revision must equal the request\'s current artifactRevision — a client cannot approve a version they have not been shown, and one is rejected with 409 rather than recorded. Decisions are immutable: a later decision supersedes the earlier one instead of overwriting it.',
+      'revision must equal the request\'s current artifactRevision — a client cannot approve a version they have not been shown, and one is rejected with 409 rather than recorded. Decisions are immutable: a later decision supersedes the earlier one instead of overwriting it. C5 (docs/analysis/client-portal.md §27): only a client-admin seat may decide — a client-collaborator seat can view the queue but not approve/reject.',
   })
   @ApiBody({ type: DecideApprovalDto })
   @ApiResponse({ status: 200, description: 'The updated request, with the new decision first in its history' })
+  @ApiResponse({ status: 403, description: 'Caller is a client-collaborator seat, not client-admin' })
   @ApiResponse({ status: 404, description: 'Not found, or not this client\'s request' })
   @ApiResponse({ status: 409, description: 'Already resolved/cancelled/invalidated, or the quoted revision is not the one the request is bound to' })
   async decide(
@@ -238,7 +248,12 @@ export class ApprovalsPortalController {
     @CurrentUser() user: AuthedRequestUser,
     @Body() dto: DecideApprovalDto,
   ) {
-    return this.service.portalDecide(this.requireClientId(user), id, user.userId, dto);
+    const clientId = this.requireClientId(user);
+    const membership = await this.clientAccess.resolveMembership(clientId, user.userId);
+    if (membership.role !== 'client-admin') {
+      throw new ForbiddenException('Only a client-admin seat may approve or request changes on content before it publishes');
+    }
+    return this.service.portalDecide(clientId, id, user.userId, dto);
   }
 
   /**
