@@ -1427,6 +1427,63 @@ value on rows written via the waive action above and the `action` filter/enum on
 
 ---
 
+## Refresh-Cadence — automatic measurement+scoring refresh (C7, added 2026-09-21)
+
+> Full decision record: `docs/analysis/client-portal.md` §19, `docs/PLAN.md` §11.7. Full
+> scoping write-up, cadence-per-tier table, and verification notes:
+> `backend/src/modules/refresh-cadence/README.md` — this section is the endpoint reference only.
+
+Cadence is derived automatically from `Client.planTier` (starter=weekly, growth/scale=daily,
+enterprise=daily — see the module README for why enterprise is not literally real-time) and
+kept in sync by an hourly internal poller. **There is no cadence-configuration endpoint** — an
+operator never sets a project's refresh cadence; the two routes below are read-only status plus
+an optional manual override.
+
+| Method | Path | Roles | Description |
+|---|---|---|---|
+| `GET` | `/api/projects/:projectId/refresh-cadence` | any operator with project access | Read-only cadence status: plan tier, derived cadence, active/next/last run, last error |
+| `POST` | `/api/projects/:projectId/refresh-cadence/run-now` | any operator with project access | Runs the same scoped refresh (one measurement run + a scoring run) the scheduler would run on cadence, immediately — does not change the automatic schedule |
+
+**`GET .../refresh-cadence`** — response:
+```json
+{
+  "projectId": "cmub8nz89001g11aszalq4tcd",
+  "clientId": "cmub8nuka001e11askomxmwki",
+  "planTier": "growth",
+  "cadence": "daily",
+  "active": true,
+  "nextRunAt": "2026-09-22T12:52:14.688Z",
+  "lastRunAt": "2026-09-21T12:52:14.688Z",
+  "lastError": null
+}
+```
+`cadence: "manual-only"` and `active: false` until the project's Day-1 pipeline reaches
+`onboardingStatus: "completed"` and its client has a recognized `planTier`.
+
+**`POST .../refresh-cadence/run-now`** — no request body. Response:
+```json
+{
+  "projectId": "cmub8nz89001g11aszalq4tcd",
+  "ran": true,
+  "measurementRunId": "cmub8vxdm0000j13l8btjq5j3",
+  "scoreRunId": "cmub8vxel000cj13lw33y8bmm"
+}
+```
+`ran: false` with a `skippedReason` when there is nothing yet to replay (no prior completed
+measurement run, or no active query set) — this is a `200`, not an error, since it's a legitimate
+"not ready yet" state for a brand-new project. A run that fails internally (e.g. the
+`MEASUREMENT_MAX_COST_PER_RUN` cap trips) surfaces as a failed request rather than a quiet
+success — see the module README's "Cost governor" section.
+
+### `clients` module — `planTier` on the existing client DTOs (new field, not a new endpoint)
+
+`Client` gained a `planTier` field (`starter | growth | scale | enterprise`, default `starter`),
+settable via the already-documented `PATCH /api/clients/:clientId` and returned on every
+existing client read/write response. No new route — see the `clients` module's existing API
+reference above for the unchanged request/response shapes of `POST/GET/PATCH /api/clients...`.
+
+---
+
 ## Planned Modules (not yet built)
 
 | Module | Type | Endpoints |

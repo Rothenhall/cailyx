@@ -153,10 +153,21 @@ Used by `scheduling` (BullMQ) for recurring audits/monitoring and by
 
 - Provision managed Redis (Upstash, Redis Cloud, ElastiCache, Railway…).
 - Set `REDIS_URL` (with TLS: `rediss://…`).
-- Without it: scheduled re-runs + swarm campaign queueing are offline; the
-  Connections panel shows Redis `not-connected`; the app still boots (the
-  `scheduling` service logs connection errors but doesn't crash — and now closes
-  its worker + connections cleanly on shutdown).
+- Without it: swarm campaign queueing is offline; the Connections panel shows
+  Redis `not-connected`; the app still boots (the `scheduling` service logs
+  connection errors but doesn't crash — and now closes its worker +
+  connections cleanly on shutdown).
+- **Scheduled re-runs specifically do NOT need Redis under the default
+  `SCHEDULING_BACKEND=cron`** (unset defaults to `cron`, not `bullmq`):
+  `technical-audit`, `seo-audit`, and (C7, 2026-09-21) `refresh-cadence` all
+  run their own in-process `@nestjs/schedule` hourly poll against
+  `ScheduleConfig` instead, specifically so a scheduling feature doesn't
+  silently go dark whenever Redis is down (see
+  `technical-audit/audit-scheduler.service.ts`'s own doc comment). `monitoring`
+  is the one exception — its cadence handler is only registered against
+  `SchedulingService`'s BullMQ path, so it genuinely needs
+  `SCHEDULING_BACKEND=bullmq` + Redis to actually fire on cadence (see
+  `monitoring/README.md`'s "Known limitation").
 
 ### 4.3 Playwright browser — required for the full technical audit
 

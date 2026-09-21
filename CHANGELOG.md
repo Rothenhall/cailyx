@@ -9,6 +9,55 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-21 — Client Portal Phase C7: automatic refresh-cadence
+
+Full decision record: `docs/analysis/client-portal.md` §19. Build order: `docs/PLAN.md` §11.7.
+Full write-up (scoping rationale, cadence-per-tier table, verification notes):
+`backend/src/modules/refresh-cadence/README.md`. Endpoint reference: `docs/API.md`.
+
+**Scoping decision (required before code per §11.7's own caution):** a scheduled refresh re-runs
+only `measurement` (one new run against the project's current active query set, replaying the
+most recently used surface+geo) + `scoring` — never the Day-1 flowchart (competitor discovery,
+backlinks, tech-stack scan, etc. stay one-time/manual).
+
+**New `refresh-cadence` module:**
+- `Client.planTier` (`starter|growth|scale|enterprise`, default `starter`) — new field; nothing
+  existing encoded a plan tier (`billing`'s `Offer`/`Entitlement` are price/feature-key tables,
+  not a tier label, and `billing` was out of scope to touch for this phase). Settable via the
+  existing generic `PATCH /clients/:clientId`.
+- Cadence derivation (`cadenceForTier`): starter=weekly, growth/scale=daily. Enterprise mapped to
+  daily, **not real-time** — flagged as a known gap (`docs/PLAN.md`'s own architecture notes say
+  real-time monitoring is future work; nothing in `docs/analysis/client-portal.md` §19 or
+  `docs/PLAN.md` §11.7 actually promises Enterprise real-time).
+- Automation: an hourly `@nestjs/schedule` cron reconciles every completed project's cadence
+  against its client's current tier, then runs whatever is due — the same architecture pattern
+  `technical-audit`/`seo-audit` already use for their own recurring runs, against dedicated
+  `ScheduleConfig.refresh*` columns (not the shared `cadence` column those two already collide
+  on, and not the BullMQ path, which only `technical-audit`'s own scheduler actually drains under
+  this repo's default `SCHEDULING_BACKEND=cron`).
+- No cadence-configuration endpoint by design — `GET /api/projects/:projectId/refresh-cadence`
+  (read-only status) + `POST .../run-now` (operator/QA override, does not touch the automatic
+  schedule).
+- `MEASUREMENT_MAX_COST_PER_RUN` is unmodified and unbypassed. A real gap live verification
+  caught and fixed: `MeasurementService.executeRun` doesn't throw on an internally-failed run
+  (e.g. the cost cap trips) — it just records the reason on the row — so an early version of
+  `runScopedRefresh` silently reported success anyway. Fixed to check the executed run's status
+  and surface the failure via `refreshLastError`.
+
+**Verification:** `npx tsc --noEmit` and `npx nest build` clean. Live end-to-end against a real
+backend process and the shared dev Postgres (`docker-compose`'s `cailyx-postgres`): created a
+real `Client`+`Project`, let Day-1 onboarding actually complete, created+activated a real
+`QuerySet`, ran a real baseline `MeasurementRun` (mock surface). `PATCH planTier` → cadence
+status updated correctly; `POST run-now` → confirmed a real second measurement run + score run
+via `GET`; the scheduler's `tick()` invoked directly against the same compiled code and live DB
+(an hourly/daily cadence isn't practical to wait out in-session) → confirmed due-row detection,
+the scoped refresh, and `nextRunAt`/`lastRunAt` bookkeeping. **Not verified:** the real
+`@nestjs/schedule` hourly cron firing unattended over a multi-hour wait — the identical mechanism
+is already relied on by `technical-audit`/`seo-audit`, so this is a low-risk, honestly-flagged
+gap rather than a claimed pass. All test data deleted afterward.
+
+---
+
 ## 2026-09-20 — Client Portal Stage 1: §11.0 cleanup + Phase C1 (audit trail + onboarding-gate foundation)
 
 Full decision record: `docs/analysis/client-portal.md` §§15/16/33. Build order: `docs/PLAN.md`
