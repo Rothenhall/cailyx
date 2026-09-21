@@ -33,26 +33,43 @@ Stage 1 is itself a six-stage pipeline since P03 — see
 
 ---
 
-## The staged context pipeline (P03, §9.3–§9.4)
+## The staged context pipeline (P03 §9.3–§9.4, extended by site-context-v2)
 
-Stage 1 above is no longer one crawl plus one synthesis pass. It is six
+Stage 1 above is no longer one crawl plus one synthesis pass. It is seven
 persisted stages, driven by `POST /context` and resumable through
 `POST /context/runs/:runId/resume`:
 
 ```
-1. DISCOVER    homepage + sitemap + nav-guided crawl; page budget enforced,
-               same-content pages skipped by content fingerprint
+1. DISCOVER    homepage + robots.txt/sitemap + nav-guided crawl; page budget
+               enforced, same-content pages skipped by content fingerprint
 2. INSPECT     title / description / headings / language / page type /
-               duplication — all from the HTML already fetched in stage 1,
-               with no second fetch
+               duplication / JSON-LD entities — all from the HTML already
+               fetched in stage 1, with no second fetch
 3. SELECT      deterministic ranking PLUS coverage reservation by purpose
-               category (§9.4), so eleven near-duplicate blog posts cannot
-               crowd out the one pricing page
-4. EXTRACT     deterministic per-page facts always; an optional bounded LLM
-               batch adds ICP / pains / outcomes / markets / category
-5. RECONCILE   merge duplicates, drop tier/nav noise, log unresolved conflicts
-6. VALIDATE    every fact checked against its own cited page's text
+               category (§9.4, 13 categories as of v2), so eleven
+               near-duplicate blog posts cannot crowd out the one pricing page
+4. EXTRACT     deterministic per-page facts + JSON-LD-derived facts always;
+               an optional bounded LLM batch adds the rest of the 25-field
+               taxonomy, each tagged with a factType (explicit/inference)
+5. RECONCILE   merge duplicates, drop tier/nav noise, log unresolved
+               conflicts, score each fact's confidence (factType + citing-page
+               authority + cross-source corroboration)
+6. VALIDATE    every fact checked verbatim against its own cited page's
+               content (text for text-derived facts, text+html for
+               JSON-LD-derived ones, since the latter's evidence lives only
+               in the raw script tag)
+7. CONSOLIDATE one bounded LLM call producing a per-category summary
+               (facts/conflicts/missing-fields/confidence) — see
+               `docs/analysis/site-context-v2.md`
 ```
+
+**Site-context-v2** (`docs/analysis/site-context-v2.md`) is the ongoing effort
+to make `SiteContext` the shared company-context foundation other modules
+read from (not just an AEO-audit input). Phase 1 — JSON-LD parsing, the
+expanded fact taxonomy, fact-type/confidence scoring, category consolidation,
+a narrow identity-resolution heuristic, and a read-only digital-presence
+merge — is done; migrating other consumer modules onto it is tracked
+separately.
 
 **Resumability is the exit gate (P03, plan §20.2).** Every stage's output is a
 Prisma row — `SiteContextRun`, `SiteContextRunPage`, `SiteContextFact` — not an
@@ -91,9 +108,9 @@ deterministically).
 **Selection is by coverage, not by top-N score** (§9.4). Each fetched page is
 classified by purpose and fills a reserved slot in priority order:
 
-| Category | `homepage` | `service` | `pricing` | `about` | `industries` | `location` | `case-study` | `other` |
-|---|---|---|---|---|---|---|---|---|
-| Reserved slots | 1 | 4 | 1 | 1 | 2 | 1 | 2 | 1 |
+| Category | `homepage` | `service` | `pricing` | `about` | `industries` | `location` | `case-study` | `leadership` | `security` | `partner` | `press` | `careers` | `other` |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Reserved slots | 1 | 4 | 1 | 1 | 2 | 1 | 2 | 1 | 1 | 1 | 1 | 1 | 1 |
 
 `login`, `cart`, `account`, `search`, `policy` and `blog`/`news` pages are
 never selected — excluded outright, never "excluded by a low score". Every page
@@ -122,6 +139,17 @@ for `services`, `icp`, `valueProps`, `painPoints`, `outcomes`, `markets`,
 observedAt }` entries each. That is what `business-profile`'s
 `GET …/overview` cites when it shows a field-specific source page for a
 suggestion, instead of the old whole-context fallback.
+
+**The other 15 site-context-v2 fields** (`legalName`, `alternateName`,
+`foundedYear`, `headquarters`, `officeLocation`, `languages`, `pricingModel`,
+`differentiator`, `leadership`, `certification`, `award`, `partner`,
+`technology`, `businessModel`, `contact`) are exposed as a generic bag,
+`SiteContext.facts: Record<string, string[]>`, rather than 15 more named
+top-level properties. `SiteContext.identityType`/`identityConfidence` flag
+when the site's own declared identity doesn't match the Cailyx project name
+on record; `SiteContext.completeness`/`overallCompleteness` report per-category
+and weighted-overall completeness (§22); `SiteContext.socialProfiles` is a
+read-only merge of `digital-presence`'s confirmed accounts.
 
 **Stages 7 and 8 of §9.3 are deliberately not in this service.** Human review
 and "refresh dependants" are `business-profile`'s existing

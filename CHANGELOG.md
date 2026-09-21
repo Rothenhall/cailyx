@@ -9,6 +9,76 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-22 — Site Context Pipeline v2 Phase 1: JSON-LD, fact types/confidence, category consolidation, identity resolution
+
+Full decision record: `docs/analysis/site-context-v2.md`. Reworks
+`AeoContextService` (`backend/src/modules/aeo-audit/aeo-context.service.ts`)
+so `SiteContext` can become the shared company-context foundation for other
+modules (content, personas, keyword research), not just an AEO-audit input —
+that consumer migration is tracked as follow-up work, not done here.
+
+No new external tools/vendors — reuses `cheerio`, `FetcherService`, and the
+existing `AeoLlmService` (OpenRouter). `npx tsc --noEmit` clean across the
+whole backend; Prisma client regenerated for the schema change (`facts`,
+`identityType`, `identityConfidence`, `completeness`, `overallCompleteness`,
+`socialProfiles` on `SiteContext`; `factType`/`confidence` on
+`SiteContextFact`; `jsonLd` on `SiteContextRunPage`; new
+`SiteContextCategorySummary` model). Applied identically to `schema.prisma`
+and `schema.production.prisma`.
+
+- **JSON-LD/schema.org parsing** — new stage-2 extraction of
+  `Organization`/`LocalBusiness`/etc. blocks into cited facts (`legalName`,
+  `alternateName`, `foundedYear`, `headquarters`, `contact`, `leadership`,
+  `award`).
+- **Expanded fact taxonomy** — `FactField` grew from 10 to 25 values; every
+  previously-unguided LLM extraction field (`painPoints`, `outcomes`,
+  `category`, `vertical`) now has explicit prompt guidance.
+- **Fact type + confidence scoring** — every fact carries `factType`
+  (explicit/strong-inference/weak-inference/conflicted) and a `confidence`
+  computed from factType + citing-page authority + cross-source
+  corroboration, never the LLM's bare self-report.
+- **Category-level consolidation** — new stage 7, one bounded LLM call
+  producing a `SiteContextCategorySummary` per category (facts, conflicts,
+  missing fields, confidence).
+- **Identity resolution** — flags when a site's declared legal/brand name
+  doesn't match the Cailyx project name on record (`identityType`).
+- **Digital-presence merge** — confirmed social accounts read into
+  `SiteContext.socialProfiles`, read-only, no new coupling.
+- **Weighted completeness scoring** — per-category + overall (§22 weights).
+- **Broader discovery** — `robots.txt` `Sitemap:` directives, more fallback
+  sitemap paths, 5 new page-type classes (leadership/security/press/careers/partner).
+
+**Bug found and fixed along the way**: `AeoLlmService`'s OpenRouter calls had
+no `reasoning: { enabled: false }` flag. The current default model
+(`deepseek/deepseek-v4.1-flash`) is a reasoning model that can burn its
+entire `max_tokens` budget on hidden chain-of-thought before writing any
+content, returning empty output that surfaced as "model returned non-JSON."
+Confirmed live via a direct OpenRouter call. This predates this work and was
+silently degrading any call in the module with a long/hard enough prompt —
+fixed unconditionally for every caller, not just the new code.
+
+Verified: live end-to-end run against basecamp.com (real site, real
+OpenRouter call) — correctly extracted legal name "37signals LLC",
+leadership, business model; correctly flagged `identityType: "subsidiary"`
+(a real, accurate catch — Basecamp *is* legally 37signals LLC). All four
+affected smoke suites re-run clean: `aeo-context-staged.smoke.sh` (44/44),
+`aeo-audit.smoke.sh` (59/59, 1 intentional skip), `competitors.smoke.sh`
+(20/20), `competitors-unified.smoke.sh` (33/33). Found and fixed a real
+gating bug during this verification: the new consolidation stage initially
+ignored `run.refine: false`, which would have broken the "this run never
+calls an LLM" guarantee an existing smoke suite depends on.
+
+Left for later: a real Postgres migration (blocked on a pre-existing
+`migration_lock.toml` provider drift — still says `sqlite` while both schema
+files target Postgres, not introduced by this change); re-running the AEO
+stance-judging model benchmark now that the reasoning bug is fixed; Phase 2
+(social/external enrichment, bounded research agent, independent verifier);
+migrating `persona`/`content`/`growth-execution`/`keyword-research` onto
+`BusinessProfileService.getConfirmedProfile()` instead of raw `Project`
+columns — the actual "make this the base for everything" step.
+
+---
+
 ## 2026-09-22 — Client Portal Phase C6: governance, cost control & security (verified 18/18 against live prod)
 
 Full decision record: `docs/analysis/client-portal.md` §§28/29/31. Build order: `docs/PLAN.md`

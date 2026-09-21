@@ -86,14 +86,23 @@ const INDUSTRIES_PATTERN = /\/(industr(y|ies)|sectors?|who-we-serve)(\/|$)/i;
 const LOCATION_PATTERN = /\/(locations?|near-me|cities|areas?-we-serve|service-areas?)(\/|$)/i;
 const CASE_STUDY_PATTERN = /\/(case-stud(y|ies)|success-stor(y|ies)|customer-stor(y|ies)|testimonials?)(\/|$)/i;
 const SERVICE_PATTERN = /\/(services?|solutions?|products?|what-we-do|capabilit|expertise)(\/|$)/i;
-const BLOG_PATTERN = /\/(blog|news|press|articles?|insights?)(\/|$)/i;
+const BLOG_PATTERN = /\/(blog|news|articles?|insights?)(\/|$)/i;
+/** Site-context-v2 §5 — additional classes the pre-v2 pipeline collapsed into "other". */
+const LEADERSHIP_PATTERN = /\/(leadership|team|our-team|management|founders?)(\/|$)/i;
+const SECURITY_PATTERN = /\/(security|compliance|trust|gdpr-compliance|soc2|iso-27001)(\/|$)/i;
+const PRESS_PATTERN = /\/(press|newsroom|media-kit|investors?|investor-relations)(\/|$)/i;
+const CAREERS_PATTERN = /\/(careers?|jobs|join-us|we're-hiring|hiring)(\/|$)/i;
+const PARTNER_PATTERN = /\/(partners?|integrations?|marketplace|ecosystem)(\/|$)/i;
 
 export type PageType =
   | 'homepage' | 'service' | 'about' | 'pricing' | 'industries' | 'location'
-  | 'case-study' | 'blog' | 'login' | 'cart' | 'policy' | 'other';
+  | 'case-study' | 'blog' | 'login' | 'cart' | 'policy'
+  | 'leadership' | 'security' | 'press' | 'careers' | 'partner' | 'other';
 
 /** Purpose categories the select stage reserves coverage capacity for. `null` = never selected. */
-export type PurposeCategory = 'homepage' | 'service' | 'about' | 'pricing' | 'industries' | 'location' | 'case-study' | 'other';
+export type PurposeCategory =
+  | 'homepage' | 'service' | 'about' | 'pricing' | 'industries' | 'location' | 'case-study'
+  | 'leadership' | 'security' | 'press' | 'careers' | 'partner' | 'other';
 
 /** How many of the fetched pool the select stage will take per category, priority order first. */
 const CATEGORY_TARGETS: Record<PurposeCategory, number> = {
@@ -104,9 +113,17 @@ const CATEGORY_TARGETS: Record<PurposeCategory, number> = {
   industries: 2,
   location: 1,
   'case-study': 2,
+  leadership: 1,
+  security: 1,
+  press: 1,
+  careers: 1,
+  partner: 1,
   other: 1,
 };
-const CATEGORY_PRIORITY: PurposeCategory[] = ['homepage', 'service', 'pricing', 'about', 'industries', 'location', 'case-study', 'other'];
+const CATEGORY_PRIORITY: PurposeCategory[] = [
+  'homepage', 'service', 'pricing', 'about', 'industries', 'location', 'case-study',
+  'leadership', 'security', 'partner', 'press', 'careers', 'other',
+];
 
 /** Cap on cached page content (keeps run rows bounded on a large page). */
 const MAX_CACHED_HTML = 80_000;
@@ -114,8 +131,28 @@ const MAX_CACHED_TEXT = 30_000;
 /** Cap on characters of page text handed to any one LLM extraction batch call. */
 const MAX_BATCH_CHARS = 8_000;
 
-/** Business-fact fields a `SiteContextFact` row can carry. */
-type FactField = 'services' | 'icp' | 'valueProps' | 'painPoints' | 'outcomes' | 'markets' | 'category' | 'vertical' | 'description' | 'brand';
+/** Business-fact fields a `SiteContextFact` row can carry (site-context-v2 §11, expanded from the pre-v2 10). */
+type FactField =
+  | 'services' | 'icp' | 'valueProps' | 'painPoints' | 'outcomes' | 'markets' | 'category' | 'vertical' | 'description' | 'brand'
+  | 'legalName' | 'alternateName' | 'foundedYear' | 'headquarters' | 'officeLocation' | 'languages'
+  | 'pricingModel' | 'differentiator' | 'leadership' | 'certification' | 'award' | 'partner' | 'technology'
+  | 'businessModel' | 'contact';
+
+/** How a fact was arrived at (§13) — never trust the model's self-reported confidence alone. */
+type FactType = 'explicit' | 'strong_inference' | 'weak_inference' | 'conflicted';
+
+const CATEGORY_FIELDS: Record<string, FactField[]> = {
+  identity: ['brand', 'legalName', 'alternateName', 'foundedYear', 'category', 'vertical'],
+  descriptions: ['description'],
+  offerings: ['services', 'pricingModel'],
+  positioning: ['valueProps', 'differentiator', 'painPoints', 'outcomes'],
+  customers: ['icp'],
+  geography: ['markets', 'headquarters', 'officeLocation', 'languages'],
+  organization: ['leadership'],
+  credibility: ['certification', 'award'],
+  go_to_market: ['businessModel', 'partner', 'contact'],
+  technology: ['technology'],
+};
 
 /** One extraction-stage fact before it is persisted. */
 interface DraftFact {
@@ -124,7 +161,28 @@ interface DraftFact {
   sourceUrl: string;
   excerpt: string | null;
   contentHash: string | null;
+  factType?: FactType;
 }
+
+/** JSON-LD fields worth keeping (site-context-v2 §9) — everything else on the block is dropped. */
+const JSON_LD_FIELDS = [
+  'name', 'legalName', 'alternateName', 'description', 'url', 'logo', 'sameAs', 'address', 'areaServed',
+  'contactPoint', 'founder', 'foundingDate', 'parentOrganization', 'subOrganization', 'brand', 'makesOffer',
+  'offers', 'knowsAbout', 'award', 'slogan', 'telephone', 'email',
+] as const;
+
+/** One JSON-LD entity kept as evidence (§9) — the raw block, not inferred truth. */
+export interface JsonLdEntity {
+  type: string;
+  fields: Partial<Record<(typeof JSON_LD_FIELDS)[number], unknown>>;
+}
+
+/** Schema.org types worth extracting identity/geography/organization facts from. */
+const RELEVANT_JSON_LD_TYPES = new Set([
+  'Organization', 'Corporation', 'LocalBusiness', 'ProfessionalService', 'Brand', 'WebSite',
+  'Product', 'Service', 'Offer', 'AggregateOffer', 'SoftwareApplication', 'Person', 'Place',
+  'PostalAddress', 'ContactPoint', 'FAQPage', 'Review', 'AggregateRating',
+]);
 
 /** Thrown when a run's elapsed-time budget is exhausted before it reaches `completed`. Carries the run id so the caller can `resume()` it. */
 export class SiteContextRunPausedException extends Error {
@@ -176,6 +234,7 @@ type PageRow = {
   pageType: string | null;
   contentHash: string | null;
   duplicateOfUrl: string | null;
+  jsonLd: string;
   selected: boolean;
   selectionReason: string | null;
   purposeCategory: string | null;
@@ -346,7 +405,7 @@ export class AeoContextService {
 
     try {
       const completed = (s: string): boolean => {
-        const order = ['discover', 'inspect', 'select', 'extract', 'reconcile', 'validate'];
+        const order = ['discover', 'inspect', 'select', 'extract', 'reconcile', 'validate', 'consolidate'];
         return run.stage !== null && order.indexOf(run.stage) >= order.indexOf(s);
       };
 
@@ -372,7 +431,11 @@ export class AeoContextService {
       }
       if (!completed('validate')) {
         await this.stageValidate(run);
-        await checkpoint('validate', 'completed');
+        await checkpoint('validate', 'consolidating');
+      }
+      if (!completed('consolidate')) {
+        await this.stageConsolidate(run);
+        await checkpoint('consolidate', 'completed');
       }
 
       const project = await this.prisma.project.findUnique({ where: { id: run.projectId } });
@@ -460,22 +523,48 @@ export class AeoContextService {
     }
   }
 
-  /** Pull high-signal URLs out of the sitemap (index-aware, one level deep), counting requests against the shared budget. */
+  /** Site-context-v2 §3 — sitemap paths tried when `robots.txt` names none. */
+  private static readonly FALLBACK_SITEMAP_PATHS = [
+    '/sitemap.xml', '/sitemap_index.xml', '/sitemap-index.xml', '/wp-sitemap.xml', '/sitemap/sitemap.xml',
+  ];
+
+  /**
+   * Pull high-signal URLs out of the sitemap (§3: robots.txt `Sitemap:` directives first,
+   * then common fallback paths; index-aware, one level deep), counting requests against
+   * the shared budget.
+   */
   private async sitemapCandidates(origin: string, runId: string, counter: { n: number }, maxRequests: number): Promise<string[]> {
     const urls: string[] = [];
-    const readSitemap = async (url: string): Promise<string[]> => {
-      if (counter.n >= maxRequests) return [];
+    const readRaw = async (url: string): Promise<string | null> => {
+      if (counter.n >= maxRequests) return null;
       counter.n++;
       try {
         const res = await this.fetcher.fetch({ url, timeout: 20000 }, 'aeo-context', runId);
-        if (res.status !== 200 || !res.body) return [];
-        return [...res.body.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/gi)].map((m) => m[1]);
+        return res.status === 200 && res.body ? res.body : null;
       } catch {
-        return [];
+        return null;
       }
     };
+    const readSitemap = async (url: string): Promise<string[]> => {
+      const body = await readRaw(url);
+      return body ? [...body.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/gi)].map((m) => m[1]) : [];
+    };
 
-    const top = await readSitemap(origin + '/sitemap.xml');
+    // §3.1 — robots.txt Sitemap: directives take priority over guessed paths.
+    const robotsBody = await readRaw(origin + '/robots.txt');
+    const fromRobots = robotsBody
+      ? [...robotsBody.matchAll(/^\s*Sitemap:\s*(\S+)/gim)].map((m) => m[1].trim())
+      : [];
+
+    // §3.2 — common fallback paths, tried only when robots.txt named nothing.
+    const sitemapEntryPoints = fromRobots.length > 0 ? fromRobots : AeoContextService.FALLBACK_SITEMAP_PATHS.map((p) => origin + p);
+
+    const top: string[] = [];
+    for (const entry of sitemapEntryPoints) {
+      if (counter.n >= maxRequests) break;
+      top.push(...(await readSitemap(entry)));
+      if (top.length > 0) break; // first entry point that yields anything wins — avoid re-reading every fallback path
+    }
     const nested = top.filter((u) => /\.xml(\.gz)?$/i.test(u)).slice(0, 3);
     const flat = top.filter((u) => !/\.xml(\.gz)?$/i.test(u));
     for (const child of nested) {
@@ -511,6 +600,46 @@ export class AeoContextService {
     return out.slice(0, 15);
   }
 
+  /**
+   * Parse every `application/ld+json` block on a page (§9): expand `@graph`
+   * arrays, keep only schema.org types worth extracting from, and retain only
+   * the fields listed in {@link JSON_LD_FIELDS}. Malformed blocks are skipped,
+   * never thrown — one bad script tag on a page must not fail the whole run.
+   */
+  private extractJsonLd($: cheerio.CheerioAPI): JsonLdEntity[] {
+    const out: JsonLdEntity[] = [];
+    $('script[type="application/ld+json"]').each((_, el) => {
+      const raw = $(el).contents().text();
+      if (!raw || raw.trim().length === 0) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return; // malformed JSON-LD — evidence, not a page failure
+      }
+      const nodes: unknown[] = Array.isArray(parsed)
+        ? parsed
+        : parsed && typeof parsed === 'object' && Array.isArray((parsed as { '@graph'?: unknown })['@graph'])
+          ? ((parsed as { '@graph': unknown[] })['@graph'])
+          : [parsed];
+
+      for (const node of nodes) {
+        if (!node || typeof node !== 'object') continue;
+        const obj = node as Record<string, unknown>;
+        const typeRaw = obj['@type'];
+        const types = Array.isArray(typeRaw) ? typeRaw : typeRaw ? [typeRaw] : [];
+        const type = types.find((t): t is string => typeof t === 'string' && RELEVANT_JSON_LD_TYPES.has(t));
+        if (!type) continue;
+        const fields: JsonLdEntity['fields'] = {};
+        for (const key of JSON_LD_FIELDS) {
+          if (obj[key] !== undefined) fields[key] = obj[key];
+        }
+        if (Object.keys(fields).length > 0) out.push({ type, fields });
+      }
+    });
+    return out.slice(0, 30);
+  }
+
   // ─── Stage 2: Inspect metadata ──────────────────────────────────────────
 
   /** Metadata from data already fetched in stage 1 — no re-fetch. */
@@ -524,6 +653,7 @@ export class AeoContextService {
       let description: string | null = null;
       let language: string | null = null;
       let title: string | null = page.title;
+      let jsonLd: JsonLdEntity[] = [];
 
       if (page.html) {
         const $ = cheerio.load(page.html);
@@ -535,12 +665,13 @@ export class AeoContextService {
         });
         language = $('html').attr('lang')?.slice(0, 5) || null;
         title = title || $('title').text().trim() || null;
+        jsonLd = this.extractJsonLd($);
       }
       const pageType = this.classifyPageType(page.url, isHome);
 
       await this.prisma.siteContextRunPage.update({
         where: { id: page.id },
-        data: { title, description, headings: JSON.stringify(headings), language, pageType },
+        data: { title, description, headings: JSON.stringify(headings), language, pageType, jsonLd: JSON.stringify(jsonLd) },
       });
     }
     const unknown = pages.filter((p) => !p.html).length;
@@ -562,6 +693,11 @@ export class AeoContextService {
     if (LOCATION_PATTERN.test(url)) return 'location';
     if (CASE_STUDY_PATTERN.test(url)) return 'case-study';
     if (SERVICE_PATTERN.test(url)) return 'service';
+    if (LEADERSHIP_PATTERN.test(url)) return 'leadership';
+    if (SECURITY_PATTERN.test(url)) return 'security';
+    if (PRESS_PATTERN.test(url)) return 'press';
+    if (CAREERS_PATTERN.test(url)) return 'careers';
+    if (PARTNER_PATTERN.test(url)) return 'partner';
     if (BLOG_PATTERN.test(url)) return 'blog';
     return 'other';
   }
@@ -654,7 +790,7 @@ export class AeoContextService {
     for (const page of selected) {
       if (page.extractStatus !== 'pending') continue;
       if (!page.html) continue;
-      const facts = this.extractPageFactsDeterministic(page);
+      const facts = [...this.extractPageFactsDeterministic(page), ...this.extractJsonLdFacts(page)];
       for (const f of facts) await this.persistFact(run.id, f);
     }
 
@@ -718,6 +854,71 @@ export class AeoContextService {
     run.charsSpent = charsSpent;
   }
 
+  /**
+   * JSON-LD entities parsed in stage 2 → identity/geography/organization facts
+   * (§9's "structured data is evidence, not guaranteed truth" — these are marked
+   * `explicit` because they are directly stated by the site's own markup, but
+   * still go through stage 6 validation like every other fact).
+   */
+  private extractJsonLdFacts(page: PageRow): DraftFact[] {
+    let entities: JsonLdEntity[];
+    try {
+      entities = JSON.parse(page.jsonLd || '[]') as JsonLdEntity[];
+    } catch {
+      return [];
+    }
+    const out: DraftFact[] = [];
+    // `excerpt` here is a substring that appears LITERALLY in the page's raw HTML
+    // (the JSON-LD script tag itself), not a paraphrase — so stage 6's verbatim
+    // check works the same way it does for a text-extracted fact. It is
+    // deliberately NOT `JSON.stringify(raw)`, which would never match html text
+    // because of quoting/escaping differences.
+    const push = (field: FactField, value: string, excerptText: string): void => {
+      const trimmed = value.trim();
+      const excerpt = excerptText.trim();
+      if (!trimmed || trimmed.length > 300 || !excerpt) return;
+      out.push({ field, value: trimmed, sourceUrl: page.url, contentHash: page.contentHash, factType: 'explicit', excerpt: excerpt.slice(0, 280) });
+    };
+    const asStrings = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : typeof v === 'string' ? [v] : [];
+
+    for (const entity of entities) {
+      const f = entity.fields;
+      if (typeof f.legalName === 'string') push('legalName', f.legalName, f.legalName);
+      for (const alt of asStrings(f.alternateName)) push('alternateName', alt, alt);
+      if (typeof f.name === 'string' && entity.type !== 'Person' && entity.type !== 'Place') push('brand', f.name, f.name);
+      if (typeof f.foundingDate === 'string') {
+        const year = f.foundingDate.match(/\d{4}/)?.[0];
+        if (year) push('foundedYear', year, f.foundingDate);
+      }
+      if (f.address) {
+        const addr = f.address as Record<string, unknown> | string;
+        if (typeof addr === 'string') {
+          push('headquarters', addr, addr);
+        } else {
+          const parts = [addr.streetAddress, addr.addressLocality, addr.addressRegion, addr.addressCountry]
+            .filter((x): x is string => typeof x === 'string');
+          const formatted = parts.join(', ');
+          // Validate against one literal part (e.g. the city), not the joined
+          // string — the join is our own formatting and would never appear
+          // verbatim in the source markup.
+          if (formatted && parts[0]) push('headquarters', formatted, parts[0]);
+        }
+      }
+      if (typeof f.telephone === 'string') push('contact', f.telephone, f.telephone);
+      if (typeof f.email === 'string') push('contact', f.email, f.email);
+      for (const award of asStrings(f.award)) push('award', award, award);
+      if (f.founder) {
+        const founders = Array.isArray(f.founder) ? f.founder : [f.founder];
+        for (const founder of founders) {
+          const name = typeof founder === 'string' ? founder : (founder as Record<string, unknown> | undefined)?.name;
+          if (typeof name === 'string') push('leadership', name + ' (founder)', name);
+        }
+      }
+    }
+    return out.slice(0, 20);
+  }
+
   /** Headings/hero copy on one page → candidate services/value props, each cited to that page. */
   private extractPageFactsDeterministic(page: PageRow): DraftFact[] {
     if (!page.html) return [];
@@ -766,36 +967,61 @@ export class AeoContextService {
     const result = await this.llm.json(
       {
         purpose: 'site context extraction (batch)',
-        maxTokens: 1500,
+        maxTokens: 1800,
         system:
-          'You read company web pages and extract factual assertions about what the company sells and who buys it. ' +
-          'Rules:\n' +
-          '- Use ONLY what the page text states. Never infer a service, client type or market that is not there.\n' +
+          'You read company web pages and extract factual assertions about the company itself — never about its ' +
+          'customers, partners or people it merely mentions. Rules:\n' +
+          '- Use ONLY what the page text states. Never complete a missing detail from general/outside knowledge.\n' +
           '- Every fact MUST cite the exact page URL it came from (sourcePage, must be one of the URLs given) and a short verbatim excerpt (<=200 chars, copied text, not a paraphrase) that supports it.\n' +
-          '- field is one of: services, icp, valueProps, painPoints, outcomes, markets, category, vertical, description.\n' +
+          '- factType is one of: "explicit" (directly stated), "strong_inference" (clearly implied by multiple ' +
+          'signals on the page but not stated outright), "weak_inference" (plausible but thin support — prefer ' +
+          'omitting the fact instead of using this).\n' +
+          '- Before writing a fact, check the sentence for negation ("we do NOT offer X", "unlike other providers ' +
+          'we don\'t...") — never emit a fact whose sentence is negated.\n' +
+          '- field is one of: services, icp, valueProps, painPoints, outcomes, markets, category, vertical, ' +
+          'description, legalName, alternateName, foundedYear, headquarters, officeLocation, languages, ' +
+          'pricingModel, differentiator, leadership, certification, award, partner, technology, businessModel, contact.\n' +
           '- services: concrete offerings a buyer can pay for, 2-6 words, in the site\'s own words. Exclude pricing tiers, process steps, company values and people\'s names.\n' +
           '- icp: who buys — role, company type, or segment.\n' +
           '- markets: geographic markets the company SERVES, as ISO-3166 alpha-2 country codes.\n' +
-          '- Return [] for a page/field with no support. An empty result is correct.\n' +
-          'Respond with ONLY JSON: {"facts":[{"field":string,"value":string,"sourcePage":string,"excerpt":string}]}',
+          '- painPoints: a problem the BUYER has before working with this company — not a problem the company itself faces.\n' +
+          '- outcomes: a result the company promises the buyer, stated as an outcome, not a feature list restated.\n' +
+          '- category: a short (2-5 word) descriptor of what kind of business this is (e.g. "b2b logistics software").\n' +
+          '- vertical: the industry the company sells INTO, if the page names one (e.g. "healthcare", "construction").\n' +
+          '- pricingModel: how the company charges (e.g. "subscription", "per-project quote", "usage-based") — only if the page actually states or clearly shows a pricing structure.\n' +
+          '- differentiator: a stated reason to choose this company over alternatives — must be comparative or exclusivity language, not a plain feature.\n' +
+          '- leadership: a named person with their role, only when the page states both.\n' +
+          '- businessModel: how the company sells (e.g. "self-serve SaaS", "field service with local technicians", "B2B agency retainer").\n' +
+          '- Return [] for a page/field with no support. An empty result is correct — do not force a value.\n' +
+          'Respond with ONLY JSON: {"facts":[{"field":string,"value":string,"sourcePage":string,"excerpt":string,"factType":string}]}',
         user: 'Pages (' + urls.join(', ') + ') follow.\n' + corpus,
       },
       (raw) => this.validateBatchFacts(raw, urls),
     );
 
     const facts: DraftFact[] = result.data.map((f) => ({
-      field: f.field, value: f.value, sourceUrl: f.sourcePage, excerpt: f.excerpt,
+      field: f.field, value: f.value, sourceUrl: f.sourcePage, excerpt: f.excerpt, factType: f.factType,
       contentHash: batch.find((p) => p.url === f.sourcePage)?.contentHash ?? null,
     }));
     return { facts, model: result.model, costUsd: result.costUsd };
   }
 
-  private validateBatchFacts(raw: unknown, allowedUrls: string[]): Array<{ field: FactField; value: string; sourcePage: string; excerpt: string }> {
+  private static readonly LLM_EXTRACTABLE_FIELDS: FactField[] = [
+    'services', 'icp', 'valueProps', 'painPoints', 'outcomes', 'markets', 'category', 'vertical', 'description',
+    'legalName', 'alternateName', 'foundedYear', 'headquarters', 'officeLocation', 'languages', 'pricingModel',
+    'differentiator', 'leadership', 'certification', 'award', 'partner', 'technology', 'businessModel', 'contact',
+  ];
+
+  private validateBatchFacts(
+    raw: unknown,
+    allowedUrls: string[],
+  ): Array<{ field: FactField; value: string; sourcePage: string; excerpt: string; factType: FactType }> {
     const obj = (raw ?? {}) as { facts?: unknown };
     if (!Array.isArray(obj.facts)) return [];
-    const validFields: FactField[] = ['services', 'icp', 'valueProps', 'painPoints', 'outcomes', 'markets', 'category', 'vertical', 'description'];
+    const validFields = new Set(AeoContextService.LLM_EXTRACTABLE_FIELDS);
+    const validFactTypes: FactType[] = ['explicit', 'strong_inference', 'weak_inference'];
     const urlSet = new Set(allowedUrls);
-    const out: Array<{ field: FactField; value: string; sourcePage: string; excerpt: string }> = [];
+    const out: Array<{ field: FactField; value: string; sourcePage: string; excerpt: string; factType: FactType }> = [];
     for (const entry of obj.facts) {
       if (!entry || typeof entry !== 'object') continue;
       const e = entry as Record<string, unknown>;
@@ -803,19 +1029,27 @@ export class AeoContextService {
       const value = typeof e.value === 'string' ? e.value.trim() : '';
       const sourcePage = typeof e.sourcePage === 'string' ? e.sourcePage.trim() : '';
       const excerpt = typeof e.excerpt === 'string' ? e.excerpt.trim() : '';
-      if (!validFields.includes(field as FactField)) continue;
+      const factTypeRaw = typeof e.factType === 'string' ? e.factType : 'weak_inference';
+      const factType = validFactTypes.includes(factTypeRaw as FactType) ? (factTypeRaw as FactType) : 'weak_inference';
+      if (!validFields.has(field as FactField)) continue;
       if (value.length === 0 || value.length > 300) continue;
       if (!urlSet.has(sourcePage)) continue; // hallucinated source page — dropped, never trusted
       if (excerpt.length === 0) continue;
       if (field === 'markets' && !/^[A-Za-z]{2}$/.test(value)) continue;
-      out.push({ field: field as FactField, value: field === 'markets' ? value.toUpperCase() : value, sourcePage, excerpt: excerpt.slice(0, 300) });
+      out.push({
+        field: field as FactField, value: field === 'markets' ? value.toUpperCase() : value,
+        sourcePage, excerpt: excerpt.slice(0, 300), factType,
+      });
     }
     return out.slice(0, 60);
   }
 
   private async persistFact(runId: string, f: DraftFact): Promise<void> {
     await this.prisma.siteContextFact.create({
-      data: { runId, field: f.field, value: f.value, sourceUrl: f.sourceUrl, excerpt: f.excerpt, contentHash: f.contentHash },
+      data: {
+        runId, field: f.field, value: f.value, sourceUrl: f.sourceUrl, excerpt: f.excerpt, contentHash: f.contentHash,
+        factType: f.factType ?? 'explicit',
+      },
     });
   }
 
@@ -843,14 +1077,28 @@ export class AeoContextService {
 
   // ─── Stage 5: Reconcile ─────────────────────────────────────────────────
 
-  /** Merge duplicate facts, apply the same tier/nav filter to LLM-derived services, log unresolved singular-field conflicts. */
+  /** Page-authority weight for confidence scoring (§13) — identity/organization claims on these pages are more trustworthy than a blog post's. */
+  private static readonly HIGH_AUTHORITY_PURPOSES = new Set<string>(['homepage', 'about', 'pricing', 'leadership', 'security']);
+
+  /**
+   * Merge duplicate facts, apply the same tier/nav filter to LLM-derived
+   * services, log unresolved singular-field conflicts, and compute each
+   * fact's confidence (§13) from factType + citing-page authority +
+   * cross-source agreement — never the LLM's bare self-report.
+   */
   private async stageReconcile(run: RunRow): Promise<void> {
     const facts = await this.prisma.siteContextFact.findMany({ where: { runId: run.id } });
-    const singular: FactField[] = ['category', 'vertical', 'description', 'brand'];
+    const pages = await this.prisma.siteContextRunPage.findMany({ where: { runId: run.id } });
+    const purposeByUrl = new Map(pages.map((p) => [p.url, p.purposeCategory]));
+
+    const singular: FactField[] = ['category', 'vertical', 'description', 'brand', 'legalName', 'foundedYear'];
     for (const field of singular) {
       const values = new Set(facts.filter((f) => f.field === field).map((f) => f.value.trim().toLowerCase()));
       if (values.size > 1) {
         await this.addNote(run.id, `Unresolved conflict on "${field}": ${values.size} different values found across selected pages — the most-cited one wins, the rest are dropped.`);
+        for (const f of facts.filter((x) => x.field === field)) {
+          await this.prisma.siteContextFact.update({ where: { id: f.id }, data: { factType: 'conflicted' } });
+        }
       }
     }
     // Services that are actually tier/step words even when the LLM proposed them.
@@ -864,6 +1112,32 @@ export class AeoContextService {
         });
       }
     }
+
+    // Confidence (§13): base by factType, boosted by citing-page authority and
+    // by how many independent pages/sources support the same field+value.
+    const crossSourceCount = new Map<string, number>();
+    for (const f of facts) {
+      const key = f.field + ':' + f.value.trim().toLowerCase();
+      crossSourceCount.set(key, (crossSourceCount.get(key) ?? 0) + 1);
+    }
+    for (const f of facts) {
+      const key = f.field + ':' + f.value.trim().toLowerCase();
+      const authority = AeoContextService.HIGH_AUTHORITY_PURPOSES.has(purposeByUrl.get(f.sourceUrl) ?? '') ? 2 : 1;
+      const confidence = this.computeConfidence(this.asFactType(f.factType), authority, crossSourceCount.get(key) ?? 1);
+      await this.prisma.siteContextFact.update({ where: { id: f.id }, data: { confidence } });
+    }
+  }
+
+  /** §13's weighting — factType is the dominant signal; authority and corroboration only adjust within its band. */
+  private computeConfidence(factType: FactType, sourceAuthority: 1 | 2, crossSourceCount: number): number {
+    const base = factType === 'explicit' ? 0.75 : factType === 'strong_inference' ? 0.55 : factType === 'conflicted' ? 0.3 : 0.35;
+    const authorityBoost = sourceAuthority === 2 ? 0.1 : 0;
+    const corroborationBoost = Math.min(crossSourceCount - 1, 2) * 0.05;
+    return Math.max(0, Math.min(1, base + authorityBoost + corroborationBoost));
+  }
+
+  private asFactType(raw: string): FactType {
+    return raw === 'explicit' || raw === 'strong_inference' || raw === 'weak_inference' || raw === 'conflicted' ? raw : 'weak_inference';
   }
 
   // ─── Stage 6: Validate ──────────────────────────────────────────────────
@@ -872,7 +1146,10 @@ export class AeoContextService {
   private async stageValidate(run: RunRow): Promise<void> {
     const facts = await this.prisma.siteContextFact.findMany({ where: { runId: run.id } });
     const pages = await this.prisma.siteContextRunPage.findMany({ where: { runId: run.id } });
-    const textByUrl = new Map(pages.map((p) => [p.url, this.normalizeText(p.text || p.html || '')]));
+    // Both text and html: a text-extracted fact's excerpt lives in the visible
+    // text; a JSON-LD-extracted fact's excerpt lives only in the raw script
+    // tag, which `text` (visible-text-only) never contains.
+    const textByUrl = new Map(pages.map((p) => [p.url, this.normalizeText((p.text || '') + ' ' + (p.html || ''))]));
 
     let dropped = 0;
     for (const f of facts) {
@@ -896,6 +1173,144 @@ export class AeoContextService {
 
   private normalizeText(s: string): string {
     return s.replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  // ─── Stage 7: Consolidate ───────────────────────────────────────────────
+
+  /**
+   * Category-level consolidation (§18): one bounded LLM call covering every
+   * category that has validated facts, asked to merge genuine duplicates,
+   * keep distinct offerings separate, surface conflicts, and list missing
+   * fields — never asked to invent a value the facts don't support.
+   *
+   * Adaptation from the source spec's "one call per category": batched into
+   * a single call here to keep a run's LLM call count bounded (this module
+   * already makes up to ceil(selectedPages/4) calls in stageExtract); the
+   * output schema still keeps every category's summary separate.
+   *
+   * A category with zero validated facts costs no LLM call — its summary row
+   * is written deterministically with an empty fact list and every field of
+   * that category in `missingFields`.
+   */
+  private async stageConsolidate(run: RunRow): Promise<void> {
+    const existing = await this.prisma.siteContextCategorySummary.findMany({ where: { runId: run.id } });
+    if (existing.length > 0) return; // already consolidated on a prior attempt
+
+    const validFacts = await this.prisma.siteContextFact.findMany({ where: { runId: run.id, validated: true } });
+    const byCategory = new Map<string, typeof validFacts>();
+    for (const [category, fields] of Object.entries(CATEGORY_FIELDS)) {
+      byCategory.set(category, validFacts.filter((f) => fields.includes(f.field as FactField)));
+    }
+
+    const nonEmpty = [...byCategory.entries()].filter(([, facts]) => facts.length > 0);
+    // `run.refine === false` means "this run must never call an LLM" (same
+    // contract stageExtract honors) — never overridden by a category having
+    // facts to consolidate.
+    if (nonEmpty.length === 0 || !run.refine || !this.llm.isAvailable()) {
+      for (const [category, fields] of Object.entries(CATEGORY_FIELDS)) {
+        await this.prisma.siteContextCategorySummary.create({
+          data: { runId: run.id, category, missingFields: JSON.stringify(fields), confidence: 0 },
+        });
+      }
+      return;
+    }
+
+    const payload = nonEmpty.map(([category, facts]) => ({
+      category,
+      facts: facts.map((f) => ({ field: f.field, value: f.value, factType: f.factType, confidence: f.confidence })),
+    }));
+
+    try {
+      const result = await this.llm.json(
+        {
+          purpose: 'category-level consolidation',
+          maxTokens: 2200,
+          system:
+            'You consolidate already-extracted, already-cited facts about one company into a short per-category ' +
+            'summary. You do not have the source pages — only the facts below. Rules:\n' +
+            '- Never invent a fact not present in the input.\n' +
+            '- Merge genuine duplicates (same claim, different wording) into one canonical fact; keep distinct ' +
+            'offerings/claims separate even if similar.\n' +
+            '- A conflict is two facts in the same category that cannot both be true (not just two different ' +
+            'offerings). List conflicts explicitly; do not silently pick one.\n' +
+            '- missingFields: which of the category\'s expected fields (given per category below) have zero facts.\n' +
+            '- confidence: your assessment of how complete and mutually consistent this category is (0-1), based on ' +
+            'the input facts\' own confidence and factType — not a guess independent of them.\n' +
+            'Respond with ONLY JSON: {"categories":[{"category":string,"summary":string,"facts":string[],' +
+            '"conflicts":string[],"missingFields":string[],"confidence":number}]}',
+          user:
+            'Categories and their expected fields:\n' +
+            Object.entries(CATEGORY_FIELDS).map(([c, f]) => `${c}: ${f.join(', ')}`).join('\n') +
+            '\n\nExtracted facts by category:\n' + JSON.stringify(payload),
+        },
+        (raw) => this.validateConsolidation(raw),
+      );
+
+      const seen = new Set<string>();
+      for (const c of result.data) {
+        seen.add(c.category);
+        await this.prisma.siteContextCategorySummary.create({
+          data: {
+            runId: run.id, category: c.category, summary: c.summary,
+            facts: JSON.stringify(c.facts), conflicts: JSON.stringify(c.conflicts),
+            missingFields: JSON.stringify(c.missingFields), confidence: c.confidence,
+          },
+        });
+      }
+      for (const category of Object.keys(CATEGORY_FIELDS)) {
+        if (seen.has(category)) continue;
+        const fields = CATEGORY_FIELDS[category];
+        const facts = byCategory.get(category) ?? [];
+        await this.prisma.siteContextCategorySummary.create({
+          data: {
+            runId: run.id, category,
+            facts: JSON.stringify(facts.map((f) => f.value)),
+            missingFields: JSON.stringify(facts.length > 0 ? [] : fields),
+            confidence: facts.length > 0 ? 0.5 : 0,
+          },
+        });
+      }
+    } catch (err) {
+      this.logger.warn(`Category consolidation failed for run ${run.id}: ${(err as Error).message} — falling back to deterministic per-category summaries.`);
+      for (const [category, fields] of Object.entries(CATEGORY_FIELDS)) {
+        const facts = byCategory.get(category) ?? [];
+        await this.prisma.siteContextCategorySummary.create({
+          data: {
+            runId: run.id, category,
+            facts: JSON.stringify([...new Set(facts.map((f) => f.value))]),
+            missingFields: JSON.stringify(facts.length > 0 ? [] : fields),
+            confidence: facts.length > 0 ? 0.5 : 0,
+          },
+        });
+      }
+    }
+  }
+
+  private validateConsolidation(raw: unknown): Array<{
+    category: string; summary: string | null; facts: string[]; conflicts: string[]; missingFields: string[]; confidence: number;
+  }> {
+    const obj = (raw ?? {}) as { categories?: unknown };
+    if (!Array.isArray(obj.categories)) return [];
+    const validCategories = new Set(Object.keys(CATEGORY_FIELDS));
+    const strArr = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').map((s) => s.trim().slice(0, 300)).filter(Boolean).slice(0, 30) : [];
+    const out: Array<{ category: string; summary: string | null; facts: string[]; conflicts: string[]; missingFields: string[]; confidence: number }> = [];
+    for (const entry of obj.categories) {
+      if (!entry || typeof entry !== 'object') continue;
+      const e = entry as Record<string, unknown>;
+      const category = typeof e.category === 'string' ? e.category : '';
+      if (!validCategories.has(category)) continue;
+      const confidenceRaw = typeof e.confidence === 'number' ? e.confidence : 0;
+      out.push({
+        category,
+        summary: typeof e.summary === 'string' ? e.summary.trim().slice(0, 500) : null,
+        facts: strArr(e.facts),
+        conflicts: strArr(e.conflicts),
+        missingFields: strArr(e.missingFields).filter((f) => (CATEGORY_FIELDS[category] as string[]).includes(f)),
+        confidence: Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(1, confidenceRaw)) : 0,
+      });
+    }
+    return out;
   }
 
   // ─── Compile final SiteContext ──────────────────────────────────────────
@@ -943,6 +1358,21 @@ export class AeoContextService {
     const vertical = singular('vertical');
     const geo = markets[0] ?? this.geoFromDomain(run.domain);
 
+    const expandedFields: FactField[] = [
+      'legalName', 'alternateName', 'foundedYear', 'headquarters', 'officeLocation', 'languages',
+      'pricingModel', 'differentiator', 'leadership', 'certification', 'award', 'partner', 'technology',
+      'businessModel', 'contact',
+    ];
+    const facts: Record<string, string[]> = {};
+    for (const field of expandedFields) {
+      const values = byField(field, 10);
+      if (values.length > 0) facts[field] = values;
+    }
+
+    const { identityType, identityConfidence } = this.resolveIdentity(validFacts, project);
+    const socialProfiles = await this.confirmedSocialProfiles(run.projectId);
+    const { completeness, overallCompleteness } = await this.scoreCompleteness(run.id, socialProfiles.length > 0);
+
     const notes = this.parseStringArray(run.notes);
     const costEntries = notes.filter((n) => n.startsWith('__cost__:'));
     const costUsd = costEntries.reduce((sum, n) => sum + (Number(n.split(':')[1]) || 0), 0);
@@ -981,6 +1411,12 @@ export class AeoContextService {
       extraction: usedLlm ? 'llm-synthesized' : 'deterministic',
       llmModel,
       costUsd,
+      identityType,
+      identityConfidence,
+      completeness,
+      overallCompleteness,
+      socialProfiles,
+      facts,
     };
 
     const row = await this.prisma.siteContext.create({
@@ -991,7 +1427,9 @@ export class AeoContextService {
         valueProps: JSON.stringify(data.valueProps), painPoints: JSON.stringify(data.painPoints), outcomes: JSON.stringify(data.outcomes),
         competitors: JSON.stringify(data.competitors), pagesFetched: data.pagesFetched, pageUrls: JSON.stringify(data.pageUrls),
         extraction: data.extraction, llmModel: data.llmModel, costUsd: data.costUsd,
-        runId: run.id, fieldSources: JSON.stringify(fieldSources),
+        runId: run.id, fieldSources: JSON.stringify(fieldSources), facts: JSON.stringify(facts),
+        identityType, identityConfidence, completeness: JSON.stringify(completeness),
+        overallCompleteness, socialProfiles: JSON.stringify(socialProfiles),
       },
     });
 
@@ -1040,8 +1478,37 @@ export class AeoContextService {
     description: string | null; geo: string | null; markets: string; services: string; icp: string; valueProps: string;
     painPoints: string; outcomes: string; competitors: string; pagesFetched: number; pageUrls: string;
     extraction: string; llmModel: string | null; costUsd: number;
+    identityType?: string | null; identityConfidence?: number | null; completeness?: string | null;
+    overallCompleteness?: number | null; socialProfiles?: string | null; facts?: string | null;
   }): SiteContextData & { id: string; createdAt: Date } {
     const arr = (v: string): string[] => this.parseStringArray(v);
+    const facts: Record<string, string[]> = {};
+    if (row.facts) {
+      try {
+        const parsed = JSON.parse(row.facts) as Record<string, unknown>;
+        for (const [k, v] of Object.entries(parsed)) if (Array.isArray(v)) facts[k] = v.filter((x): x is string => typeof x === 'string');
+      } catch {
+        // leave facts empty — pre-v2 rows never had this column
+      }
+    }
+    let completeness: Record<string, number> = {};
+    if (row.completeness) {
+      try {
+        const parsed = JSON.parse(row.completeness) as Record<string, unknown>;
+        for (const [k, v] of Object.entries(parsed)) if (typeof v === 'number') completeness[k] = v;
+      } catch {
+        completeness = {};
+      }
+    }
+    let socialProfiles: Array<{ platform: string; url: string; state: string }> = [];
+    if (row.socialProfiles) {
+      try {
+        const parsed = JSON.parse(row.socialProfiles) as unknown;
+        if (Array.isArray(parsed)) socialProfiles = parsed as typeof socialProfiles;
+      } catch {
+        socialProfiles = [];
+      }
+    }
     return {
       id: row.id, createdAt: row.createdAt, domain: row.domain, brand: row.brand, category: row.category,
       vertical: row.vertical, description: row.description, geo: row.geo, markets: arr(row.markets),
@@ -1049,6 +1516,9 @@ export class AeoContextService {
       outcomes: arr(row.outcomes), competitors: this.parseCompetitors(row.competitors), pagesFetched: row.pagesFetched,
       pageUrls: arr(row.pageUrls), extraction: row.extraction === 'llm-synthesized' ? 'llm-synthesized' : 'deterministic',
       llmModel: row.llmModel, costUsd: row.costUsd,
+      identityType: (row.identityType as SiteContextData['identityType']) ?? undefined,
+      identityConfidence: row.identityConfidence ?? undefined,
+      completeness, overallCompleteness: row.overallCompleteness ?? undefined, socialProfiles, facts,
     };
   }
 
@@ -1069,6 +1539,79 @@ export class AeoContextService {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Site-context-v2 §2 — a deliberately conservative heuristic, not a
+   * classifier: with only one site's own facts to go on (no cross-domain
+   * corroboration), Phase 1 can reliably flag "this domain says it belongs to
+   * a different legal entity than the one holding the Cailyx project" and
+   * nothing finer. Franchise/regional-site detection needs multi-location
+   * evidence this pipeline doesn't gather yet — left `unknown` rather than guessed.
+   */
+  private resolveIdentity(
+    validFacts: Array<{ field: string; value: string }>,
+    project: { name: string },
+  ): { identityType: SiteContextData['identityType']; identityConfidence: number } {
+    const legalName = validFacts.find((f) => f.field === 'legalName')?.value;
+    const orgBrand = validFacts.find((f) => f.field === 'brand')?.value;
+    const hasParentOrgSignal = validFacts.some((f) => f.field === 'legalName' || f.field === 'alternateName');
+
+    if (!legalName && !orgBrand) {
+      return { identityType: 'unknown', identityConfidence: 0.2 };
+    }
+    const projectKey = project.name.trim().toLowerCase();
+    const orgKey = (legalName ?? orgBrand ?? '').trim().toLowerCase();
+    const shareWord = projectKey.split(/\s+/).some((w) => w.length > 2 && orgKey.includes(w));
+    if (!shareWord && hasParentOrgSignal) {
+      // The site's own declared identity shares no word with the project's
+      // name on record — plausibly a product microsite or subsidiary, but
+      // Phase 1 has no way to tell which without a parent-org field, which
+      // schema.org's `parentOrganization`/`subOrganization` would carry had
+      // the site published one. Flagged, not guessed further.
+      return { identityType: 'subsidiary', identityConfidence: 0.5 };
+    }
+    return { identityType: 'company', identityConfidence: legalName ? 0.8 : 0.6 };
+  }
+
+  /**
+   * Confirmed digital-presence accounts for this project (§14-16's output),
+   * read directly — never re-derived — so this module never duplicates
+   * discovery/verification work `digital-presence` already owns.
+   */
+  private async confirmedSocialProfiles(projectId: string): Promise<Array<{ platform: string; url: string; state: string }>> {
+    const accounts = await this.prisma.presenceAccount.findMany({
+      where: { projectId, state: 'confirmed', entity: 'company' },
+      select: { platform: true, url: true, state: true },
+    });
+    return accounts;
+  }
+
+  /**
+   * Weighted completeness (§22): per-category from `SiteContextCategorySummary`
+   * (1 - missingFields/totalFields for that category), plus a fixed-weight
+   * digital-presence line since that data doesn't come from a category
+   * summary. Confidence and completeness are reported separately — this is
+   * completeness only, not a judgement on whether the populated facts are trustworthy.
+   */
+  private async scoreCompleteness(runId: string, hasSocialProfiles: boolean): Promise<{ completeness: Record<string, number>; overallCompleteness: number }> {
+    const WEIGHTS: Record<string, number> = {
+      identity: 0.15, descriptions: 0.05, offerings: 0.15, positioning: 0.1, customers: 0.15,
+      geography: 0.1, organization: 0.05, credibility: 0.1, go_to_market: 0.05, technology: 0.05,
+    };
+    const summaries = await this.prisma.siteContextCategorySummary.findMany({ where: { runId } });
+    const completeness: Record<string, number> = {};
+    for (const [category, fields] of Object.entries(CATEGORY_FIELDS)) {
+      const row = summaries.find((s) => s.category === category);
+      const missing = row ? this.parseStringArray(row.missingFields).length : fields.length;
+      completeness[category] = fields.length > 0 ? Math.max(0, 1 - missing / fields.length) : 0;
+    }
+    completeness.digital_presence = hasSocialProfiles ? 1 : 0;
+
+    let overall = 0;
+    for (const [category, weight] of Object.entries(WEIGHTS)) overall += (completeness[category] ?? 0) * weight;
+    overall += completeness.digital_presence * 0.05;
+    return { completeness, overallCompleteness: Number(overall.toFixed(3)) };
   }
 
   /**

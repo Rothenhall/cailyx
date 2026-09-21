@@ -37,6 +37,19 @@
  * competitor's "invisible" reading you'd expect starts coming back
  * "mentioned" — this benchmark is the first thing to re-run.
  *
+ * **2026-09-21: confirmed live** that DeepSeek has the *other* documented
+ * failure mode too — it is a reasoning model and, on a longer/harder prompt
+ * (site-context-v2's batched page extraction and category consolidation),
+ * spent the entire `max_tokens` budget on hidden chain-of-thought and
+ * returned an empty message (`finish_reason: "length"`), which surfaced here
+ * as "model returned non-JSON". Fixed by sending `reasoning: { enabled: false }`
+ * on every call — confirmed via a direct OpenRouter call that this drops
+ * reasoning tokens to 0 and returns the JSON directly, at lower cost too.
+ * This was silently breaking any call whose prompt was long/hard enough to
+ * need real reasoning, not just this module's newest ones — worth checking
+ * for symptoms of it (silently-failed passes that fell back to deterministic
+ * output) predating this fix.
+ *
  * ## Cost
  *
  * OpenRouter reports the true charge per call in `usage.cost`, so the audit's
@@ -169,6 +182,17 @@ export class AeoLlmService {
           temperature: 0,
           response_format: { type: 'json_object' },
           usage: { include: true },
+          // 2026-09-21: found live on deepseek-v4.1-flash — a reasoning model
+          // spends `max_tokens` on hidden chain-of-thought first and can hit
+          // the budget before writing any content, returning an EMPTY message
+          // (finish_reason "length", content ""), which this service then
+          // reports as "model returned non-JSON". This is the exact failure
+          // mode the module docblock already warned about for gpt-5-nano —
+          // deepseek has it too, just not triggered by the 4-case stance
+          // benchmark's short prompts. Every caller here wants direct
+          // structured output, never reasoning padding, so it is disabled
+          // unconditionally rather than tuned per-call.
+          reasoning: { enabled: false },
           messages: [
             { role: 'system', content: req.system },
             { role: 'user', content: req.user },

@@ -2240,9 +2240,25 @@ model SiteContext {
   // arrays themselves ("services", "icp", …). "[]" when a field has no
   // citation on file (pre-P03 rows, or a field the pipeline left empty).
   fieldSources String   @default("{}")
+  // JSON Record<field, string[]> — every site-context-v2 expanded field's
+  // deduped validated values (legalName, headquarters, leadership, ...).
+  facts        String   @default("{}")
 
-  audits AeoAudit[]
-  run    SiteContextRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  // Site-context-v2 (docs/analysis/site-context-v2.md) — identity resolution,
+  // completeness/confidence scoring, and the digital-presence merge.
+  // company | product-microsite | subsidiary | franchise | regional-site | personal-brand | marketplace-listing | unknown
+  identityType       String?
+  identityConfidence Float?
+  // JSON Record<category, number 0-1> — per-category completeness, weighted per §22.
+  completeness        String @default("{}")
+  overallCompleteness Float  @default(0)
+  // JSON Array<{platform,url,state}> — confirmed PresenceAccount rows for this
+  // project at compile time (read-only merge; this module never writes to
+  // digital-presence). "[]" when digital-presence has nothing confirmed yet.
+  socialProfiles String @default("[]")
+
+  audits         AeoAudit[]
+  run            SiteContextRun?              @relation(fields: [runId], references: [id], onDelete: SetNull)
 
   @@index([projectId])
   @@index([projectId, createdAt])
@@ -2260,7 +2276,7 @@ model SiteContextRun {
   projectId String
   domain    String
 
-  // pending | discovering | inspecting | selecting | extracting | reconciling | validating | completed | failed
+  // pending | discovering | inspecting | selecting | extracting | reconciling | validating | consolidating | completed | failed
   status String  @default("pending")
   // last stage fully persisted — what a resume reads to know where to continue
   stage  String?
@@ -2295,9 +2311,10 @@ model SiteContextRun {
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
-  pages   SiteContextRunPage[]
-  facts   SiteContextFact[]
-  context SiteContext?
+  pages             SiteContextRunPage[]
+  facts             SiteContextFact[]
+  categorySummaries SiteContextCategorySummary[]
+  context           SiteContext?
 
   @@index([projectId])
   @@index([projectId, createdAt])
@@ -2325,9 +2342,13 @@ model SiteContextRunPage {
   description     String?
   headings        String  @default("[]") // JSON string[]
   language        String?
-  pageType        String? // homepage | service | about | pricing | industries | location | case-study | blog | login | cart | policy | other
+  pageType        String? // homepage | service | about | pricing | industries | location | case-study | blog | login | cart | policy | leadership | security | press | careers | partner | other
   contentHash     String?
   duplicateOfUrl  String?
+  // JSON Array<{type,fields,raw}> — every JSON-LD block parsed off this page
+  // (Organization/LocalBusiness/Product/Service/Offer/Person/PostalAddress/…),
+  // kept verbatim as evidence, not truth (site-context-v2 step 9).
+  jsonLd          String  @default("[]")
 
   // Stage 3 — selection.
   selected        Boolean @default(false)
@@ -2354,7 +2375,10 @@ model SiteContextRunPage {
 model SiteContextFact {
   id    String @id @default(cuid())
   runId String
-  // services | icp | valueProps | painPoints | outcomes | markets | category | vertical | description | brand | geo
+  // services | icp | valueProps | painPoints | outcomes | markets | category | vertical |
+  // description | brand | geo | legalName | alternateName | foundedYear | headquarters |
+  // officeLocation | languages | pricingModel | differentiator | leadership | certification |
+  // award | partner | technology | businessModel | contact
   field String
   value String
 
@@ -2366,10 +2390,41 @@ model SiteContextFact {
   validated      Boolean @default(false)
   validationNote String?
 
+  // explicit | strong_inference | weak_inference | conflicted (site-context-v2 step 13).
+  // "explicit" for deterministic/JSON-LD facts and LLM facts the model marked directly stated.
+  factType   String @default("explicit")
+  // 0-1, computed from factType + page-type authority + cross-source agreement —
+  // never the LLM's bare self-report alone (step 13's own rule).
+  confidence Float  @default(0.7)
+
   run SiteContextRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
   @@index([runId])
   @@index([runId, field])
+}
+
+// One category-level consolidation of a run's validated facts (site-context-v2
+// step 18): merges duplicates, keeps distinct offerings separate, surfaces
+// conflicts and a missing-field list per category rather than one
+// undifferentiated reconcile pass over every field at once.
+model SiteContextCategorySummary {
+  id            String   @id @default(cuid())
+  runId         String
+  // identity | descriptions | offerings | positioning | customers | geography |
+  // organization | credibility | go_to_market | technology
+  category      String
+  summary       String?
+  facts         String   @default("[]") // JSON string[] — canonical facts for this category
+  inferences    String   @default("[]") // JSON string[] — supported but not directly stated
+  conflicts     String   @default("[]") // JSON string[] — contradictions found within the category
+  missingFields String   @default("[]") // JSON string[] — expected fields this category has no evidence for
+  confidence    Float    @default(0)
+  createdAt     DateTime @default(now())
+
+  run SiteContextRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, category])
+  @@index([runId])
 }
 
 // One AEO audit: a context + a generated matrix + a measurement run on one

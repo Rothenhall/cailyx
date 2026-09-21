@@ -189,6 +189,30 @@ export interface SiteContextData {
   extraction: 'deterministic' | 'llm-synthesized';
   llmModel: string | null;
   costUsd: number;
+  /** Site-context-v2 — is this URL the actual company, or something else? Undefined on pre-v2 rows. */
+  identityType?:
+    | 'company'
+    | 'product-microsite'
+    | 'subsidiary'
+    | 'franchise'
+    | 'regional-site'
+    | 'personal-brand'
+    | 'marketplace-listing'
+    | 'unknown';
+  identityConfidence?: number | null;
+  /** Per-category completeness (0-1), keyed by SiteContextCategorySummary.category. */
+  completeness?: Record<string, number>;
+  overallCompleteness?: number;
+  /** Confirmed digital-presence accounts, merged in read-only at compile time. */
+  socialProfiles?: Array<{ platform: string; url: string; state: string }>;
+  /**
+   * Every site-context-v2 field beyond the pre-v2 top-level ones (legalName,
+   * alternateName, foundedYear, headquarters, officeLocation, languages,
+   * pricingModel, differentiator, leadership, certification, award, partner,
+   * technology, businessModel, contact) — deduped validated values, keyed by
+   * field name. A generic bag rather than 15 more named properties.
+   */
+  facts?: Record<string, string[]>;
 }
 
 // ─── Stance (judged, never counted) ───────────────────────────────────────
