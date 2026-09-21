@@ -18,13 +18,17 @@
 
 import { Module } from '@nestjs/common';
 import { OpportunitiesService } from './opportunities.service';
-import { OpportunitiesController } from './opportunities.controller';
+import { OpportunitiesController, OpportunitiesPortalController } from './opportunities.controller';
 import { GrowthExecutionModule } from '../growth-execution/growth-execution.module';
 import { KeywordResearchModule } from '../keyword-research/keyword-research.module';
 
 @Module({
   imports: [GrowthExecutionModule, KeywordResearchModule],
-  controllers: [OpportunitiesController],
+  // OpportunitiesPortalController (2026-09-21) is the read-only client-portal
+  // surface for "Digital Marketing → Ideation". ScopeValidationService is
+  // global (see business-profile.module.ts's note on the same pattern) so it
+  // is not imported here.
+  controllers: [OpportunitiesController, OpportunitiesPortalController],
   providers: [OpportunitiesService],
   exports: [OpportunitiesService],
 })

@@ -109,6 +109,49 @@ out of scope (backend-only phase; `web/` is a separate active track — see proj
 unrelated to this phase.
 
 ---
+## 2026-09-21 — Client-portal nav restructure: minimal five-item tree reversed to a fuller eight-item tree
+
+Product owner reviewed the client project nav directly and reversed the P16 minimal design
+(Overview | Plan | Results | Content | Calendar) back out to: Dashboard, Reports, Performance
+(Overview, Technical, Visibility > Organic + AI), Competitors, Digital Marketing (Brand Profile,
+Brand Voice, Ideation, Content, Calendar), Business Information, Team Management, Settings.
+`PROJECT_NAV` (operator side) is untouched — only `CLIENT_PROJECT_NAV` changed, and
+`web/src/lib/navigation.ts`'s doc comment records the reversal and every mapping decision made
+for the ambiguous items (Approvals, Team Management scope, the Organic/Technical split, Settings
+scope). Full write-up: `docs/MODULES-STATUS.md` (Wave 7 section).
+
+**Built:**
+- `web/src/lib/navigation.ts` — new `CLIENT_PROJECT_NAV`; `ClientShell.tsx` now also resolves
+  `groups` hrefs (needed for the new "Visibility" sub-heading).
+- New pages: `/performance` (new thin landing page), `/performance/technical` +
+  `/performance/visibility/organic` (the `website` Results tab split into two components,
+  `WebsiteTechnicalPanel`/`WebsiteOrganicPanel` in `results/tab-panels.tsx`; Organic also absorbs
+  the former standalone `presence` tab), `/performance/visibility/ai` + `/competitors` (the
+  `ai`/`competitors` tabs reused wholesale at new addresses), `/reports` (project-scoped, filters
+  the existing account-wide read), `/digital-marketing/brand-profile` + `/brand-voice` (read-only,
+  reuse existing portal reads), `/digital-marketing/ideation` (read-only, backed by a **new**
+  `OpportunitiesPortalController` — `GET /api/portal/projects/:projectId/opportunities`), `/settings`
+  (new, deliberately minimal placeholder).
+- The old four-tab `/results` screen and the account-wide `/client/reports` screen are untouched
+  and still resolve — nothing that already linked to them broke.
+
+**Verified:** `web` `npm run typecheck` and `npm run build` clean (all new routes in the build's
+route table); backend `POST /api/clients/:clientId/login` used to create a real client login
+against the shared local Postgres (`docker compose`'s `cailyx-postgres`, :5436); real HTTP
+requests against the running backend confirmed `GET .../portal/projects/:id/opportunities` → 200
+(honest empty-state data), the same route with another client's project id → 403, and the reused
+`business-profile`/`writing-style`/`overview`/`results/website`/`portal/reports` reads all → 200.
+Every new client-portal page route curled against a running `next dev` → 200 (no 404s). Full
+interactive browser click-through was not performed in this pass (no attached browser session) —
+the API-level + route-resolution verification above is the fallback the task allowed.
+
+**Left for later:** the operator-authored score-bucket drilldown links (`bucketDetailHref` in
+`web/src/services/overview.ts`) still point client audiences at the old `/results?view=...` screen
+rather than the new Performance/Competitors pages — left alone to avoid touching shared drilldown
+logic in this pass; the old screen still works, so no link breaks, but it's a mismatch with the
+new IA worth revisiting.
+
+---
 
 ## 2026-09-20 — Client Portal Stage 1: §11.0 cleanup + Phase C1 (audit trail + onboarding-gate foundation)
 

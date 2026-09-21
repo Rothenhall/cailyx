@@ -232,6 +232,30 @@ project's — opportunity id is `Opportunity <id> not found for project <id>`
 Validation is global (`whitelist: true, forbidNonWhitelisted: true`), so an
 unknown body key is a 400 before any handler runs.
 
+## 2026-09-21 addendum — one read-only client-portal route
+
+The client-nav restructure added a "Digital Marketing → Ideation" item to the
+client project tree, which needed a client-facing read of this queue. Rather
+than change anything above (all 7 operator routes, and the "every route is
+operator-only" claim, are unchanged), a second controller class was added:
+
+`OpportunitiesPortalController` — `@ClientPortal() @Controller('portal/
+projects/:projectId/opportunities')`:
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/portal/projects/:projectId/opportunities` | — (same `?status= &origin= &search= &page= &pageSize=` query as the operator list) | `{ total, page, pageSize, opportunities }` |
+
+Scoped via `ScopeValidationService.assertProjectAccess(user, projectId)` —
+the same pattern `BusinessProfilePortalController` and `ResultsPortalController`
+already use, not a new auth mechanism. Read-only: no analyze/dismiss/reopen/
+convert on the portal side, matching the writing-style module's existing
+precedent that client-edit rights for this kind of staff-curated queue were
+never confirmed by product. Web adapter: `listPortalOpportunities()` in
+`web/src/services/opportunities.ts`. Consumer:
+`web/src/app/(client)/client/projects/[projectId]/digital-marketing/
+ideation/page.tsx`.
+
 ## Deliberately not built
 
 - **`origin` values that nothing writes.** `ai-question-gap`, `refresh` and

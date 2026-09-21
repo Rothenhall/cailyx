@@ -27,6 +27,13 @@ import { getPortalOverview, type PortalOverviewView } from '@/services/overview'
 /**
  * CP03 — Project home, recomposed as §5.1's Overview (P15).
  *
+ * 2026-09-21: this is the page `CLIENT_PROJECT_NAV` now labels "Dashboard" —
+ * a nav relabel only, no content change. It is still the same composed
+ * Overview read (`getPortalOverview`), and its "More on this project" links
+ * row below is where Approvals stays reachable now that the new nav tree has
+ * no top-level Approvals item (see `navigation.ts`'s `CLIENT_PROJECT_NAV` doc
+ * comment for why).
+ *
  * platform_improvement_plan.md §5.1: *"one prominent overall score with 'View
  * results', applicable bucket cards, 'Needs your action' (≤3 cards + truthful
  * total + 'View all'), 'Upcoming content' (≤5 items + calendar link), compact
@@ -237,8 +244,8 @@ export default function ClientProjectHomePage() {
       {/* Navigation, not widgets: everything §5.1 moved off this page has a
           home, and the reader should not have to hunt for it. */}
       <nav aria-label="More on this project" className="flex flex-wrap items-center gap-x-4 gap-y-2 text-meta">
-        <Link href={`/client/projects/${projectId}/results`} className="text-primary underline underline-offset-4">
-          All results
+        <Link href={`/client/projects/${projectId}/performance`} className="text-primary underline underline-offset-4">
+          Performance
         </Link>
         <Link href={`/client/projects/${projectId}/work`} className="text-primary underline underline-offset-4">
           Work
@@ -246,7 +253,7 @@ export default function ClientProjectHomePage() {
         <Link href={`/client/projects/${projectId}/calendar`} className="text-primary underline underline-offset-4">
           Calendar
         </Link>
-        <Link href="/client/reports" className="text-primary underline underline-offset-4">
+        <Link href={`/client/projects/${projectId}/reports`} className="text-primary underline underline-offset-4">
           Reports
         </Link>
         <Link href="/client/approvals" className="text-primary underline underline-offset-4">

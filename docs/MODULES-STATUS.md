@@ -331,6 +331,56 @@ separate track (admin/client platform layer, §1.2h) from the engine-pipeline wa
     `backend/src/modules/approvals/README.md` (C5 addendum), `docs/API.md` (new endpoint
     reference).
 
+- [x] **Client-nav restructure (2026-09-21, not a lettered C-phase — nav/IA
+  work, done between C1 and C2).** The product owner reviewed the client
+  project nav directly and reversed P16's five-item minimal design
+  (Overview | Plan | Results | Content | Calendar) back out to a fuller
+  eight-item tree: Dashboard, Reports, Performance (Overview, Technical,
+  Visibility > Organic + AI), Competitors, Digital Marketing (Brand Profile,
+  Brand Voice, Ideation, Content, Calendar), Business Information, Team
+  Management, Settings. `PROJECT_NAV` (operator side) and its P16 reasoning
+  are untouched — only `CLIENT_PROJECT_NAV` changed.
+  Built: `web/src/lib/navigation.ts`'s new `CLIENT_PROJECT_NAV` (with full
+  inline reasoning for every mapping decision — see its doc comment);
+  `ClientShell.tsx` updated to resolve hrefs inside a section's `groups`
+  (needed for the new "Visibility" sub-heading, the same mechanism
+  `PROJECT_NAV`'s Team tools group already uses). New pages: `/performance`
+  (new thin overview), `/performance/technical` and
+  `/performance/visibility/organic` (the `website` Results tab split into
+  two, via new `WebsiteTechnicalPanel`/`WebsiteOrganicPanel` in
+  `results/tab-panels.tsx` — Organic also absorbs the former standalone
+  `presence` tab, which has no top-level slot in the new spec),
+  `/performance/visibility/ai` and `/competitors` (the `ai`/`competitors`
+  Results tabs reused wholesale at new addresses), `/reports` (project-scoped,
+  filters the existing account-wide `listPortalReports()` by `projectId`),
+  `/digital-marketing/brand-profile` and `/digital-marketing/brand-voice`
+  (read-only, reuse the already-existing `getPortalBusinessProfile`/
+  `getPortalWritingStyle` portal reads), `/digital-marketing/ideation`
+  (read-only, backed by a **new** client-portal endpoint —
+  `OpportunitiesPortalController`, `GET /api/portal/projects/:projectId/
+  opportunities`, `@ClientPortal()` + `ScopeValidationService
+  .assertProjectAccess`), `/settings` (new, deliberately minimal — no
+  client-facing settings concept existed to build on, so this is project/
+  domain/setup-status only). The old four-tab `/results` screen and the
+  account-wide `/client/reports` screen are both untouched and still resolve.
+  Approvals has no top-level nav slot in the new spec — it stays reachable
+  from the project Dashboard's (formerly "Overview") "More on this project"
+  link row, which already linked to it. Team Management links straight to
+  the existing account-level People screen (`/client/account/people`,
+  `absolute: true`) rather than a thin project wrapper, since seat project
+  scope (`PortalMember.projectIds`) is a property of the seat, not the
+  reverse — there is no genuinely project-scoped "team" to wrap.
+  e2e-verified against a live backend + the shared local Postgres
+  (`docker compose` `cailyx-postgres`, :5436): created a client login,
+  confirmed `GET .../portal/projects/:id/opportunities` → 200 real (empty)
+  data, `GET .../portal/projects/:id/opportunities` for another client's
+  project → 403, and the reused `business-profile`/`writing-style`/
+  `overview`/`results/website`/`portal/reports` reads all → 200. `web`
+  `npm run typecheck` and `npm run build` both clean, all new routes appear
+  in the build's route table. Full write-up:
+  `backend/src/modules/opportunities/README.md` (2026-09-21 addendum),
+  `docs/API.md` (new portal endpoint), `CHANGELOG.md`.
+
 ### Standing item (not a module)
 
 - [x] **Frontend dashboard shell** — ✅ Built 2026-08-30 (see §1.4). Nav, login, project list, project workspace with a working Rung-0 scorecard. Individual feature UIs remain per-module work.

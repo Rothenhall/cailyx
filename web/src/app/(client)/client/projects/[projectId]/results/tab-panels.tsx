@@ -325,6 +325,199 @@ function WebsiteTab({ section }: { section: OverviewSection<WebsiteTabData> }) {
   );
 }
 
+// ─── Website, split for Performance → Technical / Visibility → Organic ───────
+//
+// 2026-09-21 client-nav restructure: the `website` tab's data is one payload
+// but now has two homes. These two components render disjoint subsets of the
+// same `WebsiteTabData` — see navigation.ts's `CLIENT_PROJECT_NAV` doc comment
+// for which piece went where and why presence was folded into Organic rather
+// than getting its own destination. `WebsiteTab` above is left as-is for the
+// legacy `/results` screen, which still exists and still needs the whole
+// payload in one place.
+
+/** Performance → Technical: the site-health half of the `website` tab. */
+export function WebsiteTechnicalPanel({ section }: { section: OverviewSection<WebsiteTabData> }) {
+  const data = section.data;
+  if (!data) {
+    return (
+      <Card>
+        <CardContent className="py-4 text-table text-muted-foreground">{section.reason}</CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <EmptyOrData section={section} emptyCopy="We have not checked your website yet.">
+      <div className="space-y-5">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <MetricTile
+            label="Site health"
+            value={data.health.state === 'unknown' ? null : data.health.issueCount}
+            unit={data.health.issueCount === 1 ? 'issue' : 'issues'}
+            note={data.health.label}
+            direction="neutral"
+          />
+        </div>
+
+        {data.importantPages.length > 0 ? (
+          <div className="space-y-2">
+            <TabHeading title="Pages that matter" context={`${data.importantPages.length} page(s)`} />
+            <ul className="divide-y divide-border rounded-md border border-border">
+              {data.importantPages.map((page) => (
+                <li key={page.canonicalUrl} className="space-y-1 p-3">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <span className="text-table font-medium">
+                      {page.title ?? urlToPath(page.canonicalUrl)}
+                    </span>
+                    <span
+                      className={cn(
+                        'text-meta',
+                        page.health === 'needs-attention' ? 'text-warning-foreground' : 'text-muted-foreground',
+                      )}
+                    >
+                      {page.healthLabel}
+                    </span>
+                  </div>
+                  <p className="text-meta text-muted-foreground">{urlToPath(page.canonicalUrl)}</p>
+                  <p className="text-meta text-muted-foreground">{page.nextAction}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        <div className="space-y-2">
+          <TabHeading title="Where this comes from" />
+          <p className="text-meta text-muted-foreground">
+            Site check: {data.sourceAvailability.technicalCheck.label}
+            {data.sourceAvailability.technicalCheck.lastCheckedAt ? (
+              <>
+                {' '}
+                · last checked <Timestamp value={data.sourceAvailability.technicalCheck.lastCheckedAt} dateOnly />
+              </>
+            ) : null}
+          </p>
+        </div>
+      </div>
+    </EmptyOrData>
+  );
+}
+
+/**
+ * Performance → Visibility → Organic: the Google-search half of the `website`
+ * tab, plus the former `presence` tab folded in below it (social/directory
+ * profiles — the judgment call navigation.ts documents).
+ */
+export function WebsiteOrganicPanel({
+  websiteSection,
+  presenceSection,
+}: {
+  websiteSection: OverviewSection<WebsiteTabData>;
+  presenceSection: OverviewSection<OnlinePresenceTabData> | null;
+}) {
+  const data = websiteSection.data;
+
+  return (
+    <div className="space-y-8">
+      {!data ? (
+        <Card>
+          <CardContent className="py-4 text-table text-muted-foreground">{websiteSection.reason}</CardContent>
+        </Card>
+      ) : (
+        <EmptyOrData section={websiteSection} emptyCopy="We have not checked your search performance yet.">
+          <div className="space-y-5">
+            <div id="google" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              <MetricTile label="Clicks from Google" value={data.google.clicks} unit="clicks" direction="neutral" />
+              <MetricTile
+                label="Times you appeared in Google"
+                value={data.google.impressions}
+                unit="impressions"
+                direction="neutral"
+              />
+              <MetricTile label="Sessions on your site" value={data.google.sessions} unit="sessions" direction="neutral" />
+            </div>
+
+            {data.google.position !== null ? (
+              <p className="text-meta text-muted-foreground">
+                Average position in Google search results: {formatNumber(data.google.position)}.
+              </p>
+            ) : null}
+
+            <div className="space-y-1">
+              <TabHeading title="How the windows line up" />
+              <p className={cn('text-meta', data.windows.aligned ? 'text-muted-foreground' : 'text-warning-foreground')}>
+                {data.windows.note}
+              </p>
+              {data.windows.coarserComparison ? (
+                <p className="text-meta text-warning-foreground">
+                  The comparison uses the coarser of the two windows, so the finer-grained side is not overstated.
+                </p>
+              ) : null}
+            </div>
+
+            {data.insights.length > 0 ? (
+              <div className="space-y-2">
+                <TabHeading title="What we found" context={`${data.insights.length} finding(s)`} />
+                <ul className="space-y-2">
+                  {data.insights.map((insight) => (
+                    <li key={insight.message} className="rounded-md border border-border p-3">
+                      <div className="flex flex-wrap items-baseline gap-2">
+                        {insight.crossSource ? (
+                          <span className="text-meta font-medium text-primary">Seen across sources</span>
+                        ) : null}
+                        <span
+                          className={cn(
+                            'text-meta',
+                            insight.severity === 'high' ? 'text-warning-foreground' : 'text-muted-foreground',
+                          )}
+                        >
+                          {insight.severity} priority
+                        </span>
+                      </div>
+                      <p className="mt-1 text-table">{insight.message}</p>
+                      <p className="text-meta text-muted-foreground">{insight.actionTarget}</p>
+                      <p className="text-meta text-muted-foreground">{insight.limitations}</p>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            <div className="space-y-2">
+              <TabHeading title="Where these numbers come from" />
+              <ul className="space-y-1 text-meta text-muted-foreground">
+                <li>
+                  Google Search Console: {data.sourceAvailability.searchConsole.label}
+                  {data.sourceAvailability.searchConsole.expired ? ' (the connection has expired)' : ''}
+                </li>
+                <li>
+                  Google Analytics: {data.sourceAvailability.analytics.label}
+                  {data.sourceAvailability.analytics.expired ? ' (the connection has expired)' : ''}
+                </li>
+              </ul>
+              {data.connectGuidance.length > 0 ? (
+                <ul className="list-disc space-y-0.5 pl-5 text-meta text-muted-foreground">
+                  {data.connectGuidance.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              ) : null}
+              <p className="text-meta text-muted-foreground">{data.joinLimitation.statement}</p>
+            </div>
+          </div>
+        </EmptyOrData>
+      )}
+
+      {presenceSection ? (
+        <div className="space-y-2 border-t border-border pt-6">
+          <TabHeading title="Where you're found beyond search" />
+          <PresenceTab section={presenceSection} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function urlToPath(url: string): string {
   try {
     const parsed = new URL(url);

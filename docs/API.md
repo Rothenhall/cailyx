@@ -1206,7 +1206,13 @@ one.
 | `POST` | `/api/projects/:projectId/opportunities/:opportunityId/convert` | Body `{ idempotencyKey (min 8), assetType? }` — create a content brief, idempotently |
 | `POST` | `/api/projects/:projectId/opportunities/research-term` | passthrough of keyword research — the only route here that can reach a paid vendor call |
 
-Every route is operator-only; there is no client-portal surface.
+Every write route above is operator-only. As of the 2026-09-21 client-nav
+restructure ("Digital Marketing → Ideation"), there is now one read-only
+client-portal route:
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/portal/projects/:projectId/opportunities` | `@ClientPortal()`, same `?status= &origin= &search= &page= &pageSize=` query as the operator list. `ScopeValidationService.assertProjectAccess` checks the project belongs to the caller's client; 403 otherwise. No analyze/dismiss/reopen/convert on the portal side. |
 
 **Analysis is read-only.** `analyze` issues Prisma reads plus writes to
 `Opportunity` itself. It never triggers a SERP, AEO or vendor call, and it
