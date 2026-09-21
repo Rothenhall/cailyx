@@ -17,6 +17,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { PrismaService } from '../database/prisma.service';
+import * as cheerio from 'cheerio';
 import { FetcherService } from '../fetcher/fetcher.service';
 import { TechStackService, type TechStackScanResult } from '../tech-stack/tech-stack.service';
 import { PresenceDiscoveryService } from '../digital-presence/presence.discovery.service';
@@ -67,11 +68,26 @@ function domainKeyOf(domain: string): string | null {
   return hostOf(domain) ?? domain.trim().toLowerCase();
 }
 
-/** One rival name/domain mined from already-stored evidence, before exclusion/dedup. */
+/**
+ * One rival name/domain mined from already-stored evidence, before exclusion/dedup.
+ *
+ * `evidenceKind` records *how* the candidate was found so Stage-4 scoring can
+ * weight sources differently (discoverability-pipeline-plan.md §Stage 4 §7's
+ * "external-discovery corroboration"). Free-pass kinds: `aeo-verdict`,
+ * `serp-snapshot`. Paid-pass kinds: `serp-live-search` (name-independent
+ * keyword/category searches, spec §6.4), `serp-comparison-search`
+ * (`"<name>" alternatives`, spec §6.1), `review-site-category` (G2/Capterra
+ * category-listing pulls, spec §6.1).
+ */
 interface RawCandidate {
   name: string;
   domain: string | null;
-  evidenceKind: 'aeo-verdict' | 'serp-snapshot' | 'serp-live-search';
+  evidenceKind:
+    | 'aeo-verdict'
+    | 'serp-snapshot'
+    | 'serp-live-search'
+    | 'serp-comparison-search'
+    | 'review-site-category';
   reason: string;
 }
 
@@ -193,13 +209,85 @@ export interface DiscoverResult {
 const MAX_SERVICES_CONSIDERED = 5;
 /** How many confirmed target markets to compose queries for, per discovery run. */
 const MAX_MARKETS_CONSIDERED = 3;
-/** Hard cap on bounded searches per `collectNew: true` call — a budget, not a suggestion. */
+/** Hard cap on bounded SERP searches per `collectNew: true` call — a budget, not a suggestion. */
 const MAX_MARKET_QUERIES = 6;
+/** How much of `MAX_MARKET_QUERIES` is reserved for pass-2 comparison searches (spec §6.1). */
+const MAX_COMPARISON_QUERIES = 2;
+/** Best-effort review-site category-listing pulls per call (spec §6.1). Fetch, else headless render. */
+const MAX_REVIEW_SITE_PULLS = 2;
+
+/** Distinct strings, case-insensitive, first-seen order preserved. */
+export function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of values) {
+    const k = v.trim().toLowerCase();
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(v.trim());
+  }
+  return out;
+}
+
+/**
+ * Branded candidate names to seed pass-2 comparison searches (`"<name>"
+ * alternatives`). A comparison query only works once a name exists to compare
+ * against (spec §6.1), so these come from *this run's own* pass-1 results.
+ * Prefers real brand names (aeo-verdict / organic titles) over bare domain keys.
+ */
+export function pickComparisonSeeds(raw: RawCandidate[], limit: number): string[] {
+  const branded = raw.filter(
+    (c) => (c.evidenceKind === 'aeo-verdict' || c.evidenceKind === 'serp-live-search') && c.name && !c.name.includes('.'),
+  );
+  return dedupeStrings(branded.map((c) => c.name)).slice(0, limit);
+}
+
+/**
+ * Is this HTML an actual listing page, or a bot-block/JS-shell? G2/Capterra sit
+ * behind Cloudflare; a plain fetch often returns a challenge page, which must
+ * NOT be parsed as competitor data.
+ */
+export function looksLikeReviewListing(html: string): boolean {
+  if (!html || html.length < 500) return false;
+  if (/just a moment|cf-browser-verification|attention required|please enable javascript|access denied/i.test(html)) {
+    return false;
+  }
+  return /\/products\//i.test(html);
+}
+
+/**
+ * Parse product names out of a G2 category-listing page. Product links look
+ * like `/products/<slug>/reviews`; the anchor text is the product name. Pure
+ * and defensive so it can be unit-tested with a captured page and a
+ * bot-challenge page.
+ */
+export function parseG2CategoryListing(html: string): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  try {
+    const $ = cheerio.load(html);
+    $('a[href]').each((_, el) => {
+      const href = $(el).attr('href') || '';
+      if (!/\/products\/[a-z0-9-]+\//i.test(href)) return;
+      const name = ($(el).text() || '').replace(/\s+/g, ' ').trim();
+      if (!name || name.length < 2 || name.length > 60) return;
+      const key = name.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      names.push(name);
+    });
+  } catch {
+    // best-effort parse — a malformed page yields no names, never throws
+  }
+  return names;
+}
 
 export interface DiscoverByMarketResult {
   projectId: string;
   collectNew: boolean;
   queriesRun: number;
+  /** Best-effort review-site category listings that returned usable data (spec §6.1). */
+  reviewSitesPulled: number;
   costUsd: number;
   servicesConsidered: string[];
   marketsConsidered: string[];
@@ -630,21 +718,23 @@ export class CompetitorsService {
       }
     }
 
-    // ── Paid pass: bounded Google searches, only when explicitly requested ─
+    // ── Paid pass: bounded searches + review-site pulls, only when requested ─
     let queriesRun = 0;
     let costUsd = 0;
+    let reviewSitesPulled = 0;
     if (dto.collectNew) {
       const markets = targetCountries.length > 0 ? targetCountries.slice(0, MAX_MARKETS_CONSIDERED) : ['United States'];
+      const industry = profile?.data.category?.trim() || null;
+      const icp = segments.find((s) => s && s.trim())?.trim() || null;
       const topics = services.length > 0 ? services : segments.slice(0, MAX_SERVICES_CONSIDERED);
-      const queries: string[] = [];
-      outer: for (const market of markets) {
-        for (const topic of topics.length > 0 ? topics : ['']) {
-          if (queries.length >= MAX_MARKET_QUERIES) break outer;
-          const q = topic ? `${topic} in ${market}` : `best providers in ${market}`;
-          queries.push(q);
-        }
-      }
-      for (const query of queries) {
+
+      // Run one discovery SERP and fold its organic results into `raw`, tagged
+      // with the given evidence kind so Stage-4 scoring can weight the source.
+      const runSerp = async (
+        query: string,
+        evidenceKind: RawCandidate['evidenceKind'],
+        reason: (key: string) => string,
+      ): Promise<void> => {
         try {
           const resp = await this.serpIntelligence.serpForDiscovery(
             query,
@@ -657,16 +747,49 @@ export class CompetitorsService {
             if (item.type !== 'organic' || !item.domain) continue;
             const key = domainKeyOf(item.domain);
             if (!key) continue;
-            raw.push({
-              name: item.title || key,
-              domain: key,
-              evidenceKind: 'serp-live-search',
-              reason: `Ranked organically for the composed search "${query}".`,
-            });
+            raw.push({ name: item.title || key, domain: key, evidenceKind, reason: reason(key) });
           }
         } catch (err) {
-          this.logger.warn(`discoverByMarket: bounded search "${query}" failed: ${(err as Error).message}`);
+          this.logger.warn(`discoverByMarket: search "${query}" failed: ${(err as Error).message}`);
         }
+      };
+
+      // Pass 1 (spec §6.4) — name-independent keyword/category searches. They
+      // need no competitor name to exist first, so they run first and seed the
+      // branded comparison pass. Reserve budget for pass 2.
+      const nameIndependent: string[] = [];
+      for (const market of markets) {
+        for (const topic of topics.length > 0 ? topics : ['']) {
+          if (!topic) {
+            nameIndependent.push(`best providers in ${market}`);
+            continue;
+          }
+          nameIndependent.push(`${topic} in ${market}`);
+          if (icp) nameIndependent.push(`best ${topic} tools for ${icp}`);
+          if (industry) nameIndependent.push(`${topic} for ${industry}`);
+          nameIndependent.push(`${topic} vendors ${market}`);
+        }
+      }
+      const pass1Budget = Math.max(1, MAX_MARKET_QUERIES - MAX_COMPARISON_QUERIES);
+      for (const query of dedupeStrings(nameIndependent).slice(0, pass1Budget)) {
+        await runSerp(query, 'serp-live-search', () => `Ranked organically for the composed search "${query}".`);
+      }
+
+      // Pass 2 (spec §6.1) — comparison/alternatives, one per branded candidate
+      // this run just surfaced, spending whatever SERP budget pass 1 left.
+      for (const name of pickComparisonSeeds(raw, MAX_COMPARISON_QUERIES)) {
+        if (queriesRun >= MAX_MARKET_QUERIES) break;
+        const query = `"${name}" alternatives`;
+        await runSerp(query, 'serp-comparison-search', () => `Surfaced by the comparison search "${query}".`);
+      }
+
+      // Pass 3 (spec §6.1) — best-effort review-site category listings (G2). A
+      // plain fetch first, a headless render as a backup when it is bot-blocked;
+      // both degrade to nothing rather than blocking discovery.
+      for (const category of dedupeStrings([industry, ...topics].filter((t): t is string => !!t)).slice(0, MAX_REVIEW_SITE_PULLS)) {
+        const found = await this.pullReviewSiteCategory(category);
+        if (found.pulled) reviewSitesPulled++;
+        raw.push(...found.candidates);
       }
     }
 
@@ -742,6 +865,7 @@ export class CompetitorsService {
       projectId,
       collectNew: !!dto.collectNew,
       queriesRun,
+      reviewSitesPulled,
       costUsd: Number(costUsd.toFixed(6)),
       servicesConsidered: services,
       marketsConsidered: targetCountries,
@@ -752,6 +876,53 @@ export class CompetitorsService {
       note:
         'Proposals only — the existing tracked list is never replaced. Partner/directory/publishing-platform domains and the client\'s own domain are excluded before a row is ever created. A candidate previously rejected by an operator is never re-proposed.',
     };
+  }
+
+  /**
+   * Best-effort pull of a G2 review-site category listing (spec §6.1). Tries a
+   * plain HTTP fetch first, then falls back to a headless render when the fetch
+   * is bot-blocked (G2 sits behind Cloudflare). Returns the products it can
+   * parse, tagged `review-site-category`; on any block/empty/parse failure it
+   * returns nothing and logs — it must never block market discovery, and a
+   * Cloudflare challenge page must never be parsed as competitor data.
+   *
+   * These candidates carry no domain (the listing links to G2 product pages,
+   * not the vendor's own site), so they seed a *name* for the branded Stage-3
+   * buckets and add evidence-kind diversity for Stage-4 scoring — not a domain.
+   */
+  private async pullReviewSiteCategory(category: string): Promise<{ pulled: boolean; candidates: RawCandidate[] }> {
+    const slug = category.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!slug) return { pulled: false, candidates: [] };
+    const url = `https://www.g2.com/categories/${slug}`;
+
+    let html = '';
+    try {
+      const res = await this.fetcher.fetch({ url, cacheTtlSeconds: 86400 }, 'competitors:review-site');
+      if (res.status >= 200 && res.status < 300 && looksLikeReviewListing(res.body)) html = res.body;
+    } catch (err) {
+      this.logger.warn(`review-site fetch "${url}" failed: ${(err as Error).message}`);
+    }
+    if (!html) {
+      // Backup: headless render past the JS shell / soft block.
+      try {
+        const res = await this.fetcher.render({ url }, 'competitors:review-site');
+        if (looksLikeReviewListing(res.html)) html = res.html;
+      } catch (err) {
+        this.logger.warn(`review-site render "${url}" failed: ${(err as Error).message}`);
+      }
+    }
+    if (!html) {
+      this.logger.log(`review-site category "${slug}" returned no usable listing (likely bot-blocked) — skipped; discovery continues`);
+      return { pulled: false, candidates: [] };
+    }
+
+    const candidates: RawCandidate[] = parseG2CategoryListing(html).map((name) => ({
+      name,
+      domain: null,
+      evidenceKind: 'review-site-category',
+      reason: `Listed in the G2 "${slug}" category.`,
+    }));
+    return { pulled: candidates.length > 0, candidates };
   }
 
   /**

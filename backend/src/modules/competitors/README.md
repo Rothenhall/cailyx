@@ -96,17 +96,42 @@ the tracked list is never replaced, and nothing here profiles anything.
 | Mode | What it reads | Cost |
 |---|---|---|
 | default (`collectNew` false/omitted) | the project's newest **completed** `AeoAudit.verdict` for rival names, plus up to 300 existing `SerpResult` rows across the project's `SerpTracker`s for rival domains | **zero** — no vendor call, nothing fetched |
-| `collectNew: true` | the above, **plus** up to `MAX_MARKET_QUERIES` (6) composed `"<service> in <market>"` searches through the gated SERP provider | paid/explicit — must be asked for, and reports `costUsd` |
+| `collectNew: true` | the above, **plus** a bounded paid pass (see below) | paid/explicit — must be asked for, and reports `costUsd` |
 
 §12.3 says a page load makes no paid calls; this split is how that is kept
 true. The result carries the mode back (`collectNew`, `queriesRun`,
-`costUsd`), so a caller can tell a free pass from a paid one without
-guessing. A free pass legitimately reports `queriesRun: 0, costUsd: 0` — that
+`reviewSitesPulled`, `costUsd`), so a caller can tell a free pass from a paid one
+without guessing. A free pass legitimately reports `queriesRun: 0, costUsd: 0` — that
 is a pass that mined stored evidence, not a pass that failed.
 
+**Paid pass, three passes (2026-09-22, discoverability-pipeline Stage 2):**
+1. **Name-independent SERP (spec §6.4)** — `{service} in {market}`, `best {service}
+   tools for {icp}`, `{service} for {industry}`, `{service} vendors {market}`
+   (`{icp}` = confirmed ICP segment, `{industry}` = confirmed category). Tagged
+   `serp-live-search`. Runs first (needs no competitor name), bounded to
+   `MAX_MARKET_QUERIES - MAX_COMPARISON_QUERIES`.
+2. **Comparison SERP (spec §6.1)** — one `"<name>" alternatives` per branded name
+   pass 1 surfaced (`pickComparisonSeeds`), spending the remaining budget
+   (`MAX_COMPARISON_QUERIES` = 2). Tagged `serp-comparison-search`. A name only
+   exists to compare against after pass 1.
+3. **Review-site category pull (spec §6.1)** — best-effort G2 `/categories/<slug>`
+   fetch with a **headless `render()` fallback** when bot-blocked, up to
+   `MAX_REVIEW_SITE_PULLS` (2). `looksLikeReviewListing` rejects a Cloudflare
+   challenge / JS-shell so a block is never parsed as data; `parseG2CategoryListing`
+   extracts product names (no domain — the listing links to G2, not the vendor).
+   Tagged `review-site-category`. **May be empty in practice** — G2/Capterra
+   Cloudflare protection can defeat even the headless fallback; wired end-to-end
+   for Stage 4 weighting when it lands, not relied on as a primary source (a paid
+   G2/Capterra API is the real fix — follow-up).
+
+These five `evidenceKind`s (`aeo-verdict`, `serp-snapshot`, `serp-live-search`,
+`serp-comparison-search`, `review-site-category`) let Stage 4 scoring weight
+sources by discovery method.
+
 Bound to `MAX_SERVICES_CONSIDERED = 5` services and
-`MAX_MARKETS_CONSIDERED = 3` target countries; a paid run stops at
-`MAX_MARKET_QUERIES` searches — "a budget, not a suggestion".
+`MAX_MARKETS_CONSIDERED = 3` target countries; the paid pass stops at
+`MAX_MARKET_QUERIES` (6) SERP searches + `MAX_REVIEW_SITE_PULLS` (2) review-site
+pulls — "a budget, not a suggestion".
 
 **The exclusion list is the point.** `EXCLUDED_DOMAINS` is a fixed set of
 registrable domains that are never a competitor even when they legitimately
@@ -187,7 +212,7 @@ returned. The comparison is the product; the snapshot is the receipt.
 | Gap comparison | ✅ | Presence diff on tech/schema/SEO/reviews + side-by-side AEO/SERP status; no composite score |
 | No-domain competitors | ✅ | `status: "skipped"` on the crawl half; AEO/SERP attachment still runs by name |
 | Market discovery, free pass (`collectNew` false) | ✅ | Mines stored AEO verdicts + SERP results; `queriesRun: 0`, `costUsd: 0` — no vendor call |
-| Market discovery, paid pass (`collectNew: true`) | ✅ | Bounded at 6 searches, `costUsd` reported; explicit, never implicit |
+| Market discovery, paid pass (`collectNew: true`) | ✅ | Three passes — name-independent + comparison SERP (≤6 total) + best-effort G2 review-site pull (≤2); `costUsd`/`reviewSitesPulled` reported; explicit, never implicit |
 | Domain exclusion list | ✅ | Directories, social/publishing, reference, search infra + the client's own domain; counted and sampled in `exclusionSample` |
 | Candidate relevance classification | ✅ | `direct-competitor` / `adjacent-alternative` / `not-relevant`; never auto-`not-relevant` |
 | Rejection memory (`CompetitorRejection`) | ✅ | Tombstone written before the row is deleted; `listCandidates()` self-heals, not just filters |

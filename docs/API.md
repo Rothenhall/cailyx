@@ -1177,11 +1177,18 @@ in the code, not an oversight in this table).
 
 **Two cost classes, and the free one is the default.** The default pass mines
 the newest completed `AeoAudit.verdict` and up to 300 stored `SerpResult` rows
-and reports `queriesRun: 0, costUsd: 0`. Only `collectNew: true` runs live
-discovery searches — at most six `"<service> in <market>"` queries
-(`MAX_SERVICES_CONSIDERED = 5`, `MAX_MARKETS_CONSIDERED = 3`,
-`MAX_MARKET_QUERIES = 6`), through `serpForDiscovery()` and the SERP module's
-existing gates.
+and reports `queriesRun: 0, costUsd: 0`. Only `collectNew: true` runs the live
+paid pass. Since 2026-09-22 (discoverability-pipeline Stage 2) that paid pass has
+three parts: name-independent SERP searches (`{service} in {market}`, `best
+{service} tools for {icp}`, `{service} for {industry}`, `{service} vendors
+{market}`), then one `"<name>" alternatives` comparison search per branded name
+just found, then a best-effort G2 review-site category pull (with a headless
+render fallback; may be empty when Cloudflare-blocked). Bounded by
+`MAX_MARKET_QUERIES = 6` SERP searches + `MAX_REVIEW_SITE_PULLS = 2` review-site
+pulls (`MAX_SERVICES_CONSIDERED = 5`, `MAX_MARKETS_CONSIDERED = 3`,
+`MAX_COMPARISON_QUERIES = 2`). The result adds `reviewSitesPulled` alongside
+`queriesRun`/`costUsd`; each candidate's discovery method is recorded as one of
+five `evidenceKind`s for downstream (Stage 4) scoring.
 
 Every candidate is a **proposal**: excluded from counts, unable to close a
 gap, promoted only by an explicit `POST …/candidates/:competitorId/confirm`.

@@ -48,23 +48,39 @@ someone compared it to a *named* competitor (there's a chicken-and-egg problem h
 comparison queries need at least one seed name to compare against, which is why the spec
 places `6.4` — name-independent keyword/category search — before `6.1`).
 
-### Steps
-1. Add `6.4`-style patterns first (name-independent): `best [service] tools for [ICP]`,
-   `[service] for [industry]`, `[service] vendors [market]` — derive `[service]`/`[ICP]`/
-   `[industry]` from `businessProfile.getConfirmedProfile()` (already read in this method)
-   rather than the current two topic sources (services/segments only).
-2. Once `raw` has at least one candidate domain/name from pass 1 (this run's own results,
-   not a separate stored list), add one `"<name>" alternatives` / `"<name>" vs` query per
-   newly-found candidate, bounded by the existing `MAX_MARKET_QUERIES` budget — this
-   directly implements the spec's comment that comparison searches work best once a name
-   exists to compare against.
-3. Add a review-site category pull as a new evidence kind (`review-site-category`),
-   reusing whatever HTTP fetch pattern `serp-intelligence`/`fetcher` already has —
-   **no new external tool**, since this is just fetching a public category listing page,
-   same trust level as an organic SERP result.
-4. Tag results from steps 1–3 with distinct `evidenceKind`s so Stage 4's later scoring
-   (see below) can weight them correctly — this module already does this pattern
-   (`aeo-verdict` / `serp-snapshot` / `serp-live-search`), just needs the new kinds added.
+### Steps — ✅ ALL DONE 2026-09-22 (`competitors.service.ts::discoverByMarket`)
+1. ✅ Name-independent `6.4` patterns added: `best {service} tools for {icp}`,
+   `{service} for {industry}`, `{service} vendors {market}` (plus the original
+   `{service} in {market}`), with `{icp}` from `profile.data.icp.segments`, `{industry}`
+   from `profile.data.category`, `{market}` from confirmed target countries. Run as pass 1,
+   deduped, bounded to `MAX_MARKET_QUERIES - MAX_COMPARISON_QUERIES`.
+2. ✅ Comparison pass added: `pickComparisonSeeds` takes branded names surfaced by pass 1
+   (aeo-verdict / organic titles, no bare domains), and runs one `"<name>" alternatives`
+   query per seed with the remaining budget (`MAX_COMPARISON_QUERIES` = 2). A name only
+   exists to compare against after pass 1, exactly as the spec notes.
+3. ✅ Review-site category pull added, best-effort: `pullReviewSiteCategory` fetches a G2
+   `/categories/<slug>` page, **falls back to a headless `render()`** when the plain fetch
+   is bot-blocked (per the user's call: "do the best; headless can be a backup"), and parses
+   product names via `parseG2CategoryListing`. `looksLikeReviewListing` rejects Cloudflare
+   challenge / JS-shell pages so a block is never parsed as data; on any block/empty it logs
+   and yields nothing — never blocks discovery. **Caveat the plan under-weighted:** G2/Capterra
+   Cloudflare protection means even the render fallback may return a challenge in a headless
+   context, so this evidence kind may often be empty in practice. It is wired end-to-end
+   (new `review-site-category` kind, `reviewSitesPulled` in the result) so Stage 4 can weight
+   it when it *does* land, but do not rely on it as a primary source; a paid G2/Capterra API
+   is the real fix if this proves consistently blocked — flagged as a follow-up.
+4. ✅ Distinct `evidenceKind`s added (`serp-comparison-search`, `review-site-category`)
+   alongside the existing three, so Stage 4's §7 "external-discovery corroboration" weight
+   can distinguish them.
+
+**Verification (2026-09-22):** `npx tsc --noEmit` + `nest build` clean. The genuinely-new
+pure logic was unit-verified (8/8): `dedupeStrings`, `pickComparisonSeeds` (branded-only,
+deduped, capped), `looksLikeReviewListing` (rejects challenge/shell/tiny, accepts real),
+`parseG2CategoryListing` (distinct product names, ignores non-product links, empty on a
+challenge page). A full live `discoverByMarket` run was **not** executed — it calls the paid
+DataForSEO SERP path, and the user's test posture is fixture-only (`SERP_ALLOW_FIXTURE=1`);
+the SERP wiring reuses the already-working `serpForDiscovery` path unchanged. (Prod verification
+also can't use the shell smoke suites — no `smoke@cailyx.test` on prod — see Brand Voice step 1's note.)
 
 **Effort**: small, contained — extends one existing method, no schema change, no new
 external dependency. Good candidate to build first since Stage 3 depends on its output
@@ -280,9 +296,10 @@ Per AGENTS.md's "one module at a time," in priority order:
 1. **Brand-voice verification-status fix** — ✅ **DONE 2026-09-22** (see Brand Voice step 1).
    `socialActivity()` now scrapes only `confirmed` accounts. Verified live vs prod DB, tsc clean.
 2. **Stage 3 fix #1** (`objection-trust` branding split) — ✅ **DONE 2026-09-22** (see Stage 3 step 1). Both branded + unbranded variants now generated and tagged per-cell; verified via `generateMatrix`, tsc clean.
-3. **Stage 2** (competitor discovery query patterns) — needed before Stage 4 scoring can
-   use `evidenceKind` diversity meaningfully, and before Stage 3's branded buckets have
-   good seed names.
+3. **Stage 2** (competitor discovery query patterns) — ✅ **DONE 2026-09-22** (see Stage 2 steps).
+   Name-independent + comparison SERP passes + best-effort G2 review-site pull (fetch→render),
+   new `serp-comparison-search`/`review-site-category` evidence kinds. New pure logic unit-verified
+   8/8; tsc + build clean. Review-site pull may be bot-blocked in practice (documented caveat).
 4. **Stage 3 fixes #2–3** (coverage-gap report, cross-bucket dedup).
 5. **Stage 4 steps 1–2** (absence/co-mention aggregation + weighted ranking) — the
    biggest net-new logic in this plan, but pure aggregation over data that already exists.

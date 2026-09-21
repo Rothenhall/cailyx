@@ -9,6 +9,42 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-22 — Discoverability pipeline: Stage 2 competitor-discovery query patterns
+
+Full plan: `docs/analysis/discoverability-pipeline-plan.md` (Stage 2). Extends
+`competitors.service.ts::discoverByMarket`'s paid pass (`collectNew: true`) from a
+single `"{service} in {market}"` query set into three passes, so discovery seeds
+*branded* competitor names (for Stage 3's head-to-head/alternatives buckets) and
+diversifies evidence for Stage 4 scoring:
+
+1. **Name-independent SERP (spec §6.4):** adds `best {service} tools for {icp}`,
+   `{service} for {industry}`, `{service} vendors {market}` (icp = confirmed ICP
+   segment, industry = confirmed category), deduped, bounded.
+2. **Comparison SERP (spec §6.1):** one `"<name>" alternatives` per branded name the
+   first pass surfaced (`pickComparisonSeeds` — real names, not bare domains), using
+   the remaining budget (`MAX_COMPARISON_QUERIES = 2`).
+3. **Review-site category pull (spec §6.1):** best-effort G2 `/categories/<slug>` pull
+   with a **headless `render()` fallback** when the plain fetch is bot-blocked;
+   `looksLikeReviewListing` rejects Cloudflare/JS-shell pages so a block is never
+   parsed as data, `parseG2CategoryListing` extracts product names. Bounded by
+   `MAX_REVIEW_SITE_PULLS = 2`; never blocks discovery.
+
+Two new `evidenceKind`s (`serp-comparison-search`, `review-site-category`) join the
+existing three; the result gains `reviewSitesPulled`. No schema change, no new
+dependency (reuses `FetcherService` + `cheerio`).
+
+**Known caveat (plan under-weighted this):** G2/Capterra Cloudflare protection can
+defeat even the headless fallback, so `review-site-category` may often be empty in
+practice — it's wired end-to-end for when it lands, not a primary source; a paid
+G2/Capterra API is the real fix (follow-up).
+
+`npx tsc --noEmit` + `nest build` clean. New pure logic unit-verified 8/8
+(`dedupeStrings`, `pickComparisonSeeds`, `looksLikeReviewListing`,
+`parseG2CategoryListing`). A full live `discoverByMarket` run was not executed — it
+uses the paid DataForSEO SERP path (fixture-only test posture per `SERP_ALLOW_FIXTURE=1`),
+and the SERP wiring reuses the already-working `serpForDiscovery` path unchanged.
+`backend/src/modules/competitors/README.md` + `docs/API.md` updated.
+
 ## 2026-09-22 — Discoverability pipeline: objection-trust branding split (Stage 3 fix #1)
 
 Full plan: `docs/analysis/discoverability-pipeline-plan.md` (Stage 3, step 1).
