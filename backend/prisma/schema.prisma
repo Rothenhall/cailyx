@@ -3319,11 +3319,45 @@ model Cycle {
   /// JSON — { at, by, reason, added[], removed[] }[] after commit.
   scopeChanges String    @default("[]")
   closedAt     DateTime?
+  /// C3, Option B (docs/analysis/engagement-timeline.md §2) — optional
+  /// client-facing grouping label. Purely a display concept: no lifecycle or
+  /// approval meaning attaches to it, and Cycle's own status/commit
+  /// machinery above is completely unaffected by whether this is set.
+  /// Nullable so every pre-existing and future unphased cycle is unaffected.
+  phaseId      String?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   @@index([projectId, status])
   @@index([engagementId])
+  @@index([phaseId])
+}
+
+/// C3, Option B (docs/analysis/engagement-timeline.md §2) — a thin,
+/// purely-display grouping layer above Cycle/Commitment, for the
+/// client-facing "which stage of the engagement am I in" narrative that
+/// Cycle's own recurring-work-period semantics don't map onto cleanly (see
+/// the rejected Option A note in that doc). Deliberately carries no new
+/// lifecycle or approval mechanics of its own — it inherits everything a
+/// linked Cycle/Commitment already enforces. `status` here is a coarse,
+/// admin-settable display hint only (not a workflow), defaulting to
+/// "upcoming"; the UI may also derive a display state from linked
+/// cycles/commitments where that reads better, but nothing downstream
+/// gates on this field.
+model Phase {
+  id        String   @id @default(cuid())
+  projectId String
+  name      String
+  /// Sequencing among a project's phases, ascending. No uniqueness
+  /// constraint — ties are broken by createdAt, and reordering is a matter
+  /// of rewriting this column, not a migration.
+  order     Int      @default(0)
+  /// upcoming | active | complete — admin-set display hint, not a lifecycle.
+  status    String   @default("upcoming")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId, order])
 }
 
 /// P11 — a "plan commitment": what the team intends to accomplish in a
@@ -3398,11 +3432,16 @@ model Commitment {
   cancelledAt          DateTime?
   cancelReason         String?
   createdBy            String?
+  /// C3, Option B — optional client-facing Phase grouping, same convention
+  /// as Cycle.phaseId: nullable, additive, no effect on the status
+  /// transitions or agreement mechanics above.
+  phaseId              String?
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
   @@index([projectId, status])
   @@index([cycleId])
+  @@index([phaseId])
 }
 
 /// A single deliverable. §7.1's minimum fields.

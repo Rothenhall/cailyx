@@ -21,12 +21,15 @@ import type {
   CommitmentProgressDto,
   CommitmentScopeChangeEntry,
   CommitmentStatus,
+  PhaseDto,
+  PhaseStatus,
   PortalActionSummary,
   PortalBlockedReason,
   PortalCommitmentDto,
   PortalCommitmentScopeChangeDto,
   PortalCycleDto,
   PortalMilestoneDto,
+  PortalPhaseDto,
   PortalPlanDto,
   PortalPlanProgressCommitmentDto,
   PortalPlanProgressDto,
@@ -45,6 +48,7 @@ import {
 } from './delivery-plan.types';
 import type { CreateEngagementDto, SetEngagementStatusDto, UpdateEngagementDto } from './dto/engagement.dto';
 import type { CommitCycleDto, CreateCycleDto, ScopeChangeDto, SetCycleStatusDto, UpdateCycleDto } from './dto/cycle.dto';
+import type { AssignToPhaseDto, CreatePhaseDto, UpdatePhaseDto } from './dto/phase.dto';
 import type {
   AgreeCommitmentDto,
   CancelCommitmentDto,
@@ -346,9 +350,118 @@ export class DeliveryPlanService {
   private toCycleDto(row: {
     id: string; projectId: string; engagementId: string | null; name: string; startsOn: Date; endsOn: Date;
     status: string; goal: string | null; committedAt: Date | null; committedBy: string | null;
-    committedCount: number; scopeChanges: string; closedAt: Date | null; createdAt: Date; updatedAt: Date;
+    committedCount: number; scopeChanges: string; closedAt: Date | null; phaseId?: string | null;
+    createdAt: Date; updatedAt: Date;
   }) {
     return { ...row, scopeChanges: this.parseScopeChanges(row.scopeChanges) };
+  }
+
+  // ── Phases (C3, Option B) ────────────────────────────────────────────
+  //
+  // A thin grouping label above Cycle/Commitment for client-facing display
+  // only — docs/analysis/engagement-timeline.md §2. Phase has no lifecycle
+  // of its own: `status` is a plain admin-set hint (PHASE_STATUSES has no
+  // transition table, unlike Cycle/Commitment), and assigning/clearing a
+  // Cycle or Commitment's phaseId never touches that row's own status or
+  // approval state.
+
+  private toPhaseDto(row: { id: string; projectId: string; name: string; order: number; status: string; createdAt: Date; updatedAt: Date }): PhaseDto {
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      name: row.name,
+      order: row.order,
+      status: row.status as PhaseStatus,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  }
+
+  async listPhases(projectId: string): Promise<{ phases: PhaseDto[] }> {
+    await this.assertProjectExists(projectId);
+    const rows = await this.prisma.phase.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] });
+    return { phases: rows.map((r) => this.toPhaseDto(r)) };
+  }
+
+  async getPhase(projectId: string, id: string): Promise<PhaseDto> {
+    const row = await this.prisma.phase.findUnique({ where: { id } });
+    if (!row || row.projectId !== projectId) throw new NotFoundException('Phase not found');
+    return this.toPhaseDto(row);
+  }
+
+  /** Order defaults to one past the current highest, so a phase created
+   * without an explicit order lands at the end of the sequence rather than
+   * colliding with an existing one at 0. */
+  async createPhase(projectId: string, dto: CreatePhaseDto): Promise<PhaseDto> {
+    await this.assertProjectExists(projectId);
+    let order = dto.order;
+    if (order === undefined) {
+      const last = await this.prisma.phase.findFirst({ where: { projectId }, orderBy: { order: 'desc' }, select: { order: true } });
+      order = last ? last.order + 1 : 0;
+    }
+    const row = await this.prisma.phase.create({
+      data: { projectId, name: dto.name, order, status: dto.status ?? 'upcoming' },
+    });
+    return this.toPhaseDto(row);
+  }
+
+  async updatePhase(projectId: string, id: string, dto: UpdatePhaseDto): Promise<PhaseDto> {
+    await this.getPhase(projectId, id);
+    const row = await this.prisma.phase.update({
+      where: { id },
+      data: { name: dto.name, order: dto.order, status: dto.status },
+    });
+    return this.toPhaseDto(row);
+  }
+
+  /**
+   * Assigns exactly one existing Cycle or Commitment to this phase (both or
+   * neither in the body is a 400 — an ambiguous request is refused rather
+   * than guessed at). Passing `phaseId: null`-equivalent is not this
+   * method's job: clearing an assignment is `removeFromPhase` below, kept
+   * separate so "assign" never silently means "unassign".
+   *
+   * Deliberately does not touch the target's own status/lifecycle fields —
+   * a Cycle in `planning` or a Commitment in `draft` stays exactly as it
+   * was; Phase is a label, not a gate.
+   */
+  async assignToPhase(projectId: string, phaseId: string, dto: AssignToPhaseDto): Promise<{ assigned: true }> {
+    await this.getPhase(projectId, phaseId);
+    const hasCycle = !!dto.cycleId;
+    const hasCommitment = !!dto.commitmentId;
+    if (hasCycle === hasCommitment) {
+      throw new ConflictException('Provide exactly one of cycleId or commitmentId to assign to a phase.');
+    }
+    if (hasCycle) {
+      const cycle = await this.prisma.cycle.findUnique({ where: { id: dto.cycleId }, select: { id: true, projectId: true } });
+      if (!cycle || cycle.projectId !== projectId) throw new NotFoundException('Cycle not found');
+      await this.prisma.cycle.update({ where: { id: dto.cycleId }, data: { phaseId } });
+    } else {
+      const commitment = await this.prisma.commitment.findUnique({ where: { id: dto.commitmentId }, select: { id: true, projectId: true } });
+      if (!commitment || commitment.projectId !== projectId) throw new NotFoundException('Commitment not found');
+      await this.prisma.commitment.update({ where: { id: dto.commitmentId }, data: { phaseId } });
+    }
+    return { assigned: true };
+  }
+
+  /** Clears a Cycle's or Commitment's phaseId — the row goes back to being
+   * unphased, exactly like data that predates this feature. */
+  async removeFromPhase(projectId: string, dto: AssignToPhaseDto): Promise<{ assigned: false }> {
+    const hasCycle = !!dto.cycleId;
+    const hasCommitment = !!dto.commitmentId;
+    if (hasCycle === hasCommitment) {
+      throw new ConflictException('Provide exactly one of cycleId or commitmentId to unassign.');
+    }
+    if (hasCycle) {
+      const cycle = await this.prisma.cycle.findUnique({ where: { id: dto.cycleId }, select: { id: true, projectId: true } });
+      if (!cycle || cycle.projectId !== projectId) throw new NotFoundException('Cycle not found');
+      await this.prisma.cycle.update({ where: { id: dto.cycleId }, data: { phaseId: null } });
+    } else {
+      const commitment = await this.prisma.commitment.findUnique({ where: { id: dto.commitmentId }, select: { id: true, projectId: true } });
+      if (!commitment || commitment.projectId !== projectId) throw new NotFoundException('Commitment not found');
+      await this.prisma.commitment.update({ where: { id: dto.commitmentId }, data: { phaseId: null } });
+    }
+    return { assigned: false };
   }
 
   // ── Commitments (P11 — §6.1-6.3) ────────────────────────────────────
@@ -1459,6 +1572,75 @@ export class DeliveryPlanService {
     const workItems = await this.prisma.workItem.findMany({ where: { projectId, clientVisible: true }, select: { cycleId: true } });
     const cycleIds = [...new Set(workItems.map((item) => item.cycleId).filter((id): id is string => !!id))];
     return { commitments: await this.listPortalCommitmentsForCycles(cycleIds) };
+  }
+
+  /**
+   * C3, Option B — the client-facing Phase groupings for a project, each
+   * carrying its assigned Cycles/Commitments through the exact same
+   * client-safe DTOs `/plan` and `/plan/commitments` already use (never a
+   * second, parallel serializer). Served from its own route rather than
+   * folded into `getPortalPlan`, matching P11's "commitments got their own
+   * route so /plan's shape never changes" precedent.
+   *
+   * Eligibility mirrors `getPortalPlan`/`getPortalCommitments` exactly: a
+   * Cycle only appears if it holds at least one client-visible work item,
+   * and a Commitment only appears if its own Cycle clears that same bar and
+   * its status is not draft/proposed. A Phase with nothing eligible under
+   * it is still listed (empty groups are real information — "this stage
+   * has nothing shared with you yet" — not hidden).
+   */
+  async getPortalPhases(clientId: string, projectId: string): Promise<{ phases: PortalPhaseDto[] }> {
+    await this.assertPortalProject(clientId, projectId);
+    const phases = await this.prisma.phase.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] });
+    if (phases.length === 0) return { phases: [] };
+    const phaseIds = phases.map((p) => p.id);
+
+    const clientVisibleWork = await this.prisma.workItem.findMany({ where: { projectId, clientVisible: true }, select: { cycleId: true } });
+    const eligibleCycleIds = [...new Set(clientVisibleWork.map((item) => item.cycleId).filter((id): id is string => !!id))];
+
+    const cycles = eligibleCycleIds.length
+      ? await this.prisma.cycle.findMany({ where: { projectId, phaseId: { in: phaseIds }, id: { in: eligibleCycleIds } } })
+      : [];
+    const cycleIdsInPhases = cycles.map((c) => c.id);
+    const allCycleWork = cycleIdsInPhases.length
+      ? await this.prisma.workItem.findMany({ where: { cycleId: { in: cycleIdsInPhases } } })
+      : [];
+    const cycleWork = new Map<string, WorkItem[]>();
+    for (const item of allCycleWork) {
+      if (!item.cycleId) continue;
+      const items = cycleWork.get(item.cycleId) ?? [];
+      items.push(item);
+      cycleWork.set(item.cycleId, items);
+    }
+
+    const commitmentRows = eligibleCycleIds.length
+      ? await this.prisma.commitment.findMany({
+          where: { projectId, phaseId: { in: phaseIds }, cycleId: { in: eligibleCycleIds }, status: { notIn: ['draft', 'proposed'] } },
+          orderBy: { createdAt: 'asc' },
+        })
+      : [];
+    const commitmentsByPhase = new Map<string, PortalCommitmentDto[]>();
+    for (const row of commitmentRows) {
+      if (!row.phaseId) continue;
+      const linkedWork = await this.linkedWorkItemsFor(row);
+      const nextAction = await this.nextClientActionForCommitment(row);
+      const list = commitmentsByPhase.get(row.phaseId) ?? [];
+      list.push(this.toPortalCommitmentDto(row, linkedWork, nextAction));
+      commitmentsByPhase.set(row.phaseId, list);
+    }
+
+    return {
+      phases: phases.map((phase) => ({
+        id: phase.id,
+        name: phase.name,
+        order: phase.order,
+        status: phase.status as PhaseStatus,
+        cycles: cycles
+          .filter((c) => c.phaseId === phase.id)
+          .map((c) => this.toPortalCycleDto(c, cycleWork.get(c.id) ?? [])),
+        commitments: commitmentsByPhase.get(phase.id) ?? [],
+      })),
+    };
   }
 
   /**
