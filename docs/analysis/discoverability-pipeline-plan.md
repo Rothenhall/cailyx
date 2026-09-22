@@ -212,13 +212,18 @@ section, not new findings):
    discovered name); the aggregation live-tested against the **prod DB** (seeded a labelled
    audit with two stances → correct absence/co-mention/surface/dimension/avg-position
    counts, then ranked). `tsc` + `nest build` clean. Test data cleaned up.
-3. **Decision needed from the user before building this part**: does per-competitor
-   full company-context enrichment belong inside `competitors` module now (reversing
-   the explicit D4 "not built" decision), or should the top-5 ranked list simply be
-   handed to `aeo-context.service.ts::build()` once per competitor domain as an
-   *external caller*, keeping `competitors` itself unchanged in scope? The second
-   option is less invasive and reuses Phase-1 site-context work directly; the first
-   would need `competitors`' own schema/API surface redesigned. **Recommend the second**
+3. **DECISION MADE (2026-09-22): build enrichment INSIDE the `competitors` module** —
+   the user chose the more invasive option over the plan's recommendation. This reverses
+   `competitors/SPEC.md`'s explicit D4 "not built" decision: the module will now own
+   full per-competitor company-context enrichment (a real crawl/extract per top-5
+   domain), which means extending its schema (store the enriched context on/next to
+   `CompetitorProfile`) and its API surface. `SPEC.md` must be updated to record the
+   reversal and why. Implementation still pending as of this note — scope it (schema
+   shape, how the Phase-1 crawl is invoked per competitor domain, cost/rate bounds) as
+   its own analysis pass before code, per AGENTS.md. (Original options, for the record:
+   external orchestration via `AeoContextService.build()` per domain — recommended by
+   this plan but **not** chosen; vs. in-module enrichment — **chosen**.)
+   ~~**Recommend the second**~~
    — call `AeoContextService.build(syntheticProjectId-or-domain-scoped-run, ...)` once
    per top-5 competitor domain from a new orchestration step, store the resulting
    `SiteContext` id on `CompetitorProfile`, and leave `competitors.service.ts`'s own
@@ -324,8 +329,9 @@ Per AGENTS.md's "one module at a time," in priority order:
 5. **Stage 4 steps 1–2** (absence/co-mention aggregation + weighted ranking) — ✅ **DONE
    2026-09-22** (see Stage 4 steps 1–2). `aggregateCompetitorSignals` + `rankCompetitorSignals`
    (§7 weights) + `GET .../competitors/ranking`. Verified 9/9 (pure ranker unit + live prod aggregation).
-6. **Decision point**: Stage 4 step 3 (per-competitor enrichment scope) — needs your
-   answer before 4–5 can be built.
+6. **Decision point**: Stage 4 step 3 (per-competitor enrichment scope) — ✅ **ANSWERED
+   2026-09-22: build INSIDE the competitors module** (reverses SPEC.md D4). Implementation
+   is the next work item; scope it (schema + per-domain crawl invocation) before code.
 7. **Brand-voice steps 2–5** (statistical layer, core/register split, validation gate).
 8. **Stage 3 fix #4** (LLM-discovered buckets) — deferred as its own follow-up decision
    given the taxonomy-widening blast radius.
