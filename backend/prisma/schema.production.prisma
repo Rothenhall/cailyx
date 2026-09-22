@@ -157,9 +157,22 @@ model ScheduleConfig {
   seoLastRunAt DateTime?
   seoLastError String?
 
+  /// C7 (`docs/analysis/client-portal.md` §19) — automatic measurement+scoring
+  /// refresh, derived from the client's plan tier by `refresh-cadence`
+  /// (never operator-set, unlike `cadence`/`seoCadence` above). Its own
+  /// column set, same pattern as `seo*` above, so it cannot collide with
+  /// technical-audit's or monitoring's cadence sharing the generic
+  /// `cadence` column (see monitoring/README.md "Known limitation").
+  refreshCadence   String    @default("manual-only")
+  refreshNextRunAt DateTime?
+  refreshActive    Boolean   @default(false)
+  refreshLastRunAt DateTime?
+  refreshLastError String?
+
   @@index([projectId])
   @@index([active, nextRunAt])
   @@index([seoActive, seoNextRunAt])
+  @@index([refreshActive, refreshNextRunAt])
 }
 
 model PageMetadata {
@@ -491,11 +504,15 @@ model Client {
   /// the client's own data.
   ownerUserId  String?
   notes        String?
-  /// `refresh-cadence` module's automatic measurement/scoring refresh cadence
-  /// (C7, `docs/analysis/client-portal.md` §19) and the C6 §29 competitor cap.
-  /// Added to the production schema 2026-09-22: C7 added it to `schema.prisma`
-  /// (dev) but never here, so prod drifted without it — caught during C6 live
-  /// verification against prod. starter=weekly, growth/scale/enterprise=daily.
+  /// starter | growth | scale | enterprise — set by the admin (generic
+  /// `PATCH /clients/:clientId`), not derived from billing. Drives the
+  /// `refresh-cadence` module's automatic measurement/scoring refresh
+  /// cadence (C7, `docs/analysis/client-portal.md` §19): starter=weekly,
+  /// growth/scale=daily, enterprise=daily (true real-time is explicitly
+  /// deferred — `docs/PLAN.md` "Real-time monitoring... is future"). No
+  /// `billing.Offer`/`Entitlement` encodes a tier today, so this is its own
+  /// field rather than derived from the billing ledger — see refresh-cadence
+  /// module README for the full reasoning.
   planTier     String   @default("starter")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -1457,6 +1474,13 @@ model GrowthAsset {
   /// a brief someone is already acting on. `Opportunity.convert()` is the
   /// only writer.
   sourceOpportunityId String?
+  /// C4 (client-portal.md §14/§22): the `ContentRequest` this asset was
+  /// created from, if a client submitted the structured "request new
+  /// content" form. Not a foreign key — same reasoning as the two ids above:
+  /// a pruned/archived request must never cascade-delete or dangling-break a
+  /// brief someone is already acting on. Set once, at creation, by
+  /// `GrowthExecutionService.createFromClientRequest` only.
+  sourceClientRequestId String?
   /// Caller-supplied idempotency key for opportunity-triggered creation only
   /// (null for every other creation path). Unique so a retried "Create
   /// content" click with the same key can never create a second brief —
@@ -1487,7 +1511,91 @@ model GrowthAsset {
   @@index([projectId, assetType])
   @@index([projectId, status])
   @@index([sourceOpportunityId])
+  @@index([sourceClientRequestId])
   @@index([assigneeId])
+}
+
+/// C4 (client-portal.md §14/§22): a client's structured "request new content"
+/// submission. The record exists for the client's own request history and
+/// for admin traceability — it is deliberately NOT a triage inbox an operator
+/// must convert: `growthAssetId` is set at creation time, in the same
+/// transaction, so the request lands directly in `content-workspace` as a
+/// real, client-tagged `GrowthAsset` (see `sourceClientRequestId` above).
+model ContentRequest {
+  id                String   @id @default(cuid())
+  projectId         String
+  clientId          String
+  requestedByUserId String
+  /// One of CONTENT_WORKSPACE_ASSET_TYPES (content-workspace.types.ts) —
+  /// validated against that list, not redeclared here.
+  contentType       String
+  /// Free-text target keyword or topic, as the client typed it.
+  topic             String
+  /// low | normal | high
+  priority          String   @default("normal")
+  note              String?
+  /// The GrowthAsset created from this request. Nullable only for the brief
+  /// window between the two writes `ContentRequestsService.create` makes
+  /// (create request -> create asset -> link back) — same
+  /// create-then-link shape as `Opportunity.linkedGrowthAssetId`; never null
+  /// once `create` returns.
+  growthAssetId     String?
+  createdAt         DateTime @default(now())
+
+  @@index([projectId])
+  @@index([clientId])
+}
+
+/// C4 (client-portal.md §13/§20): the lightweight prompt add/delete request
+/// queue. Deliberately NOT the Approval primitive (§9/§10) — the client
+/// requests, an admin acts directly on the real `QuerySet` using its own
+/// edit/versioning mechanics (draft -> add/remove -> activate, or fork an
+/// active set first), then records the decision here. This table never
+/// mutates a QuerySet itself.
+model PromptRequest {
+  id                String    @id @default(cuid())
+  projectId         String
+  clientId          String
+  requestedByUserId String
+  /// add | remove
+  action            String
+  /// Required for action=add — the proposed prompt text.
+  prompt            String?
+  /// Optional persona/funnel-stage hint for action=add, so the admin knows
+  /// which QuerySet (by persona) to add it to. One of PromptPersona.
+  persona           String?
+  /// Required for action=remove — the QuerySetItem.id flagged for removal.
+  targetItemId      String?
+  /// Snapshot of the flagged prompt's text at request time, so the request
+  /// still reads even if the item is later removed by the admin action this
+  /// request itself triggers.
+  targetPromptText  String?
+  note              String?
+  /// pending | approved | declined
+  status            String    @default("pending")
+  /// §20 quota snapshot, taken at request time — never recomputed later, so
+  /// the admin sees exactly what the client's account looked like when they
+  /// asked, even if the count has since changed.
+  activePromptCount Int
+  /// The plan tier's tracked-prompt limit at request time. Null = unlimited
+  /// (Enterprise).
+  planPromptLimit   Int?
+  /// The plan tier slug used to resolve `planPromptLimit` — recorded for
+  /// audit/debugging since tier is derived, not a stored field (§20 note).
+  planTier          String
+  /// True when `activePromptCount >= planPromptLimit` for an add request —
+  /// flagged distinctly as an upsell moment, never a silent failure (§20).
+  overQuota         Boolean   @default(false)
+  decidedByUserId   String?
+  decidedAt         DateTime?
+  decisionNote      String?
+  /// The QuerySetItem.id the admin's add action produced, if they record it.
+  resultQuerySetItemId String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([projectId, status])
+  @@index([clientId])
 }
 
 // ---------------------------------------------------------------------------
@@ -2887,11 +2995,14 @@ model CompetitorProfile {
   reviewRatings    String   @default("[]")
   reviewError      String?
   /// completed | skipped | failed | unknown. Discoverability-pipeline Stage 4
-  /// step 3 (2026-09-22): homepage-only company-context enrichment (reverses
-  /// SPEC.md D4 for the light case) — from the homepage HTML/JSON-LD the
-  /// schema/SEO read already fetched, no extra request; not the full crawl.
+  /// step 3 (2026-09-22): homepage-only company-context enrichment. Reverses
+  /// SPEC.md's D4 "not built" for the light case — extracted from the SAME
+  /// homepage HTML + JSON-LD the schema/SEO read already fetched, so it costs
+  /// no extra request. NOT the full multi-page Stage-1 site-context crawl
+  /// (that would need the rival's sitemap crawled — deliberately out of scope).
   companyContextStatus String @default("unknown")
-  /// JSON {brand,description,category,keywords[],socialProfiles[]}. Null when not derivable.
+  /// JSON {brand,description,category,keywords[],socialProfiles[]} — the rival's
+  /// own company context read off its homepage. Null when not derivable.
   companyContext   String?
   createdAt        DateTime @default(now())
 
