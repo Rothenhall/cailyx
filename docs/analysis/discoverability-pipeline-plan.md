@@ -185,19 +185,33 @@ section, not new findings):
    Stage-1 pipeline run against its own domain.
 
 ### Steps
-1. **Build the absence/co-mention aggregation.** New read-only aggregation over
-   `AeoStance` rows (already stored) grouped by the `otherNamesSeen` name: count total
-   mentions, split by whether the paired observation's `stance` was `absent` (absence
-   signal, weight higher) vs. anything else (co-mention signal), count distinct
-   platforms/surfaces, track prompt diversity (distinct `dimension` values), average
-   position where derivable. This is pure aggregation over existing data — no new
-   extraction, no new LLM call, no schema change beyond maybe one new read-model type.
-2. **Implement the weighted composite score** (spec §7's exact weights: platform
-   coverage 30%, absence-mentions 25%, co-mention 15%, position 15%, prompt diversity
-   10%, external-discovery corroboration 5% — the last one uses Stage 2's new
-   `evidenceKind`s). Rank descending, apply the `min_platform_coverage` floor (relax +
-   flag if too few candidates clear it), select top N (default 5), keep 6th–15th as an
-   explicit watchlist rather than discarding.
+1. **Build the absence/co-mention aggregation.** ✅ **DONE 2026-09-22.**
+   `AeoStanceService.aggregateCompetitorSignals(auditId)` (read-only, no LLM) groups the
+   `otherNamesSeen` names and, per name, splits mentions by whether the *client* was
+   `absent` in that same answer (absence signal) vs. present (co-mention), counts distinct
+   surfaces + distinct dimensions, and averages the rival's 1-based position within
+   `brandsNamed` where derivable. New `CompetitorSignal` read-model type; no schema change.
+2. **Implement the weighted composite score.** ✅ **DONE 2026-09-22.**
+   `CompetitorsService.rankCompetitorsByStance(projectId)` finds the newest completed AEO
+   audit, aggregates via step 1, and scores with the exact §7 weights (platform coverage
+   30% / absence 25% / co-mention 15% / position 15% / prompt diversity 10% /
+   external-discovery corroboration 5% — the last from Stage-2 `market-discovery`
+   Competitor rows). The pure scoring is `rankCompetitorSignals()` (exported, unit-tested).
+   Applies a `MIN_PLATFORM_COVERAGE` floor of 2, relaxing to 1 (and flagging `floorRelaxed`)
+   when too few clear it; returns the top 5 plus a 6th–15th watchlist (kept, not discarded).
+   Exposed read-only at `GET /api/projects/:id/competitors/ranking`.
+   **Module ownership note (deviation from the plan's split):** aggregation lives in
+   `aeo-stance.service.ts` (it owns the stance data); ranking lives in
+   `competitors.service.ts` (it owns competitor concepts + the corroboration data), which
+   now imports `AeoAuditModule` to inject `AeoStanceService` — safe, since `aeo-audit`
+   does not import `competitors` (no cycle). This matches the plan's "both modules."
+
+   **Verified (2026-09-22), 9/9:** the pure ranker unit-tested (floor excludes a
+   1-platform rival, floor relaxes when too few clear it, top rival ranks #1, composite
+   matches the §7 weights exactly by hand = 90.0, corroboration flagged only for a
+   discovered name); the aggregation live-tested against the **prod DB** (seeded a labelled
+   audit with two stances → correct absence/co-mention/surface/dimension/avg-position
+   counts, then ranked). `tsc` + `nest build` clean. Test data cleaned up.
 3. **Decision needed from the user before building this part**: does per-competitor
    full company-context enrichment belong inside `competitors` module now (reversing
    the explicit D4 "not built" decision), or should the top-5 ranked list simply be
@@ -307,8 +321,9 @@ Per AGENTS.md's "one module at a time," in priority order:
    new `serp-comparison-search`/`review-site-category` evidence kinds. New pure logic unit-verified
    8/8; tsc + build clean. Review-site pull may be bot-blocked in practice (documented caveat).
 4. **Stage 3 fixes #2–3** (coverage-gap report, cross-bucket dedup) — ✅ **DONE 2026-09-22** (see Stage 3 steps 2–3). `coverageGaps` on the matrix result + persisted label; `dedupKey`-based near-duplicate collapse. Verified 8/8, tsc + build clean.
-5. **Stage 4 steps 1–2** (absence/co-mention aggregation + weighted ranking) — the
-   biggest net-new logic in this plan, but pure aggregation over data that already exists.
+5. **Stage 4 steps 1–2** (absence/co-mention aggregation + weighted ranking) — ✅ **DONE
+   2026-09-22** (see Stage 4 steps 1–2). `aggregateCompetitorSignals` + `rankCompetitorSignals`
+   (§7 weights) + `GET .../competitors/ranking`. Verified 9/9 (pure ranker unit + live prod aggregation).
 6. **Decision point**: Stage 4 step 3 (per-competitor enrichment scope) — needs your
    answer before 4–5 can be built.
 7. **Brand-voice steps 2–5** (statistical layer, core/register split, validation gate).

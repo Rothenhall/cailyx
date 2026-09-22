@@ -198,6 +198,13 @@ exact-match guard.
 | `QuerySetItem.meta` | JSON `PromptMeta`: register, branded/unbranded, which service or competitor the cell targets, ICP, geo, template id, whether an LLM rewrote it |
 | `AeoStance.dimension` | copied at judge time so stance rolls up per category without a join |
 
+`AeoStanceService.aggregateCompetitorSignals(auditId)` (2026-09-22, discoverability-pipeline
+Stage 4) is a read-only roll-up over these stances: it groups each rival name an answer
+surfaced (`otherNamesSeen`) and splits its mentions by whether the *client* was `absent` in
+the same answer (an "beats us here" signal) vs. present (co-mention), plus distinct
+surfaces/dimensions and average position. It feeds the `competitors` module's §7 ranking
+(`GET /projects/:id/competitors/ranking`) — no writes, no LLM call.
+
 ### The ten categories
 
 | Category | Buyer intent | Branded? |

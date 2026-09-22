@@ -133,6 +133,32 @@ Bound to `MAX_SERVICES_CONSIDERED = 5` services and
 `MAX_MARKET_QUERIES` (6) SERP searches + `MAX_REVIEW_SITE_PULLS` (2) review-site
 pulls — "a budget, not a suggestion".
 
+## Competitor ranking (Stage 4, 2026-09-22)
+
+`GET /competitors/ranking` → `rankCompetitorsByStance(projectId)` ranks rivals by a
+weighted composite (discoverability-pipeline spec §7) over the **newest completed AEO
+audit's** stances — read-only, no writes, no LLM/vendor call. It aggregates each rival
+name the audit surfaced (`AeoStanceService.aggregateCompetitorSignals`, in the aeo-audit
+module) into absence vs. co-mention counts, distinct platform coverage, prompt-dimension
+diversity, and average position, then scores:
+
+| Factor | Weight |
+|---|---|
+| platform coverage | 30% |
+| absence-mentions (rival named while the client was absent) | 25% |
+| co-mentions (rival named alongside the client) | 15% |
+| average position | 15% |
+| prompt diversity | 10% |
+| external-discovery corroboration (a Stage-2 `market-discovery` row exists) | 5% |
+
+Each factor is normalized 0–1 across the candidate set; the score is 0–100. A
+`MIN_PLATFORM_COVERAGE` floor of 2 keeps single-surface noise out of the top list,
+relaxing to 1 (with `floorRelaxed: true`) when too few rivals clear it. Returns the top 5
+plus a 6th–15th `watchlist` (kept, not discarded, so a later discovery round can
+reconsider them). The pure scoring is the exported `rankCompetitorSignals()` — unit-tested
+independently of the DB. `competitors` imports `AeoAuditModule` for the read-only
+`AeoStanceService` (no cycle: aeo-audit does not import competitors).
+
 **The exclusion list is the point.** `EXCLUDED_DOMAINS` is a fixed set of
 registrable domains that are never a competitor even when they legitimately
 rank for the client's queries: directories/marketplaces/review platforms
@@ -229,6 +255,7 @@ returned. The comparison is the product; the snapshot is the receipt.
 | `POST` | `/projects/:id/competitors/discover` | 5/60s | Promote + (re)profile every competitor. Body: optional `{ competitors: [{name, domain?}] }` |
 | `POST` | `/projects/:id/competitors/discover/market` | 5/60s | Propose candidates from confirmed services + target markets. Body: `{ collectNew?: boolean, provider?: 'dataforseo' \| 'fixture' }`. Free by default; `collectNew: true` is the paid, explicit pass |
 | `GET` | `/projects/:id/competitors/profiles` | default (100/60s) | `{ competitors }` — every `Competitor` row with its latest profile (tracked only) |
+| `GET` | `/projects/:id/competitors/ranking` | default (100/60s) | **(Stage 4)** rank rivals by the §7 composite over the latest AEO audit's stances — top 5 + 6th–15th watchlist. Read-only |
 | `GET` | `/projects/:id/competitors/gap` | default (100/60s) | Client-vs-competitor gap comparison; also persists a frozen snapshot |
 | `GET` | `/projects/:id/competitors/comparison-snapshots` | default (100/60s) | `{ snapshots }` — frozen comparisons, newest first, summaries only |
 | `GET` | `/projects/:id/competitors/comparison-snapshots/:snapshotId` | default (100/60s) | The stored `GapResult` verbatim; 404 for an unknown or another project's snapshot |

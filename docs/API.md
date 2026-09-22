@@ -1172,6 +1172,7 @@ in the code, not an oversight in this table).
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/projects/:id/competitors/discover/market` | Body `{ collectNew?: boolean, provider?: 'dataforseo' \| 'fixture' }` — propose candidates from confirmed services + target markets |
+| `GET` | `/api/projects/:id/competitors/ranking` | **(Stage 4)** rank rivals by the §7 composite over the newest completed AEO audit's stances — `{ rankedTop, watchlist, ... }`, top 5 + 6th–15th watchlist. Read-only |
 | `GET` | `/api/projects/:id/competitors/comparison-snapshots` | Frozen comparisons, newest first, summaries only |
 | `GET` | `/api/projects/:id/competitors/comparison-snapshots/:snapshotId` | The stored `GapResult` verbatim; 404 for an unknown or another project's snapshot |
 

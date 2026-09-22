@@ -21,6 +21,7 @@ import { TechStackModule } from '../tech-stack/tech-stack.module';
 import { DigitalPresenceModule } from '../digital-presence/digital-presence.module';
 import { BusinessProfileModule } from '../business-profile/business-profile.module';
 import { SerpIntelligenceModule } from '../serp-intelligence/serp-intelligence.module';
+import { AeoAuditModule } from '../aeo-audit/aeo-audit.module';
 
 @Module({
   // BusinessProfileModule and SerpIntelligenceModule back §12.2's
@@ -28,7 +29,9 @@ import { SerpIntelligenceModule } from '../serp-intelligence/serp-intelligence.m
   // markets are read-only from BusinessProfileService (that module's own
   // code is untouched), and bounded searches go through the same gated
   // SERP provider `serp-intelligence` already exposes for `capture()`.
-  imports: [FetcherModule, TechStackModule, DigitalPresenceModule, BusinessProfileModule, SerpIntelligenceModule],
+  // AeoAuditModule provides AeoStanceService — read-only, for Stage 4 competitor
+  // ranking over stored stances (aeo-audit does not import competitors, so no cycle).
+  imports: [FetcherModule, TechStackModule, DigitalPresenceModule, BusinessProfileModule, SerpIntelligenceModule, AeoAuditModule],
   controllers: [CompetitorsController],
   providers: [CompetitorsService],
   exports: [CompetitorsService],

@@ -9,6 +9,34 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-22 — Discoverability pipeline: Stage 4 competitor ranking (aggregation + §7 weighted score)
+
+Full plan: `docs/analysis/discoverability-pipeline-plan.md` (Stage 4, steps 1–2). The
+biggest net-new logic in the plan — but pure aggregation/scoring over data that already
+exists (`AeoStance`), no new extraction/LLM/vendor call, no schema change.
+
+- **Absence/co-mention aggregation** (`AeoStanceService.aggregateCompetitorSignals`, new
+  `CompetitorSignal` type): groups each rival name an answer surfaced (`otherNamesSeen`)
+  and splits its mentions by whether the client was `absent` in the same answer (absence
+  signal) vs. present (co-mention), plus distinct surfaces, distinct dimensions, and
+  average position within `brandsNamed`.
+- **Weighted §7 ranking** (`CompetitorsService.rankCompetitorsByStance` + exported pure
+  `rankCompetitorSignals`, `GET /api/projects/:id/competitors/ranking`): normalizes each
+  factor across the candidate set and combines with the exact §7 weights — platform
+  coverage 30% / absence 25% / co-mention 15% / position 15% / prompt diversity 10% /
+  external-discovery corroboration 5% (from Stage-2 `market-discovery` rows). Applies a
+  min-platform-coverage floor (relaxed to 1 + flagged when too few clear it); returns the
+  top 5 plus a 6th–15th watchlist (kept, not discarded).
+- **Module wiring:** aggregation in `aeo-audit`, ranking in `competitors`, which now
+  imports `AeoAuditModule` for the read-only `AeoStanceService` (no cycle — `aeo-audit`
+  doesn't import `competitors`).
+
+`npx tsc --noEmit` + `nest build` clean. Verified 9/9: the pure ranker unit-tested (floor
+exclusion/relax, correct #1, composite = 90.0 by hand against the §7 weights, corroboration
+flag), and the aggregation live-tested against the prod DB (seeded audit + two stances →
+correct absence/co-mention/surface/dimension/avg-position, then ranked). Test data cleaned
+up. `competitors`/`aeo-audit` READMEs + `docs/API.md` updated.
+
 ## 2026-09-22 — Discoverability pipeline: Stage 2 competitor-discovery query patterns
 
 Full plan: `docs/analysis/discoverability-pipeline-plan.md` (Stage 2). Extends

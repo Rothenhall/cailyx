@@ -39,6 +39,28 @@ export interface StancePassResult {
   judgeModel: string;
 }
 
+/**
+ * Per-rival absence/co-mention aggregate over one audit's stances
+ * (discoverability-pipeline Stage 4 step 1). All counts are over answers in
+ * which the rival was named as an `otherNamesSeen` entry.
+ */
+export interface CompetitorSignal {
+  /** Rival name, first-seen casing. */
+  name: string;
+  /** Mentions where the client was `absent` in the same answer (strongest "beats us" signal). */
+  absenceMentions: number;
+  /** Mentions where the client was also present (co-considered). */
+  coMentions: number;
+  /** absenceMentions + coMentions. */
+  totalMentions: number;
+  /** Distinct surfaces/engines the rival was seen on (platform coverage). */
+  distinctSurfaces: number;
+  /** Distinct prompt dimensions the rival appeared under (prompt diversity). */
+  distinctDimensions: number;
+  /** Average 1-based position within `brandsNamed`, or null when never derivable. */
+  avgPosition: number | null;
+}
+
 @Injectable()
 export class AeoStanceService {
   private readonly logger = new Logger(AeoStanceService.name);
@@ -233,6 +255,58 @@ export class AeoStanceService {
       otherNamesSeen: this.parseArray(row.otherNamesSeen),
       evidenceQuote: row.evidenceQuote,
       rationale: row.rationale,
+    }));
+  }
+
+  /**
+   * Absence/co-mention aggregation over stored stances (discoverability-pipeline
+   * Stage 4 step 1). Pure read — no new extraction, no LLM call. Groups the
+   * `otherNamesSeen` names (rivals an answer surfaced) and, for each, splits its
+   * mentions by whether the *client* was `absent` in that same answer:
+   *
+   *  - **absence** signal = the rival was named while the client was absent (the
+   *    rival owns an answer the client does not appear in — the strongest "beat
+   *    us here" signal).
+   *  - **co-mention** signal = the rival was named while the client was also
+   *    present (both considered together).
+   *
+   * Also counts distinct surfaces (platform coverage) and dimensions (prompt
+   * diversity), and averages the rival's 1-based position within `brandsNamed`
+   * where derivable. Feeds Stage 4's weighted ranking.
+   */
+  async aggregateCompetitorSignals(auditId: string): Promise<CompetitorSignal[]> {
+    const verdicts = await this.list(auditId);
+    const acc = new Map<
+      string,
+      { display: string; absence: number; co: number; surfaces: Set<string>; dims: Set<string>; positions: number[] }
+    >();
+    for (const v of verdicts) {
+      const clientAbsent = v.stance === 'absent';
+      for (const rawName of v.otherNamesSeen) {
+        const name = rawName.trim();
+        if (!name) continue;
+        const key = name.toLowerCase();
+        let bucket = acc.get(key);
+        if (!bucket) {
+          bucket = { display: name, absence: 0, co: 0, surfaces: new Set(), dims: new Set(), positions: [] };
+          acc.set(key, bucket);
+        }
+        if (clientAbsent) bucket.absence++;
+        else bucket.co++;
+        if (v.surface) bucket.surfaces.add(v.surface);
+        if (v.dimension) bucket.dims.add(v.dimension);
+        const idx = v.brandsNamed.findIndex((n) => n.trim().toLowerCase() === key);
+        if (idx >= 0) bucket.positions.push(idx + 1);
+      }
+    }
+    return [...acc.values()].map((b) => ({
+      name: b.display,
+      absenceMentions: b.absence,
+      coMentions: b.co,
+      totalMentions: b.absence + b.co,
+      distinctSurfaces: b.surfaces.size,
+      distinctDimensions: b.dims.size,
+      avgPosition: b.positions.length ? b.positions.reduce((s, n) => s + n, 0) / b.positions.length : null,
     }));
   }
 

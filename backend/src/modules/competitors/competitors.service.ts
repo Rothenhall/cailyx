@@ -19,6 +19,7 @@ import { createHash } from 'crypto';
 import { PrismaService } from '../database/prisma.service';
 import * as cheerio from 'cheerio';
 import { FetcherService } from '../fetcher/fetcher.service';
+import { AeoStanceService, type CompetitorSignal } from '../aeo-audit/aeo-stance.service';
 import { TechStackService, type TechStackScanResult } from '../tech-stack/tech-stack.service';
 import { PresenceDiscoveryService } from '../digital-presence/presence.discovery.service';
 import { PLATFORM_GROUP, PLATFORM_LABELS, type PresencePlatform } from '../digital-presence/presence.types';
@@ -59,7 +60,7 @@ const EXCLUDED_DOMAINS = new Set<string>([
 ]);
 
 /** Case/whitespace-normalized identity key for a candidate name. */
-function nameKey(name: string): string {
+export function nameKey(name: string): string {
   return name.trim().toLowerCase();
 }
 
@@ -298,6 +299,122 @@ export interface DiscoverByMarketResult {
   note: string;
 }
 
+/** spec §7 composite-score weights for competitor ranking (sum = 1.0). */
+const RANKING_WEIGHTS = {
+  platformCoverage: 0.3,
+  absence: 0.25,
+  coMention: 0.15,
+  position: 0.15,
+  diversity: 0.1,
+  corroboration: 0.05,
+} as const;
+
+/** A candidate must be seen on at least this many surfaces to make the top list — relaxed to 1 if too few clear it. */
+const MIN_PLATFORM_COVERAGE = 2;
+/** Default size of the ranked top list. */
+const DEFAULT_TOP_N = 5;
+/** How many below the top list to keep as an explicit watchlist. */
+const WATCHLIST_SIZE = 10;
+
+/** One ranked rival — a {@link CompetitorSignal} plus its composite score and the normalized components behind it. */
+export interface RankedCompetitor extends CompetitorSignal {
+  /** 0–100 composite (spec §7). */
+  score: number;
+  /** Whether Stage-2 external discovery also surfaced this name (a `market-discovery` Competitor row). */
+  externallyCorroborated: boolean;
+  /** The normalized 0–1 factors behind `score`, for transparency. */
+  components: {
+    platformCoverage: number;
+    absence: number;
+    coMention: number;
+    position: number;
+    diversity: number;
+    corroboration: number;
+  };
+}
+
+export interface CompetitorRankingResult {
+  projectId: string;
+  /** The completed AEO audit whose stances were ranked, or null when none exists. */
+  auditId: string | null;
+  /** Top N by composite score (spec §7). */
+  rankedTop: RankedCompetitor[];
+  /** 6th–15th — kept, not discarded, so a later round can reconsider them. */
+  watchlist: RankedCompetitor[];
+  /** The platform-coverage floor actually applied (relaxed to 1 when too few cleared the default). */
+  minPlatformCoverage: number;
+  /** True when the floor had to be relaxed to fill the top list. */
+  floorRelaxed: boolean;
+  totalCandidates: number;
+  note: string;
+}
+
+/**
+ * Pure §7 scoring/ranking over aggregated {@link CompetitorSignal}s — no DB, no
+ * IO, deterministic — so the weighted-score math is unit-testable. `discoveredKeys`
+ * is the set of `nameKey`s that Stage-2 external discovery corroborated.
+ */
+export function rankCompetitorSignals(
+  signals: CompetitorSignal[],
+  discoveredKeys: Set<string>,
+  topN: number,
+): {
+  rankedTop: RankedCompetitor[];
+  watchlist: RankedCompetitor[];
+  minPlatformCoverage: number;
+  floorRelaxed: boolean;
+  totalCandidates: number;
+} {
+  const maxSurfaces = Math.max(1, ...signals.map((s) => s.distinctSurfaces));
+  const maxAbsence = Math.max(1, ...signals.map((s) => s.absenceMentions));
+  const maxCoMention = Math.max(1, ...signals.map((s) => s.coMentions));
+  const maxDimensions = Math.max(1, ...signals.map((s) => s.distinctDimensions));
+  const positions = signals.map((s) => s.avgPosition).filter((n): n is number => n != null);
+  const worstPosition = positions.length > 0 ? Math.max(...positions) : 1;
+
+  const scored: RankedCompetitor[] = signals.map((s) => {
+    const platformCoverage = s.distinctSurfaces / maxSurfaces;
+    const absence = s.absenceMentions / maxAbsence;
+    const coMention = s.coMentions / maxCoMention;
+    // Lower (better) average position scores higher; null (never derivable) scores 0.
+    const position =
+      s.avgPosition == null ? 0 : worstPosition <= 1 ? 1 : (worstPosition - s.avgPosition) / (worstPosition - 1);
+    const diversity = s.distinctDimensions / maxDimensions;
+    const corroboration = discoveredKeys.has(nameKey(s.name)) ? 1 : 0;
+    const composite =
+      RANKING_WEIGHTS.platformCoverage * platformCoverage +
+      RANKING_WEIGHTS.absence * absence +
+      RANKING_WEIGHTS.coMention * coMention +
+      RANKING_WEIGHTS.position * position +
+      RANKING_WEIGHTS.diversity * diversity +
+      RANKING_WEIGHTS.corroboration * corroboration;
+    return {
+      ...s,
+      score: Number((composite * 100).toFixed(2)),
+      externallyCorroborated: corroboration === 1,
+      components: { platformCoverage, absence, coMention, position, diversity, corroboration },
+    };
+  });
+
+  let floor = MIN_PLATFORM_COVERAGE;
+  let eligible = scored.filter((s) => s.distinctSurfaces >= floor);
+  let floorRelaxed = false;
+  if (eligible.length < topN && floor > 1) {
+    floor = 1;
+    eligible = scored.filter((s) => s.distinctSurfaces >= floor);
+    floorRelaxed = true;
+  }
+  eligible.sort((a, b) => b.score - a.score || b.totalMentions - a.totalMentions || a.name.localeCompare(b.name));
+
+  return {
+    rankedTop: eligible.slice(0, topN),
+    watchlist: eligible.slice(topN, topN + WATCHLIST_SIZE),
+    minPlatformCoverage: floor,
+    floorRelaxed,
+    totalCandidates: scored.length,
+  };
+}
+
 /** One line of the tech/schema diff table in the gap report. */
 export interface GapDiffLine {
   key: string;
@@ -395,6 +512,7 @@ export class CompetitorsService {
     private readonly directoryRating: PresenceDirectoryRatingService,
     private readonly businessProfile: BusinessProfileService,
     private readonly serpIntelligence: SerpIntelligenceService,
+    private readonly aeoStance: AeoStanceService,
   ) {}
 
   private async requireProject(projectId: string): Promise<{ id: string; domain: string; competitors: string | null }> {
@@ -923,6 +1041,66 @@ export class CompetitorsService {
       reason: `Listed in the G2 "${slug}" category.`,
     }));
     return { pulled: candidates.length > 0, candidates };
+  }
+
+  /**
+   * Rank rivals by the weighted composite score (discoverability-pipeline Stage 4
+   * steps 1–2, spec §7). Read-only: aggregates the newest completed AEO audit's
+   * stances (`AeoStanceService.aggregateCompetitorSignals`), normalizes each
+   * factor across the candidate set, and combines them with the §7 weights —
+   * platform coverage 30%, absence-mentions 25%, co-mention 15%, position 15%,
+   * prompt diversity 10%, external-discovery corroboration 5% (the last from
+   * Stage-2 `market-discovery` Competitor rows). Applies a min-platform-coverage
+   * floor, relaxing it (and flagging) when too few candidates clear it; returns
+   * the top N plus a 6th–15th watchlist (kept, not discarded, so a later round
+   * can reconsider them). No writes, no LLM call, no schema change.
+   */
+  async rankCompetitorsByStance(projectId: string, opts: { topN?: number } = {}): Promise<CompetitorRankingResult> {
+    await this.requireProject(projectId);
+    const topN = opts.topN ?? DEFAULT_TOP_N;
+    const empty = (auditId: string | null, note: string): CompetitorRankingResult => ({
+      projectId,
+      auditId,
+      rankedTop: [],
+      watchlist: [],
+      minPlatformCoverage: MIN_PLATFORM_COVERAGE,
+      floorRelaxed: false,
+      totalCandidates: 0,
+      note,
+    });
+
+    const audit = await this.prisma.aeoAudit.findFirst({
+      where: { projectId, status: 'completed' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    if (!audit) return empty(null, 'No completed AEO audit for this project yet — run one before ranking competitors.');
+
+    const signals = await this.aeoStance.aggregateCompetitorSignals(audit.id);
+    if (signals.length === 0) {
+      return empty(audit.id, 'The latest AEO audit surfaced no rival names in its stances — nothing to rank.');
+    }
+
+    // External-discovery corroboration: names Stage-2 market discovery also found.
+    const discovered = await this.prisma.competitor.findMany({
+      where: { projectId, source: 'market-discovery' },
+      select: { name: true },
+    });
+    const discoveredKeys = new Set(discovered.map((c) => nameKey(c.name)));
+
+    const ranking = rankCompetitorSignals(signals, discoveredKeys, topN);
+
+    return {
+      projectId,
+      auditId: audit.id,
+      ...ranking,
+      note:
+        `Ranked ${ranking.totalCandidates} rival name(s) from AEO audit ${audit.id} by the §7 composite ` +
+        `(platform 30% / absence 25% / co-mention 15% / position 15% / diversity 10% / discovery 5%). ` +
+        (ranking.floorRelaxed
+          ? `The ${MIN_PLATFORM_COVERAGE}-platform floor was relaxed to 1 — too few rivals cleared it.`
+          : `Only rivals seen on ≥${ranking.minPlatformCoverage} platform(s) are ranked.`),
+    };
   }
 
   /**

@@ -146,6 +146,23 @@ export class CompetitorsController {
   }
 
   /**
+   * Stage 4 (discoverability-pipeline) — rank rivals by the §7 composite score
+   * over the newest completed AEO audit's stances. Read-only: no writes, no LLM
+   * call, no paid vendor call.
+   */
+  @Get('ranking')
+  @ApiOperation({
+    summary: 'Rank rivals by the §7 composite over the latest AEO audit\'s stances',
+    description:
+      'Read-only. Aggregates absence/co-mention/platform-coverage/position/prompt-diversity signals from the newest completed AEO audit and combines them with the spec §7 weights, returning the top 5 plus a 6th–15th watchlist. Empty (with a note) when no completed audit or no rival names exist.',
+  })
+  @ApiResponse({ status: 200, description: 'CompetitorRankingResult — rankedTop, watchlist, each with score + normalized components' })
+  @ApiResponse({ status: 404, description: 'Project not found' })
+  async ranking(@Param('projectId') projectId: string) {
+    return this.competitors.rankCompetitorsByStance(projectId);
+  }
+
+  /**
    * The gap comparison: what the client's own tech-stack/schema/SERP/AEO
    * profile has versus what its competitors have. A plain diff, not a scored
    * verdict.
