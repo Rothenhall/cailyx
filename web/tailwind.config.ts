@@ -109,15 +109,28 @@ const config: Config = {
         sm: 'calc(var(--radius-input) - 2px)',
         md: 'var(--radius-input)',
         lg: 'var(--radius-card)',
-        xl: 'var(--radius-dialog)'
+        xl: 'var(--radius-dialog)',
+        /* the soft grouped-container corner — nav cards, panel groups */
+        '2xl': 'var(--radius-group)'
       },
       fontFamily: {
         sans: ['var(--font-sans)'],
-        /* Jost. Applied by the base-layer h1–h4 rule in globals.css, and
-           available as `font-display` for the few headings that are not real
-           heading elements. Never for numerals: those are read as data. */
+        /* Montserrat (graphite theme kit) — see globals.css. Applied by the
+           base-layer h1–h4 rule, and available as `font-display` for the few
+           headings that are not real heading elements. Never for numerals:
+           those are read as data. */
         display: ['var(--font-display)'],
         mono: ['var(--font-mono)']
+      },
+      /* Graphite theme kit's softened variable-font weight scale —
+         Montserrat is a variable font, so these non-standard values render
+         exactly as specified instead of snapping to the nearest static
+         weight. */
+      fontWeight: {
+        normal: '425',
+        medium: '525',
+        semibold: '625',
+        bold: '725'
       },
       /**
        * design_plan.md §3.1's scale, carrying the brand kit's body ramp
@@ -126,31 +139,64 @@ const config: Config = {
        * values move. The kit bans arbitrary sizes like `text-[0.95rem]`, so
        * anything needing a type step uses one of these six.
        */
+      /* The bottom of this scale is compressed relative to the kit's original
+         ramp. At the 72% root set in globals.css the old 0.8rem `meta` step
+         computed to ~9.2px — under what is comfortable to read, and it carries
+         section labels, timestamps and captions. The small steps are lifted
+         and the gaps between them narrowed, so the density stays but nothing
+         lands below ~10px. Order is unchanged: meta < table < body < subsection. */
       fontSize: {
         /* kit --text-label: meta, tags, footnotes */
-        meta: ['0.8rem', { lineHeight: '1.45' }],
+        meta: ['0.9rem', { lineHeight: '1.45' }],
         /* kit --text-caption: secondary body, table cells */
-        table: ['0.9rem', { lineHeight: '1.6' }],
-        /* kit --text-body: default prose, and the iOS-safe input minimum */
-        body: ['1.02rem', { lineHeight: '1.6' }],
+        table: ['0.98rem', { lineHeight: '1.6' }],
+        /* kit --text-body: default prose */
+        body: ['1.06rem', { lineHeight: '1.6' }],
         /* kit --text-body-lg: ledes and subsection headings */
-        subsection: ['1.12rem', { lineHeight: '1.55' }],
+        subsection: ['1.16rem', { lineHeight: '1.55' }],
         /* kit display-md floor, tracked per --rh-tracking-display-md */
         title: ['1.9rem', { lineHeight: '1.06', letterSpacing: '-0.012em' }],
         /* kit display-lg floor, tracked per --rh-tracking-display-lg */
         kpi: ['2.4rem', { lineHeight: '1.01', letterSpacing: '-0.018em' }]
       },
+      /* §3.1's layout constants, in rem so they follow the root UI scale set
+         in globals.css (240px / 64px / 1440px / 920px at a 16px root). */
       spacing: {
-        nav: '240px',
-        topbar: '64px'
+        nav: '15rem',
+        topbar: '4rem'
       },
       maxWidth: {
-        content: '1440px',
-        reading: '920px'
+        content: '90rem',
+        reading: '57.5rem'
       },
+      /* graphite theme kit's shadow shape (softer, lower-opacity, more
+         spread) retinted with the kit's own ink instead of graphite's
+         grayscale. */
       boxShadow: {
-        overlay: '0 8px 24px -4px hsl(var(--shadow) / 0.12), 0 2px 6px -2px hsl(var(--shadow) / 0.08)',
+        overlay: '0 8px 24px hsl(var(--shadow) / 0.08), 0 2px 6px hsl(var(--shadow) / 0.04)',
+        /* graphite's smallest shadow step — the lift under a selected/raised
+           chip (active nav item, filter pill), not a full overlay. */
+        chip: '0 1px 2px hsl(var(--shadow) / 0.06), 0 8px 16px hsl(var(--shadow) / 0.08)',
+        /* the elevation ladder, shared with the CSS vars in globals.css */
+        soft: 'var(--shadow-soft)',
+        medium: 'var(--shadow-medium)',
+        strong: 'var(--shadow-strong)',
+        /* an inset highlight along the top edge plus an ambient lift — what
+           makes a grouped container read as a raised, softly-lit block. */
+        group:
+          'inset 0 1px 0 hsl(var(--surface-raised) / 0.7), 0 10px 22px hsl(var(--shadow) / 0.05)',
         none: 'none'
+      },
+      /* graphite theme kit's motion scale — see the matching CSS vars in
+         globals.css. */
+      transitionDuration: {
+        fast: 'var(--duration-fast)',
+        base: 'var(--duration-base)',
+        slow: 'var(--duration-slow)'
+      },
+      transitionTimingFunction: {
+        out: 'var(--ease-out)',
+        'in-out': 'var(--ease-in-out)'
       },
       keyframes: {
         'accordion-down': {

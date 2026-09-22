@@ -9,7 +9,9 @@ const Card = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "rounded-xl border bg-card text-card-foreground shadow",
+      // shadow-soft is the ink-tinted elevation step; Tailwind's default
+      // `shadow` is a hard cool-black that reads foreign on warm paper.
+      "rounded-2xl border bg-card text-card-foreground shadow-soft",
       className
     )}
     {...props}

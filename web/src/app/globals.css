@@ -29,6 +29,12 @@
  * Components must still never write a raw hex value: that discipline is what
  * makes this the only file a re-skin needs, and what keeps a future G20
  * per-organisation override possible without touching component source.
+ *
+ * Typography, radius, shadow and motion below are ported in from the
+ * Graphite theme kit (a standalone token kit) over the brand kit's own
+ * values for those categories — a deliberate override, not an oversight.
+ * Colour (this file's §1/§2 layers above) is untouched. See the --radius-*,
+ * --font-*, --duration-*, --ease-* declarations and layout.tsx.
  */
 
 @layer base {
@@ -119,25 +125,56 @@
     --night-2: 38.2 20.8% 10.4%; /* #201c15 */
     --night-line: 46.4 26.2% 16.5%; /* #35301f */
 
-    /* Neo-classical editorial: crisp 2px corners, pills only for controls.
-       §3.1's 8/12/16 was a softer system; the kit is deliberately flatter.
-       Buttons opt into the pill in components/ui/button.tsx. */
-    --radius-input: 2px;
-    --radius-card: 2px;
-    --radius-dialog: 4px;
+    /* Graphite theme kit's radius ladder, ported in over the brand kit's
+       "neo-classical editorial: crisp 2px corners, pills only for controls"
+       rule — deliberate override, not an oversight. All three steps now
+       cluster near graphite's 12px instead of climbing 2/2/4px. */
+    --radius-input: 0.75rem;
+    --radius-card: 0.75rem;
+    --radius-dialog: 0.75rem;
 
-    /* Jost (display) over Instrument Sans (body), both variable with roman
-     * and italic, loaded by next/font in app/layout.tsx. The kit retired
-     * Poppins and Inter because a second geometric sans rhymed with the
-     * display face — do not substitute either. The system fallbacks keep the
-     * app rendering if a font request ever fails.
+    /* Montserrat (graphite theme kit), loaded by next/font in app/layout.tsx,
+     * ported in over the brand kit's Jost/Instrument Sans pairing — see the
+     * note in layout.tsx. One face for both display and body now, so
+     * --font-sans and --font-display resolve to the same value. The system
+     * fallbacks keep the app rendering if the font request ever fails.
      */
-    --font-sans: var(--font-instrument-sans), ui-sans-serif, system-ui,
+    --font-sans: var(--font-montserrat), ui-sans-serif, system-ui,
       -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    --font-display: var(--font-jost), ui-sans-serif, system-ui, -apple-system,
-      'Segoe UI', sans-serif;
+    --font-display: var(--font-montserrat), ui-sans-serif, system-ui,
+      -apple-system, 'Segoe UI', sans-serif;
     --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
       'Liberation Mono', monospace;
+
+    /* Graphite theme kit's motion scale — this app had no duration/easing
+       token set before. --shadow-* below is ink-tinted (kit --rh-canvas
+       ink), matching graphite's shape rather than its own grayscale. */
+    --duration-fast: 140ms;
+    --duration-base: 200ms;
+    --duration-slow: 260ms;
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+
+    /* The soft grouped-container corner — a step beyond --radius-dialog, for
+       nav cards and panel groups that should read as one soft block. */
+    --radius-group: 1.375rem;
+
+    /* Elevation ladder. One implied light source, ink-tinted. */
+    --shadow-soft: 0 6px 20px hsl(var(--shadow) / 0.05);
+    --shadow-medium: 0 16px 40px hsl(var(--shadow) / 0.08);
+    --shadow-strong: 0 24px 60px hsl(var(--shadow) / 0.1);
+
+    /* How far a page slides on enter. */
+    --route-enter-distance: 10px;
+
+    /* The sticky top bar's height, mirroring `spacing.topbar` in the Tailwind
+       config. Screens subtract it in `calc()` to size a full-height column
+       (the message thread, the detail panel). It was being referenced by
+       three of them without ever being declared, which made each of those
+       `calc()`s invalid at computed-value time — the height silently fell
+       back to `auto` and the thread grew the page instead of scrolling
+       inside itself. */
+    --topbar: 4rem;
   }
 
   * {
@@ -145,13 +182,42 @@
   }
 
   html {
-    /* The sticky top bar is 64px (--spacing-topbar). Set once, globally, so no
+    /* ── The UI scale knob ────────────────────────────────────────────
+       The design was drawn at a 16px root, but reads better denser — at
+       roughly 72% of that, which is what a 70–75% browser zoom was showing.
+       Rather than restate every size, the root shrinks and every rem-based
+       value in the system follows: the whole type scale, and all of
+       Tailwind's rem spacing (padding, gaps, widths, heights).
+
+       The px-based constants (nav column, top bar, radii, max-widths) were
+       converted to rem so they scale with it. Change this one number to
+       retune the whole app's density. */
+    font-size: 72%;
+
+    /* The sticky top bar is 4rem (--spacing-topbar). Set once, globally, so no
        section needs its own scroll-mt. */
     scroll-padding-top: 4.5rem;
   }
 
+  /* iOS Safari zooms the page when a focused input's text is under 16px.
+     The scaled-down body step is below that, so touch viewports keep a 16px
+     floor on the controls themselves — the one place the scale cannot apply. */
+  @media (max-width: 640px) {
+    input,
+    select,
+    textarea {
+      font-size: 16px;
+    }
+  }
+
   body {
     @apply bg-canvas text-foreground font-sans text-body antialiased;
+    /* A faint wash at the top corners so the canvas has depth instead of
+       reading as one flat fill. Ink at 2–3%, well under any text. */
+    background-image:
+      radial-gradient(circle at 10% 0%, hsl(var(--shadow) / 0.03), transparent 28%),
+      radial-gradient(circle at 90% 0%, hsl(var(--shadow) / 0.02), transparent 34%);
+    background-attachment: fixed;
     /* §3.1: tabular numerals for metrics. Applied globally so a number never
        shifts width between polling updates.
        Deliberate deviation: the kit asks for `onum` (old-style figures) in
@@ -160,15 +226,17 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* Display face on real headings — Jost at weight 400 with the kit's tight
-     negative tracking (display-md: -0.012em, lh 1.06) and balanced wrapping.
-     KPI numerals deliberately stay in the body face: they are read as data. */
+  /* Headings — now the same face as body (Montserrat), so weight is what
+     carries the hierarchy Jost used to carry alone. Graphite's semibold
+     (625) with the kit's tight negative tracking (display-md: -0.012em,
+     lh 1.06) and balanced wrapping. KPI numerals deliberately stay at body
+     weight: they are read as data. */
   h1,
   h2,
   h3,
   h4 {
     @apply font-display;
-    font-weight: 400;
+    font-weight: 625;
     letter-spacing: -0.012em;
     line-height: 1.1;
     text-wrap: balance;
@@ -179,9 +247,14 @@
     color: #fff;
   }
 
-  /* §3.4: visible focus for every interactive element. */
+  /* §3.4: visible focus for every interactive element.
+     No ring offset: an offset paints a solid band of one chosen colour between
+     the element and the ring, and there is no single right colour for it —
+     controls sit on canvas, on surface, and on the tinted nav card, so any
+     fixed offset colour is a mismatched halo on two of the three. The ring
+     hugs the element instead; its cognac reads against all three. */
   :focus-visible {
-    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-canvas;
+    @apply outline-none ring-2 ring-ring;
   }
 
   /* §3.4: honor reduced-motion. */
@@ -192,6 +265,11 @@
       animation-duration: 0.01ms !important;
       animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
+      /* Delays must go too. Clamping only the duration leaves a staggered
+         reveal sitting at its `both` start frame — opacity 0 — for the length
+         of its delay, so reduced motion turned a gentle rise into a pop-in. */
+      animation-delay: 0ms !important;
+      transition-delay: 0ms !important;
       scroll-behavior: auto !important;
     }
   }
@@ -225,6 +303,95 @@
      never styled to look like trusted application chrome (§10.5). */
   .evidence {
     @apply font-mono text-table whitespace-pre-wrap break-words;
+  }
+
+  /* ── The interaction layer ──────────────────────────────────────────
+     Composite behaviours, not single values: what makes a surface feel
+     soft and responsive rather than merely correctly coloured. Every one
+     is driven by the duration and easing tokens above, and the global
+     prefers-reduced-motion rule in the base layer neutralises all of them
+     at once. */
+
+  /* Tactile press is written per element as `active:scale-[0.98]` inside
+     that element's own `transition-[…]`, rather than as a utility here: a
+     standalone `.pressable` would set the `transition` shorthand and fight
+     the Tailwind transition class on the same element, silently dropping
+     one of the two. */
+
+  /* Page enter — a short rise out of nothing, once per navigation. */
+  .route-enter {
+    animation: route-enter var(--duration-slow) var(--ease-out) both;
+    will-change: opacity, transform;
+  }
+
+  /* Staggered reveal: the same rise, offset, so a group of cards arrives as a
+     sequence instead of one block. Pair with .route-enter. */
+  .stagger-1 { animation-delay: 40ms; }
+  .stagger-2 { animation-delay: 100ms; }
+  .stagger-3 { animation-delay: 160ms; }
+  .stagger-4 { animation-delay: 220ms; }
+
+  /* A light sweep across a loading block — a skeleton that is waiting,
+     not one that is broken. Pairs with ui/skeleton's pulse. */
+  .skeleton-shimmer {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .skeleton-shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      hsl(var(--surface-raised) / 0.55) 50%,
+      transparent 100%
+    );
+    transform: translateX(-100%);
+    animation: shimmer-slide 1.8s var(--ease-in-out) infinite;
+  }
+
+  /* Thin, rounded scrollbars for the nav column and any inner scroller. */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border-strong)) transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: hsl(var(--border-strong));
+    border-radius: 9999px;
+  }
+}
+
+@keyframes route-enter {
+  from {
+    opacity: 0;
+    transform: translateY(var(--route-enter-distance));
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(100%);
   }
 }
 

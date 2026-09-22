@@ -1,37 +1,27 @@
 import type { Metadata } from 'next';
-import { Instrument_Sans, Jost } from 'next/font/google';
+import { Montserrat } from 'next/font/google';
 import { FeedbackProvider } from '@fasterfixes/react';
 import { Toaster } from '@/components/ui/sonner';
 import './globals.css';
 
 /**
- * Brand typography — Rothenhall brand kit v1.1.0, `Brand/tokens/brand.css`.
+ * Typography — Graphite theme kit, ported in over the Rothenhall brand kit
+ * v1.1.0 pairing (Jost display / Instrument Sans body), which had documented
+ * this pairing as not to be substituted. This is a deliberate override of
+ * that rule, not an oversight — see globals.css for the matching radius/
+ * shadow/motion changes, all colour tokens are untouched.
  *
- * Jost is the display face (geometric, Futura lineage); Instrument Sans is the
- * body face (humanist grotesque), chosen for contrast against Jost rather than
- * for agreement with it. The kit retired Poppins and Inter precisely because a
- * second geometric sans made display and body rhyme, so neither may be
- * substituted here.
- *
- * next/font self-hosts both at build time and emits a sized fallback, so there
- * is no runtime request to Google and no layout shift. globals.css resolves
- * `--font-sans` / `--font-display` through these variables and keeps system
- * fallbacks, so the app still renders if the fonts fail to load.
+ * One face for both display and body, matching frontend/'s treatment.
+ * Montserrat ships as a variable font, so it's loaded without a fixed weight
+ * list — the softened 425/525/625/725 weight scale in tailwind.config.ts
+ * (Graphite's own weights) is available directly.
  */
-const jost = Jost({
+const montserrat = Montserrat({
   subsets: ['latin'],
   weight: 'variable',
   style: ['normal', 'italic'],
   display: 'swap',
-  variable: '--font-jost',
-});
-
-const instrumentSans = Instrument_Sans({
-  subsets: ['latin'],
-  weight: 'variable',
-  style: ['normal', 'italic'],
-  display: 'swap',
-  variable: '--font-instrument-sans',
+  variable: '--font-montserrat',
 });
 
 export const metadata: Metadata = {
@@ -50,7 +40,7 @@ export const metadata: Metadata = {
  */
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${jost.variable} ${instrumentSans.variable}`}>
+    <html lang="en" className={montserrat.variable}>
       <body>
         {/* §3.4 — skip link is the first focusable element on every page. */}
         <a href="#main" className="skip-link">

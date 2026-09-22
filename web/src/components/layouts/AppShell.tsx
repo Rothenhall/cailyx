@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
-import { ChevronRight, Menu } from 'lucide-react';
+import { ChevronRight, Menu, PanelRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
@@ -58,7 +58,7 @@ function Wordmark({ href }: { href: string }) {
   return (
     <Link
       href={href}
-      className="flex h-topbar flex-col justify-center gap-0.5 border-b border-border px-5"
+      className="flex h-topbar flex-col justify-center gap-0.5 px-5"
     >
       <span className="text-subsection font-semibold tracking-tight">Cailyx</span>
       <span className="text-meta font-normal text-muted-foreground">
@@ -81,6 +81,7 @@ export function AppShell({
 }: AppShellProps) {
   const pathname = usePathname();
   const [navOpen, setNavOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   const nav = (
     <NavColumn sections={sections} pathname={pathname} badges={badges} navScope={navScope} />
@@ -94,15 +95,24 @@ export function AppShell({
       */}
       <div className="flex min-h-screen">
         {/* Fixed desktop navigation, hidden below the wide breakpoint. */}
-        <aside className="hidden w-nav shrink-0 border-r border-border bg-surface min-[1200px]:block">
-          <div className="sticky top-0 h-screen overflow-y-auto">
-            <Wordmark href={brandHref} />
-            {nav}
+        {/* The column is separated from the canvas by a soft outward shadow
+            rather than a hard hairline — the edge reads as depth, not a rule. */}
+        <aside className="hidden w-nav shrink-0 bg-surface shadow-[6px_0_24px_hsl(var(--shadow)/0.06)] min-[1200px]:block">
+          {/* The wordmark is pinned and only the nav list scrolls, so the brand
+              never slides out of view on a long project tree. */}
+          <div className="sticky top-0 flex h-screen flex-col">
+            <div className="shrink-0">
+              <Wordmark href={brandHref} />
+            </div>
+            <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto">{nav}</div>
           </div>
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="sticky top-0 z-30 flex h-topbar items-center gap-3 border-b border-border bg-surface px-4">
+          {/* Translucent + blurred, so content scrolling under the bar stays
+              faintly visible. Bordered with a soft shadow rather than a rule,
+              matching the nav column's edge. */}
+          <header className="sticky top-0 z-30 flex h-topbar items-center gap-3 bg-surface/90 px-4 shadow-[0_6px_20px_hsl(var(--shadow)/0.05)] backdrop-blur-[10px]">
             {/* Drawer trigger — the only navigation affordance below 1200 px. */}
             <Sheet open={navOpen} onOpenChange={setNavOpen}>
               <SheetTrigger asChild>
@@ -115,28 +125,68 @@ export function AppShell({
                   <Menu className="h-5 w-5" />
                 </Button>
               </SheetTrigger>
-              <SheetContent side="left" className="w-nav p-0">
-                <SheetTitle className="flex h-topbar items-center border-b border-border px-5 text-subsection font-semibold">
+              {/* Column layout with the nav in its own scroller: without it a
+                  long project tree overflows the drawer with no way to reach
+                  the items at the bottom. */}
+              {/* Wider than the desktop column: `w-nav` is a rem value, so the
+                  72% root scale shrank it to ~173px, which is tight for a
+                  touch target carrying a label and a badge. */}
+              <SheetContent side="left" className="flex w-[min(20rem,84vw)] flex-col p-0">
+                <SheetTitle className="flex h-topbar shrink-0 items-center border-b border-border px-5 text-subsection font-semibold">
                   Cailyx
                 </SheetTitle>
                 {/* Same identity rule as the desktop wordmark: the drawer is a
                     view where Cailyx appears on its own. */}
-                <p className="border-b border-border px-5 py-2 text-meta text-muted-foreground">
+                <p className="shrink-0 border-b border-border px-5 py-2 text-meta text-muted-foreground">
                   A Rothenhall product
                 </p>
-                {nav}
+                <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto">{nav}</div>
               </SheetContent>
             </Sheet>
 
             <div className="flex min-w-0 flex-1 items-center gap-2">{topbarStart}</div>
-            <div className="flex shrink-0 items-center gap-1">{topbarEnd}</div>
+            <div className="flex shrink-0 items-center gap-1">
+              {/* §3.4 — below 1200px there is no room for a third column, so
+                  the detail panel becomes an overlay. It used to be simply
+                  hidden at this width, which left the evidence behind it
+                  unreachable on every tablet and small laptop. */}
+              {detailPanel ? (
+                <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
+                  <SheetTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="min-[1200px]:hidden"
+                      aria-label="Open details"
+                    >
+                      <PanelRight className="h-5 w-5" />
+                    </Button>
+                  </SheetTrigger>
+                  <SheetContent
+                    side="right"
+                    className="flex w-[min(24rem,88vw)] flex-col p-0"
+                  >
+                    <SheetTitle className="flex h-topbar shrink-0 items-center px-5 text-subsection font-semibold">
+                      Details
+                    </SheetTitle>
+                    <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-4">
+                      {detailPanel}
+                    </div>
+                  </SheetContent>
+                </Sheet>
+              ) : null}
+              {topbarEnd}
+            </div>
           </header>
 
           <div className="flex min-w-0 flex-1">
             <main
               id="main"
+              /* Keyed on the path so the enter animation replays on each
+                 navigation rather than only on first mount. */
+              key={pathname}
               className={cn(
-                'mx-auto w-full flex-1 px-4 py-6 sm:px-6',
+                'route-enter mx-auto w-full flex-1 px-4 py-6 sm:px-6',
                 contentWidth === 'reading' ? 'max-w-reading' : 'max-w-content',
               )}
             >
@@ -145,7 +195,7 @@ export function AppShell({
 
             {/* Contextual evidence/detail panel — §3.2 page anatomy. */}
             {detailPanel ? (
-              <aside className="hidden w-96 shrink-0 border-l border-border bg-surface min-[1200px]:block">
+              <aside className="hidden w-96 shrink-0 bg-surface shadow-[-6px_0_24px_hsl(var(--shadow)/0.06)] min-[1200px]:block">
                 <div className="sticky top-topbar max-h-[calc(100vh-var(--topbar))] overflow-y-auto p-4">
                   {detailPanel}
                 </div>
@@ -257,7 +307,13 @@ function NavColumn({
   const [touched, setTouched] = useState<Record<string, boolean>>({});
 
   return (
-    <nav aria-label="Primary" className="px-3 py-4">
+    <nav aria-label="Primary" className="px-3 py-3">
+      {/* Grouped nav card — sections read as one soft workspace block rather
+          than loose links floating on the column background. No border and no
+          dividers: the grouping is carried by the tinted ground, the inset top
+          highlight in shadow-group, and the section labels. Hairlines through
+          a short nav read as clutter at this density. */}
+      <div className="space-y-3 rounded-2xl bg-surface-sunken/70 p-2 shadow-group">
       {sections.map((section, index) => {
         const key = sectionKey(section, index);
         const isCollapsible = Boolean(section.collapsible);
@@ -268,10 +324,7 @@ function NavColumn({
         const secondary = section.items.filter((item) => item.secondary);
 
         return (
-          <div
-            key={key}
-            className={cn(index > 0 && 'mt-6', isCollapsible && 'rounded-md')}
-          >
+          <div key={key} className={cn(isCollapsible && 'rounded-md')}>
             {section.label ? (
               isCollapsible ? (
                 <button
@@ -283,8 +336,8 @@ function NavColumn({
                   aria-expanded={expanded}
                   aria-controls={panelId}
                   className={cn(
-                    'flex w-full items-center gap-1 rounded-md px-2 py-1.5 text-meta font-medium uppercase tracking-wide',
-                    'text-muted-foreground transition-colors hover:bg-surface-sunken hover:text-foreground',
+                    'flex w-full items-center gap-1 rounded-lg px-2.5 py-1 text-meta font-medium uppercase tracking-wide',
+                    'text-muted-foreground transition-colors duration-base ease-out hover:bg-surface/70 hover:text-foreground',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
                     containsActive && !expanded && 'text-foreground',
                   )}
@@ -292,7 +345,7 @@ function NavColumn({
                   <ChevronRight
                     aria-hidden="true"
                     className={cn(
-                      'h-3.5 w-3.5 shrink-0 transition-transform',
+                      'h-3.5 w-3.5 shrink-0 transition-transform duration-base ease-out',
                       expanded && 'rotate-90',
                     )}
                   />
@@ -302,7 +355,7 @@ function NavColumn({
                   ) : null}
                 </button>
               ) : (
-                <h2 className="px-2 pb-2 text-meta font-medium uppercase tracking-wide text-muted-foreground">
+                <h2 className="px-2.5 pb-1 text-meta font-medium uppercase tracking-wide text-muted-foreground">
                   {section.label}
                 </h2>
               )
@@ -343,10 +396,10 @@ function NavColumn({
                   it implied by nesting.
                 */}
                 {(section.groups ?? []).map((group) => (
-                  <div key={group.label} className="mt-3">
+                  <div key={group.label} className="mt-2">
                     <h3
                       id={`${panelId}-${group.label.replace(/[^a-zA-Z0-9_-]/g, '-')}`}
-                      className="px-2 pb-1 text-meta font-medium uppercase tracking-wide text-muted-foreground"
+                      className="px-2.5 pb-0.5 text-meta font-medium uppercase tracking-wide text-muted-foreground"
                     >
                       {group.label}
                     </h3>
@@ -373,6 +426,7 @@ function NavColumn({
           </div>
         );
       })}
+      </div>
     </nav>
   );
 }
@@ -397,7 +451,7 @@ function NavListItem({
         <span
           aria-disabled="true"
           title={item.unavailableReason ?? 'Not available yet'}
-          className="flex cursor-not-allowed items-center gap-2.5 rounded-md px-2 py-1.5 text-table text-muted-foreground/60"
+          className="flex cursor-not-allowed items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-table text-muted-foreground/60"
         >
           {Icon ? <Icon aria-hidden="true" className="h-4 w-4 shrink-0" /> : null}
           <span className="truncate">{item.label}</span>
@@ -413,21 +467,30 @@ function NavListItem({
         href={item.href}
         aria-current={active ? 'page' : undefined}
         className={cn(
-          'flex items-center gap-2.5 rounded-md px-2 py-1.5 text-table transition-colors',
+          'flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-table active:scale-[0.98]',
+          'transition-[background-color,color,box-shadow,transform] duration-base ease-out',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
           active
-            ? 'bg-primary-subtle font-medium text-primary'
+            ? 'bg-surface-raised font-medium text-primary shadow-chip'
             : item.secondary
-              ? 'text-muted-foreground hover:bg-surface-sunken hover:text-foreground'
-              : 'text-foreground hover:bg-surface-sunken',
+              ? 'text-muted-foreground hover:bg-surface/70 hover:text-foreground'
+              : 'text-foreground hover:bg-surface/70',
         )}
       >
-        {Icon ? <Icon aria-hidden="true" className="h-4 w-4 shrink-0" /> : null}
+        {Icon ? (
+          <Icon
+            aria-hidden="true"
+            className={cn(
+              'h-4 w-4 shrink-0 transition-colors duration-base ease-out',
+              active ? 'text-primary' : 'text-muted-foreground',
+            )}
+          />
+        ) : null}
         <span className="truncate">{item.label}</span>
         {typeof count === 'number' && count > 0 ? (
           <span
             className={cn(
-              'ml-auto rounded-full px-1.5 py-0.5 text-meta font-medium tabular-nums',
+              'ml-auto rounded-full px-1.5 py-0.5 text-meta font-medium tabular-nums transition-colors duration-base ease-out',
               active ? 'bg-primary text-primary-foreground' : 'bg-surface-sunken',
             )}
           >
