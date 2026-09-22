@@ -150,17 +150,24 @@ for a multi-user server.
    > on prod. Because DDL has been `prisma db push` (no migration history, P3019
    > above), nothing tracks which changes reached prod. These three columns were
    > hot-patched onto prod as idempotent additive `ALTER`s to run the verification,
-   > and `planTier` was added to `schema.production.prisma`, but **a full prod
-   > schema reconcile is still owed** — diff `schema.production.prisma` against the
-   > live prod DB and apply every missing change under review, as part of the §4
-   > migration-history rebaseline. Also: the Supabase **direct** URL
-   > (`db.<ref>.supabase.co:5432`) is unreachable from at least one dev machine
-   > (IPv6-only / paused), so DDL there must go through the pooled URL or a host
-   > with IPv6.
+   > and `planTier` was added to `schema.production.prisma`. Also: the Supabase
+   > **direct** URL (`db.<ref>.supabase.co:5432`) is unreachable from at least one
+   > dev machine (IPv6-only / paused), and `prisma migrate diff`/`db push` hang over
+   > the pooled (pgbouncer) URL — so DDL must go through targeted `ALTER`s over the
+   > pooled URL, or a host with IPv6 for the direct URL.
    >
-   > Left on prod from that verification: test rows labelled `ZZ-C6-VERIFY-*`
-   > (fake clients/projects/reports/share-links + activity). Remove them — they
-   > otherwise surface in the `operations` portfolio/health views.
+   > **RESOLVED 2026-09-22** — the full reconcile is done. `schema.production.prisma`
+   > was resynced to a byte-for-byte mirror of `schema.prisma`'s model body
+   > (160/160 models), and the live prod DB was brought up to it with an
+   > additive-only migration (4 `CREATE TABLE` — ContentRequest, PromptRequest,
+   > SiteContextCategorySummary, Phase; 18 `ADD COLUMN` — C3/C4/C5/C7 + Site-Context
+   > v2 fields; 0 drops), computed by diffing the offline full DDL against the live
+   > `information_schema`. The Railway backend build then went green for the first
+   > time since Sept-20 (commit `92411ed`) and all merged backend work is live.
+   > Still owed separately: the P3019 migration-history rebaseline (this reconcile
+   > used `db push`-style `ALTER`s, not tracked migrations).
+   >
+   > `ZZ-C6-VERIFY-*` test rows were cleaned up during the C6 work; no fake rows remain.
 
 > `better-sqlite3`, `@prisma/adapter-better-sqlite3`, `@prisma/adapter-pg` are in
 > `package.json` but unused by the code (standard Prisma client). They can be
