@@ -55,10 +55,12 @@
   --st-danger: var(--red);       /* cognac-deep — heavy end of the same scale */
   --st-idle: var(--text-faint);
 
-  /* Elevation — one warm ink tint, one implied light source. */
-  --e1: 0 1px 2px rgba(26, 23, 18, 0.05);
-  --e2: 0 1px 2px rgba(26, 23, 18, 0.05), 0 10px 26px -14px rgba(26, 23, 18, 0.18);
-  --e3: 0 2px 6px rgba(26, 23, 18, 0.06), 0 30px 70px -28px rgba(26, 23, 18, 0.34);
+  /* Elevation — graphite theme kit's shadow shape (softer, lower-opacity,
+     more spread) ported in and retinted with Rothenhall ink instead of
+     graphite's own grayscale. */
+  --e1: 0 1px 2px rgba(26, 23, 18, 0.04);
+  --e2: 0 1px 3px rgba(26, 23, 18, 0.04), 0 4px 12px rgba(26, 23, 18, 0.03);
+  --e3: 0 8px 24px rgba(26, 23, 18, 0.08), 0 2px 6px rgba(26, 23, 18, 0.04);
 
   /* ── shadcn / Animate UI semantic tokens ────────────────────────────────
      Registry components are written against shadcn's names (bg-primary,
@@ -91,13 +93,13 @@
   --ring: var(--accent-dim);           /* matches the console's focus ring */
   --radius: 8px;                       /* the r2 step */
 
-  /* Poppins is the app-wide typeface — titles, subtitles, descriptions and
-     data all resolve to it (loaded in layout.tsx as --font-poppins). Kept on
-     the --mono token name so existing font-mono / var(--mono) references pick
-     it up unchanged. `--font-display` is a semantic hook that currently
-     resolves to the same face — repoint it here if a separate display face is
-     ever introduced. */
-  --font-sans: var(--font-poppins), "Poppins", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* Montserrat (graphite theme kit's typeface) is the app-wide typeface —
+     titles, subtitles, descriptions and data all resolve to it (loaded in
+     layout.tsx as --font-montserrat). Kept on the --mono token name so
+     existing font-mono / var(--mono) references pick it up unchanged.
+     `--font-display` is a semantic hook that currently resolves to the same
+     face — repoint it here if a separate display face is ever introduced. */
+  --font-sans: var(--font-montserrat), "Montserrat", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: var(--font-sans);
   --font-display: var(--font-sans);
 }
@@ -173,13 +175,14 @@ select {
   animation: pulse-dot 1.8s ease-in-out infinite;
 }
 
-/* floating bento-panel shadow: hairline ring + layered ambient lift */
+/* floating bento-panel shadow: hairline ring + layered ambient lift, softened
+   to graphite's lower-opacity, more-spread shadow curve. */
 .card-shadow {
   box-shadow:
-    0 0 0 1px rgba(26, 23, 18, 0.06),
-    0 2px 4px -1px rgba(26, 23, 18, 0.07),
-    0 14px 30px -10px rgba(26, 23, 18, 0.18),
-    0 30px 56px -20px rgba(26, 23, 18, 0.12);
+    0 0 0 1px rgba(26, 23, 18, 0.05),
+    0 6px 20px rgba(26, 23, 18, 0.05),
+    0 16px 40px rgba(26, 23, 18, 0.08),
+    0 24px 60px rgba(26, 23, 18, 0.1);
 }
 .card-shadow-dark {
   box-shadow:
@@ -239,14 +242,14 @@ select {
   to   { opacity: 1; transform: translateY(0);   filter: blur(0); }
 }
 
-.fw-in     { animation: fw-grow 0.6s cubic-bezier(0.22, 1, 0.36, 1) both; transform-origin: var(--fw-c, 280px) var(--fw-c, 280px); }
+.fw-in     { animation: fw-grow 0.6s cubic-bezier(0.23, 1, 0.32, 1) both; transform-origin: var(--fw-c, 280px) var(--fw-c, 280px); }
 .fw-rings  { animation: fw-spin 140s linear infinite; transform-origin: var(--fw-c, 280px) var(--fw-c, 280px); }
 .fw-pulse  { animation: fw-pulse-ring 3.4s ease-out infinite; transform-origin: var(--fw-c, 280px) var(--fw-c, 280px); }
-.fw-draw   { stroke-dasharray: 100; animation: fw-draw 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; }
-.fw-row    { animation: fw-reveal 0.42s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.fw-draw   { stroke-dasharray: 100; animation: fw-draw 0.5s cubic-bezier(0.23, 1, 0.32, 1) both; }
+.fw-row    { animation: fw-reveal 0.42s cubic-bezier(0.23, 1, 0.32, 1) both; }
 
 /* smooth hover/select on the wheel wedges + labels */
-.fw-theme  { transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1); }
+.fw-theme  { transition: transform 0.3s cubic-bezier(0.23, 1, 0.32, 1); }
 .fw-theme path { transition: fill-opacity 0.22s ease, stroke 0.22s ease; }
 .fw-theme text { transition: fill 0.2s ease, font-weight 0.2s ease; }
 .fw-stage path { transition: filter 0.2s ease; }
@@ -299,9 +302,12 @@ select {
 }
 .goo-blob {
   background: var(--accent-dim); /* brass-soft — the live highlight */
+  /* graphite has no overshoot/bounce curve — this used to spring
+     (cubic-bezier(0.34, 1.4, 0.64, 1)); now graphite's ease-in-out, so the
+     slide is calmer with no bounce at the end. */
   transition:
-    transform 0.42s cubic-bezier(0.34, 1.4, 0.64, 1),
-    width 0.42s cubic-bezier(0.34, 1.4, 0.64, 1);
+    transform 0.42s cubic-bezier(0.77, 0, 0.175, 1),
+    width 0.42s cubic-bezier(0.77, 0, 0.175, 1);
 }
 .goo-row {
   position: relative;

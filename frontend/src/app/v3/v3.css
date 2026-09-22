@@ -7,7 +7,7 @@
  * brand radius/blur ladders, four durations and two easings. Components
  * reference these tokens only — no ad-hoc pixel values.
  *
- * Typeface: Poppins, loaded once app-wide in layout.tsx and inherited here —
+ * Typeface: Montserrat, loaded once app-wide in layout.tsx and inherited here —
  * every title, subtitle, description and figure resolves to it; hierarchy is
  * carried by weight and the scale below, not a second face. This scope
  * deliberately declares no font of its own.
@@ -16,7 +16,7 @@
 .v3 {
   /* ── typography ──────────────────────────────────────────────────────
      One face for the whole console — `--font-sans`, `--font-display` and
-     `--mono` all inherit Poppins from globals.css. Hierarchy is carried by the
+     `--mono` all inherit Montserrat from globals.css. Hierarchy is carried by the
      six-step scale, weight and the tracking tokens below rather than by a
      second typeface; `font-display` survives as a semantic hook (see the
      weight rule further down) for the card titles that sit at body size but
@@ -29,11 +29,12 @@
   --tk-display: -0.025em;
 
   /* ── surface & depth ────────────────────────────────────────────────── */
-  --r1: 4px;
-  --r2: 8px;
+  /* graphite theme kit's flatter radius ladder — see tailwind.config.ts */
+  --r1: 8px;
+  --r2: 12px;
   --r3: 12px;
-  --r4: 16px;
-  --r5: 24px;
+  --r4: 12px;
+  --r5: 16px;
 
   --blur-sm: 8px;   /* brand --blur-sm */
   --blur-md: 12px;  /* brand --blur-md */
@@ -48,14 +49,16 @@
   --danger-a12: color-mix(in srgb, var(--st-danger) 12%, transparent);
 
   /* ── motion ─────────────────────────────────────────────────────────
-     Four durations, each with a job. --d-micro matches the brand's own
-     default transition (.15s). Two easings, no more. */
-  --d-micro: 150ms;
-  --d-state: 220ms;
-  --d-panel: 340ms;
-  --d-morph: 520ms;
-  --ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+     Four durations, each with a job. Graphite theme kit's quicker, calmer
+     scale — see tailwind.config.ts. Graphite has no overshoot/bounce curve,
+     so --spring is now its ease-in-out (no more bounce on the GooeyNav
+     blob). */
+  --d-micro: 140ms;
+  --d-state: 200ms;
+  --d-panel: 260ms;
+  --d-morph: 400ms;
+  --ease: cubic-bezier(0.23, 1, 0.32, 1);
+  --spring: cubic-bezier(0.77, 0, 0.175, 1);
 
   /* keyboard focus — one ring, applied globally below */
   --ring: 0 0 0 2px var(--bg-raised), 0 0 0 4px var(--accent-dim);
@@ -67,7 +70,7 @@
    and tracking plus the weight each call site states. Re-adding a rule here
    would be a `.v3 .x` selector loading after Tailwind's utilities, so it would
    silently outrank the `font-semibold` / `font-medium` those call sites set.
-   `font-display` stays live as Tailwind's utility, resolving to Poppins. */
+   `font-display` stays live as Tailwind's utility, resolving to Montserrat. */
 
 /* ── interaction layer ─────────────────────────────────────────────────
    An audit found 50 of 52 buttons had no press state: they changed colour on
@@ -238,7 +241,7 @@
   }
 }
 .v3msg-in {
-  animation: v3msg-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: v3msg-in 0.3s cubic-bezier(0.23, 1, 0.32, 1) both;
 }
 
 @keyframes v3dot {
@@ -349,7 +352,7 @@
   }
 }
 .v3tab-in {
-  animation: v3tab-in 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: v3tab-in 0.26s cubic-bezier(0.23, 1, 0.32, 1) both;
 }
 
 @media (prefers-reduced-motion: reduce) {

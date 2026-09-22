@@ -1,23 +1,24 @@
 import type { Metadata } from "next";
-import { Poppins } from "next/font/google";
+import { Montserrat } from "next/font/google";
 import "./globals.css";
 
 /**
- * Poppins — the single app-wide typeface (titles, subtitles, descriptions,
- * data — everything).
+ * Montserrat — the single app-wide typeface (titles, subtitles, descriptions,
+ * data — everything). Ported in from the Graphite theme kit alongside its
+ * radius/shadow/motion scale (see globals.css, tailwind.config.ts, v2.css,
+ * v3.css); Rothenhall's colour tokens are untouched.
  *
- * Exposed as `--font-poppins`, which globals.css feeds into `--font-sans`,
+ * Exposed as `--font-montserrat`, which globals.css feeds into `--font-sans`,
  * `--mono` and `--font-display`, so every `font-sans` / `font-mono` /
  * `font-display` reference across both consoles resolves to it with no
- * per-component churn. Poppins is not a variable font, so the weights the
- * type scale actually uses (400 body, 500 medium, 600 semibold, 700 the
- * audit report's bold labels; 300 for the rare light caption) are loaded
- * explicitly.
+ * per-component churn. Montserrat ships as a variable font, so it is loaded
+ * without a fixed weight list — the softened 425/525/625/725 weight scale in
+ * tailwind.config.ts (Graphite's own weights) is available directly.
  */
-const poppins = Poppins({
+const montserrat = Montserrat({
   subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
-  variable: "--font-poppins",
+  weight: "variable",
+  variable: "--font-montserrat",
   display: "swap",
 });
 
@@ -42,7 +43,7 @@ export default function RootLayout({
     // (`data-gr-ext-installed`, `data-new-gr-c-s-check-loaded`). This suppresses
     // the mismatch on these two elements only — one level deep, so real
     // mismatches inside the app still warn.
-    <html lang="en" data-theme="light" className={poppins.variable} suppressHydrationWarning>
+    <html lang="en" data-theme="light" className={montserrat.variable} suppressHydrationWarning>
       <body
         className="min-h-screen bg-bg text-text font-sans antialiased"
         suppressHydrationWarning

@@ -75,6 +75,15 @@ const config: Config = {
         /* semantic hook for headings + figures; currently resolves to Outfit */
         display: "var(--font-display)",
       },
+      /* Graphite theme kit's softened variable-font weight scale — Montserrat
+         ships as a variable font, so these non-standard values render exactly
+         as specified instead of snapping to the nearest static weight. */
+      fontWeight: {
+        normal: "425",
+        medium: "525",
+        semibold: "625",
+        bold: "725",
+      },
       fontSize: {
         /* the v2 type scale — six steps, no half-pixels */
         /* the brand's own eyebrow tracking is .24em, but that is set at
@@ -99,22 +108,35 @@ const config: Config = {
         tight2: "-0.015em",
         display: "-0.025em",
       },
+      /* Graphite theme kit's flatter radius ladder — most steps cluster at
+         12px instead of climbing to 24px; r5 (one flyout panel) is the only
+         step graphite has no equivalent for, so it's scaled down rather than
+         collapsed into r4. */
       borderRadius: {
-        r1: "4px",
-        r2: "8px",
+        r1: "8px",
+        r2: "12px",
         r3: "12px",
-        r4: "16px",
-        r5: "24px",
+        r4: "12px",
+        r5: "16px",
       },
       transitionTimingFunction: {
-        brand: "cubic-bezier(0.22, 1, 0.36, 1)",
-        spring: "cubic-bezier(0.34, 1.4, 0.64, 1)",
+        /* graphite's ease-out — near-identical shape to the old brand curve */
+        brand: "cubic-bezier(0.23, 1, 0.32, 1)",
+        /* graphite has no overshoot/bounce curve, so the old spring
+           (cubic-bezier(0.34, 1.4, 0.64, 1)) is gone — this is graphite's
+           ease-in-out, used everywhere the spring used to be (GooeyNav's
+           liquid blob loses its bounce; see globals.css/v2.css/v3.css). */
+        spring: "cubic-bezier(0.77, 0, 0.175, 1)",
       },
       transitionDuration: {
-        micro: "150ms",
-        state: "220ms",
-        panel: "340ms",
-        morph: "520ms",
+        micro: "140ms",
+        state: "200ms",
+        panel: "260ms",
+        /* graphite's scale tops out at 260ms (slow); morph is a step beyond
+           that graphite doesn't define, extrapolated down from 520ms to keep
+           it the clear outlier "big transition" without ignoring graphite's
+           snappier, calmer motion. */
+        morph: "400ms",
       },
       boxShadow: {
         /* v4 ships shadow-xs; registry components use it, v3 does not have it */
