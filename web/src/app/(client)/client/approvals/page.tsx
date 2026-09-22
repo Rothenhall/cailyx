@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { AlertTriangle } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ApprovalCard } from '@/components/patterns/ApprovalCard';
 import { EmptyState } from '@/components/patterns/EmptyState';
@@ -149,6 +150,8 @@ export default function ClientApprovalsPage() {
         />
       ) : (
         <>
+          <ApprovalSummary requests={requests} />
+
           {pending.length > 0 ? (
             <section aria-labelledby="pending-heading" className="space-y-4">
               <h2 id="pending-heading" className="text-subsection font-semibold tracking-tight">
@@ -236,6 +239,71 @@ function toApprovalItem(request: PortalApprovalRequest): ApprovalItem {
       : 'No deadline has been set for this decision.',
     decision: mapDecision(request.status),
   };
+}
+
+/**
+ * Where this queue stands, as a proportion rather than a sentence.
+ *
+ * One stacked bar for a small part-to-whole, with a 2px surface gap between
+ * segments so adjacent fills stay distinct. The segments use the reserved
+ * status tones and every one is labelled with its count beneath — the colour
+ * is never the only thing carrying the state (§3.4).
+ */
+function ApprovalSummary({ requests }: { requests: PortalApprovalRequest[] }) {
+  const groups = [
+    {
+      key: 'pending',
+      label: 'Waiting on you',
+      fill: 'bg-warning',
+      count: requests.filter((r) => r.status === 'pending').length,
+    },
+    {
+      key: 'approved',
+      label: 'Approved',
+      fill: 'bg-success',
+      count: requests.filter((r) => r.status === 'approved').length,
+    },
+    {
+      key: 'changes',
+      label: 'Changes requested',
+      fill: 'bg-info',
+      count: requests.filter((r) => r.status === 'changes-requested').length,
+    },
+    {
+      key: 'closed',
+      label: 'Closed',
+      fill: 'bg-unmeasured',
+      count: requests.filter((r) => r.status === 'cancelled' || r.status === 'invalidated').length,
+    },
+  ].filter((group) => group.count > 0);
+
+  const total = groups.reduce((sum, group) => sum + group.count, 0);
+  if (total === 0) return null;
+
+  return (
+    <Card className="route-enter">
+      <CardContent className="py-5">
+        <div className="flex gap-0.5" role="img" aria-label={groups.map((g) => `${g.label}: ${g.count}`).join(', ')}>
+          {groups.map((group) => (
+            <div
+              key={group.key}
+              className={`h-2 rounded-full ${group.fill} transition-[width] duration-slow ease-out`}
+              style={{ width: `${(group.count / total) * 100}%` }}
+            />
+          ))}
+        </div>
+        <dl className="mt-4 flex flex-wrap gap-x-6 gap-y-2">
+          {groups.map((group) => (
+            <div key={group.key} className="flex items-center gap-2">
+              <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${group.fill}`} />
+              <dt className="text-meta text-muted-foreground">{group.label}</dt>
+              <dd className="text-table font-semibold tabular-nums">{group.count}</dd>
+            </div>
+          ))}
+        </dl>
+      </CardContent>
+    </Card>
+  );
 }
 
 function mapDecision(status: PortalApprovalRequest['status']): ApprovalItem['decision'] {

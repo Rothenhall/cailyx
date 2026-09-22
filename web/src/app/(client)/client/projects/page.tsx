@@ -11,8 +11,10 @@ import { FilterBar, FILTER_ALL } from '@/components/patterns/FilterBar';
 import { PageHeader } from '@/components/patterns/PageHeader';
 import { StatusPill } from '@/components/patterns/StatusPill';
 import { Timestamp } from '@/components/patterns/Timestamp';
+import { ScoreMeter } from '@/components/charts/ScoreMeter';
+import { bandMeta } from '@/components/charts/score';
 import { useUrlState } from '@/hooks/useUrlState';
-import { formatNumber, humanizeLabel } from '@/lib/format';
+import { humanizeLabel } from '@/lib/format';
 import { onboardingStatusTone } from '@/lib/status-tones';
 import { listPortalProjectSummaries, type PortalProjectSummary } from '@/services/portal';
 
@@ -106,14 +108,14 @@ const COLUMNS: ColumnDef<PortalProjectSummary>[] = [
     // A null accessor renders "Not measured yet" — never 0 (§3.5).
     render: (row) =>
       typeof row.latestScore === 'number' ? (
-        <span className="tabular-nums">
-          {formatNumber(row.latestScore)}
-          {row.latestBand ? (
-            <span className="ml-2 text-meta text-muted-foreground">
-              · {humanizeLabel(row.latestBand, '')}
+        <div className="flex flex-col items-end gap-1">
+          <ScoreMeter score={row.latestScore} band={row.latestBand} />
+          {bandMeta(row.latestBand) ? (
+            <span className="text-meta text-muted-foreground">
+              {bandMeta(row.latestBand)?.label}
             </span>
           ) : null}
-        </span>
+        </div>
       ) : (
         <span className="text-meta text-unmeasured-foreground">Not measured yet</span>
       ),
@@ -141,10 +143,13 @@ const COLUMNS: ColumnDef<PortalProjectSummary>[] = [
     render: (row) => (
       <Link
         href={`/client/projects/${row.id}`}
-        className="inline-flex items-center gap-1 text-table text-primary underline-offset-4 hover:underline"
+        className="group inline-flex items-center gap-1 text-table text-primary underline-offset-4 hover:underline"
       >
         Select
-        <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
+        <ArrowRight
+          aria-hidden="true"
+          className="h-3.5 w-3.5 transition-transform duration-base ease-out group-hover:translate-x-0.5"
+        />
       </Link>
     ),
   },

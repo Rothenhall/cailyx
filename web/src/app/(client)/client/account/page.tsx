@@ -67,6 +67,9 @@ export default function ClientAccountPage() {
   const [invoices, setInvoices] = useState<PortalInvoices | null>(null);
   const [customerPortal, setCustomerPortal] = useState<PortalCustomerPortalState | null>(null);
   const [error, setError] = useState<ReturnType<typeof toApiError> | null>(null);
+  // Sign-out navigates away, so this is never reset — it exists to stop a
+  // second click and to say the first one landed.
+  const [signingOut, setSigningOut] = useState(false);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -203,9 +206,18 @@ export default function ClientAccountPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap items-center gap-3">
-            <Button variant="outline" size="sm" onClick={() => void signOut()}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={signingOut}
+              aria-busy={signingOut}
+              onClick={() => {
+                setSigningOut(true);
+                void signOut();
+              }}
+            >
               <LogOut aria-hidden="true" className="mr-2 h-4 w-4" />
-              Sign out
+              {signingOut ? 'Signing out…' : 'Sign out'}
             </Button>
             <span className="text-meta text-muted-foreground">
               Signs this browser out of the portal.

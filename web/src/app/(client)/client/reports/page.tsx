@@ -10,6 +10,9 @@ import { ErrorState, toApiError } from '@/components/patterns/ErrorState';
 import { PageHeader } from '@/components/patterns/PageHeader';
 import { StatusPill } from '@/components/patterns/StatusPill';
 import { Timestamp } from '@/components/patterns/Timestamp';
+import { ScoreMeter } from '@/components/charts/ScoreMeter';
+import { ScoreTrend } from '@/components/charts/ScoreTrend';
+import { bandMeta } from '@/components/charts/score';
 import { listPortalReports, type PortalReportSummary } from '@/services/portal';
 
 /**
@@ -68,6 +71,17 @@ export default function ClientReportsPage() {
     );
   }
 
+  // Only scored reports can plot. An unscored report is not a zero, so it is
+  // absent from the trend rather than dragging it down.
+  const scored = reports
+    .filter((report) => typeof report.scoreTotal === 'number')
+    .map((report) => ({
+      date: report.createdAt,
+      score: report.scoreTotal as number,
+      band: report.scoreBand,
+      label: report.title,
+    }));
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -81,6 +95,21 @@ export default function ClientReportsPage() {
         <EmptyState variant="no-reports" runExists={false} />
       ) : (
         <div className="space-y-3">
+          {/* Renders only with two or more scored reports — one score is not a
+              trend, and the row below already states it. */}
+          {scored.length > 1 ? (
+            <Card className="route-enter">
+              <CardContent className="py-5">
+                <p className="text-meta font-medium uppercase tracking-wide text-muted-foreground">
+                  Score over time
+                </p>
+                <div className="mt-3">
+                  <ScoreTrend points={scored} />
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
+
           {reports.map((report) => (
             <Card key={report.id}>
               <CardContent className="flex items-center justify-between gap-4 py-4">
@@ -97,14 +126,18 @@ export default function ClientReportsPage() {
 
                 <div className="flex shrink-0 items-center gap-3">
                   {typeof report.scoreTotal === 'number' ? (
-                    <span className="text-subsection font-semibold tabular-nums">
-                      {report.scoreTotal}
-                    </span>
+                    <ScoreMeter score={report.scoreTotal} band={report.scoreBand ?? null} />
                   ) : (
                     <span className="text-meta text-muted-foreground">Not scored</span>
                   )}
-                  {report.scoreBand ? (
-                    <StatusPill label={report.scoreBand} tone="neutral" />
+                  {/* The band was rendering as a neutral pill, so it carried no
+                      meaning at all. It now takes its own reserved tone, with
+                      the label still doing the talking. */}
+                  {bandMeta(report.scoreBand) ? (
+                    <StatusPill
+                      label={bandMeta(report.scoreBand)!.label}
+                      tone={bandMeta(report.scoreBand)!.tone}
+                    />
                   ) : null}
                   <Link
                     href={`/client/reports/${report.slug}`}

@@ -13,6 +13,8 @@ import { PageHeader } from '@/components/patterns/PageHeader';
 import { StatusPill } from '@/components/patterns/StatusPill';
 import { Timestamp } from '@/components/patterns/Timestamp';
 import { onboardingStatusTone } from '@/lib/status-tones';
+import { ScoreMeter } from '@/components/charts/ScoreMeter';
+import { bandMeta } from '@/components/charts/score';
 
 import { listPortalProjects, listPortalReports, type PortalReportSummary } from '@/services/portal';
 import type { PortalProject } from '@/services/types';
@@ -30,7 +32,6 @@ function setupLabel(status: string): string {
       return 'Setup not started';
   }
 }
-
 
 /**
  * CP01 — Client home.
@@ -93,7 +94,10 @@ export default function ClientHomePage() {
     );
   }
 
-  if (!projects || !reports) {
+  // A one-project client is on their way to that project (the effect above).
+  // Rendering the portfolio first would paint a page they are never meant to
+  // see, so this holds the loading state through the redirect instead.
+  if (!projects || !reports || projects.length === 1) {
     return (
       <div className="space-y-6">
         <Skeleton className="h-9 w-56" />
@@ -114,6 +118,13 @@ export default function ClientHomePage() {
 
   const latestReport = reports[0];
 
+  // The project to headline: the most recently scored one. Projects that have
+  // never been scored are not candidates — an unscored project is not a zero.
+  const scored =
+    projects
+      .filter((project) => typeof project.latestScore === 'number')
+      .sort((a, b) => (b.lastAuditAt ?? '').localeCompare(a.lastAuditAt ?? ''))[0] ?? null;
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -121,7 +132,48 @@ export default function ClientHomePage() {
         context="Visibility in search and AI answers, and what we are doing about it."
       />
 
-      <Card>
+      {/* The headline: the most recent score as a magnitude against its scale,
+          plus the two counts that say how much there is to read. */}
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Card className="route-enter stagger-1 p-5 sm:col-span-2">
+          <p className="text-meta font-medium uppercase tracking-wide text-muted-foreground">
+            Latest report score
+          </p>
+          {scored ? (
+            <div className="mt-3 space-y-2">
+              <ScoreMeter score={scored.latestScore as number} band={scored.latestBand} size="lg" />
+              <p className="text-meta text-muted-foreground">
+                {bandMeta(scored.latestBand)?.label ?? 'Scored'} · {scored.name}
+              </p>
+            </div>
+          ) : (
+            <p className="mt-3 text-subsection font-medium text-unmeasured-foreground">
+              Not measured yet
+            </p>
+          )}
+        </Card>
+
+        <Card className="route-enter stagger-2 flex flex-col justify-center gap-3 p-5">
+          <div>
+            <div className="text-title font-semibold leading-none tabular-nums">
+              {projects.length}
+            </div>
+            <p className="mt-1 text-meta text-muted-foreground">
+              {projects.length === 1 ? 'Project' : 'Projects'}
+            </p>
+          </div>
+          <div>
+            <div className="text-title font-semibold leading-none tabular-nums">
+              {reports.length}
+            </div>
+            <p className="mt-1 text-meta text-muted-foreground">
+              {reports.length === 1 ? 'Report' : 'Reports'} available
+            </p>
+          </div>
+        </Card>
+      </div>
+
+      <Card className="route-enter stagger-3">
         <CardHeader className="flex-row items-center justify-between space-y-0">
           <CardTitle className="text-subsection">Your projects</CardTitle>
           <span className="text-meta text-muted-foreground">{projects.length}</span>
@@ -132,7 +184,7 @@ export default function ClientHomePage() {
               <li key={project.id}>
                 <Link
                   href={`/client/projects/${project.id}`}
-                  className="group flex items-center justify-between gap-4 py-3 transition-colors hover:bg-surface-sunken"
+                  className="group -mx-3 flex items-center justify-between gap-4 rounded-xl px-3 py-3 transition-[background-color,transform] duration-base ease-out hover:bg-surface-sunken active:scale-[0.99]"
                 >
                   <div className="min-w-0">
                     <div className="truncate text-table font-medium">{project.name}</div>
@@ -158,11 +210,11 @@ export default function ClientHomePage() {
                       // a `title` only — and §3.4 forbids a score reading as
                       // account health, so it names its source: the latest
                       // report, not the state of the engagement.
-                      <span className="flex items-baseline gap-1.5">
-                        <span className="text-meta text-muted-foreground">Report score</span>
-                        <span className="w-10 text-right text-table font-semibold tabular-nums">
-                          {project.latestScore}
+                      <span className="flex items-center gap-2.5">
+                        <span className="hidden text-meta text-muted-foreground sm:inline">
+                          Report score
                         </span>
+                        <ScoreMeter score={project.latestScore} band={project.latestBand} />
                       </span>
                     ) : (
                       // §3.5 — never measured is not a zero score.
@@ -170,7 +222,7 @@ export default function ClientHomePage() {
                     )}
                     <ArrowRight
                       aria-hidden="true"
-                      className="h-4 w-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                      className="h-4 w-4 -translate-x-1 text-muted-foreground opacity-0 transition-[opacity,transform] duration-base ease-out group-hover:translate-x-0 group-hover:opacity-100"
                     />
                   </div>
                 </Link>
@@ -181,7 +233,7 @@ export default function ClientHomePage() {
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
+        <Card className="route-enter stagger-4">
           <CardHeader>
             <CardTitle className="text-subsection">Latest report</CardTitle>
           </CardHeader>
@@ -213,7 +265,7 @@ export default function ClientHomePage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="route-enter stagger-4">
           <CardHeader>
             <CardTitle className="text-subsection">Messages</CardTitle>
           </CardHeader>
