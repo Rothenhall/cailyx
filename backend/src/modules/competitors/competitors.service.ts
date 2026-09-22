@@ -19,6 +19,7 @@ import { createHash } from 'crypto';
 import { PrismaService } from '../database/prisma.service';
 import * as cheerio from 'cheerio';
 import { FetcherService } from '../fetcher/fetcher.service';
+import type { SchemaBlock } from '../fetcher/fetcher.types';
 import { AeoStanceService, type CompetitorSignal } from '../aeo-audit/aeo-stance.service';
 import { TechStackService, type TechStackScanResult } from '../tech-stack/tech-stack.service';
 import { PresenceDiscoveryService } from '../digital-presence/presence.discovery.service';
@@ -281,6 +282,74 @@ export function parseG2CategoryListing(html: string): string[] {
     // best-effort parse — a malformed page yields no names, never throws
   }
   return names;
+}
+
+/**
+ * A rival's own company context, read off its homepage (discoverability-pipeline
+ * Stage 4 step 3, homepage-only variant). `category` is deliberately often null:
+ * a homepage rarely states a machine-readable category, and inventing one from
+ * marketing copy would be worse than a gap.
+ */
+export interface CompetitorCompanyContext {
+  brand: string | null;
+  description: string | null;
+  category: string | null;
+  keywords: string[];
+  socialProfiles: string[];
+}
+
+/**
+ * Extract a rival's company context from its homepage HTML + JSON-LD blocks —
+ * pure, no IO, so it is unit-testable. Prefers structured JSON-LD (an
+ * Organization/LocalBusiness block's `name`/`description`/`sameAs`) and falls
+ * back to `og:site_name`/`<title>` and the meta description. Returns null when
+ * nothing usable is present (e.g. a bot-challenge page).
+ */
+export function extractCompetitorCompanyContext(html: string, schemaBlocks: SchemaBlock[]): CompetitorCompanyContext | null {
+  const strOf = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  let brand: string | null = null;
+  let description: string | null = null;
+  const category: string | null = null; // not reliably derivable from a homepage
+  const keywords: string[] = [];
+  const social = new Set<string>();
+
+  const ORG_TYPE = /organization|localbusiness|corporation|website|onlinestore|business|store/i;
+  for (const block of schemaBlocks ?? []) {
+    if (!block || typeof block !== 'object') continue;
+    if (!ORG_TYPE.test(String(block.type ?? ''))) continue;
+    const fields = (block.fields ?? {}) as Record<string, unknown>;
+    brand = brand ?? strOf(fields.name) ?? strOf(fields.legalName);
+    description = description ?? strOf(fields.description);
+    const sameAs = fields.sameAs;
+    if (typeof sameAs === 'string') social.add(sameAs);
+    else if (Array.isArray(sameAs)) for (const s of sameAs) { const u = strOf(s); if (u) social.add(u); }
+  }
+
+  if (html) {
+    try {
+      const $ = cheerio.load(html);
+      brand =
+        brand ??
+        strOf($('meta[property="og:site_name"]').attr('content')) ??
+        strOf($('meta[property="og:title"]').attr('content')) ??
+        strOf($('title').first().text());
+      description =
+        description ??
+        strOf($('meta[name="description"]').attr('content')) ??
+        strOf($('meta[property="og:description"]').attr('content'));
+      const kw = strOf($('meta[name="keywords"]').attr('content'));
+      if (kw) for (const k of kw.split(',').map((s) => s.trim()).filter(Boolean)) keywords.push(k);
+    } catch {
+      // best-effort — a malformed page just yields whatever JSON-LD gave us
+    }
+  }
+
+  if (brand && brand.length > 120) brand = brand.slice(0, 120);
+  if (description && description.length > 500) description = description.slice(0, 500);
+  const socialProfiles = [...social].slice(0, 20);
+  const uniqueKeywords = dedupeStrings(keywords).slice(0, 20);
+  if (!brand && !description && socialProfiles.length === 0 && uniqueKeywords.length === 0) return null;
+  return { brand, description, category, keywords: uniqueKeywords, socialProfiles };
 }
 
 export interface DiscoverByMarketResult {
@@ -1438,6 +1507,8 @@ export class CompetitorsService {
     let seoIssues: string[] = [];
     let seoError: string | null = null;
     let contentSignals: CompetitorContentSignals | null = null;
+    let companyContextStatus: 'completed' | 'skipped' | 'failed' | 'unknown' = 'unknown';
+    let companyContext: CompetitorCompanyContext | null = null;
 
     if (!competitor.domain) {
       status = 'skipped';
@@ -1490,10 +1561,16 @@ export class CompetitorsService {
                 jsonLdCount: signals.jsonLdCount,
                 noindex: signals.noindex,
               };
+              // Stage 4 step 3 (homepage-only): the rival's own company context,
+              // off the SAME HTML/JSON-LD just read. Null when the page states
+              // nothing usable — a `completed` read with no context, not a failure.
+              companyContext = extractCompetitorCompanyContext(result.html, result.raw as SchemaBlock[]);
+              companyContextStatus = 'completed';
             }
           } catch (err) {
             seoStatus = 'failed';
             seoError = (err as Error).message;
+            companyContextStatus = 'failed';
           }
         } catch (err) {
           // Schema extraction is best-effort — a failure here does not fail
@@ -1501,16 +1578,19 @@ export class CompetitorsService {
           this.logger.warn(`Schema read failed for ${competitor.domain}: ${(err as Error).message}`);
           seoStatus = 'failed';
           seoError = `Homepage could not be read: ${(err as Error).message}`;
+          companyContextStatus = 'failed';
         }
       } else {
         seoStatus = 'failed';
         seoError = error;
+        companyContextStatus = 'failed';
       }
     }
 
     if (!competitor.domain) {
       seoStatus = 'skipped';
       seoError = 'No domain on record — no homepage to score.';
+      companyContextStatus = 'skipped';
     }
 
     // The rival's own external presence (wave-6 step 5, reused unchanged).
@@ -1559,6 +1639,8 @@ export class CompetitorsService {
         reviewStatus: review.status,
         reviewRatings: JSON.stringify(review.ratings),
         reviewError: review.error,
+        companyContextStatus,
+        companyContext: companyContext ? JSON.stringify(companyContext) : null,
       },
     });
 

@@ -2886,6 +2886,13 @@ model CompetitorProfile {
   /// on G2 but publish no rating" and "they are not on G2" are different facts.
   reviewRatings    String   @default("[]")
   reviewError      String?
+  /// completed | skipped | failed | unknown. Discoverability-pipeline Stage 4
+  /// step 3 (2026-09-22): homepage-only company-context enrichment (reverses
+  /// SPEC.md D4 for the light case) — from the homepage HTML/JSON-LD the
+  /// schema/SEO read already fetched, no extra request; not the full crawl.
+  companyContextStatus String @default("unknown")
+  /// JSON {brand,description,category,keywords[],socialProfiles[]}. Null when not derivable.
+  companyContext   String?
   createdAt        DateTime @default(now())
 
   competitor Competitor @relation(fields: [competitorId], references: [id], onDelete: Cascade)

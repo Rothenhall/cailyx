@@ -27,7 +27,26 @@
   is a separate, future decision.
 - Triggering new SERP or AEO runs from this module. It only attaches
   results those modules already produced.
-- A composite "competitive score." The gap endpoint is a diff table.
+- ~~A composite "competitive score."~~ **Reversed 2026-09-22** (discoverability-
+  pipeline Stage 4): `GET /competitors/ranking` now produces a composite §7 score
+  to rank rivals — see the "Competitor ranking" section in `README.md`. The `gap`
+  endpoint remains a plain diff table; the score is a separate, additive read.
+
+### Partially reversed 2026-09-22 — homepage-only company context (Stage 4 step 3)
+
+The user decided (over the discoverability-pipeline plan's recommendation) to build
+per-competitor company-context enrichment **inside this module**, in its
+**homepage-only** form: `buildProfile` now extracts each rival's brand /
+description / social profiles / keywords from the SAME homepage HTML + JSON-LD the
+schema/SEO read already fetched (`extractCompetitorCompanyContext`), stored on
+`CompetitorProfile.companyContext` (+ `companyContextStatus`). This costs **no extra
+request** and adds no vendor spend.
+
+Still **not** built (unchanged from the original D4 intent): the full multi-page
+Stage-1 site-context crawl per competitor (JSON-LD across many pages, fact-type/
+confidence scoring, category consolidation). That needs the rival's sitemap
+crawled and remains out of scope — `category` is therefore usually null here, on
+purpose, rather than guessed from marketing copy.
 
 ## Data model
 

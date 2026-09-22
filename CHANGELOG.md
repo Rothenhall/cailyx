@@ -9,6 +9,29 @@ Keep this current on every meaningful change. Companion docs:
 
 ---
 
+## 2026-09-22 — Discoverability pipeline: homepage-only competitor company context (Stage 4 step 3)
+
+Full plan: `docs/analysis/discoverability-pipeline-plan.md` (Stage 4, step 3). This was
+the plan's one flagged architecture fork. The user chose per-competitor enrichment
+**inside the competitors module** (over the plan's external-orchestration recommendation),
+and then — when a second fork surfaced (the Phase-1 engine `AeoContextService.build` is
+project-scoped and can't crawl an arbitrary rival domain without an `aeo-audit` schema
+change) — chose the **homepage-only** variant.
+
+`buildProfile` now extracts each rival's `{brand, description, category, keywords,
+socialProfiles}` from the SAME homepage HTML + JSON-LD it already fetched for the
+schema/SEO read (`extractCompetitorCompanyContext`, pure/exported), stored on the new
+`CompetitorProfile.companyContext` (+ `companyContextStatus`). No extra request, no vendor
+spend. Prefers a JSON-LD Organization block, falls back to `og:site_name`/`<title>`/meta.
+`category` is usually null by design — the full multi-page Stage-1 crawl per rival is still
+not run (`SPEC.md` D4 updated to record the partial reversal). Schema added to both
+`schema.prisma` and `schema.production.prisma` + the prod DB (additive ALTER).
+
+`npx tsc --noEmit` + `nest build` clean. Verified 12/12: extractor unit tests (JSON-LD +
+og/meta fallbacks + null on a junk page) and a prod schema round-trip (columns added,
+`companyContext` persists + parses). Test data cleaned up. `competitors` README + `SPEC.md`
+updated.
+
 ## 2026-09-22 — Discoverability pipeline: Stage 4 competitor ranking (aggregation + §7 weighted score)
 
 Full plan: `docs/analysis/discoverability-pipeline-plan.md` (Stage 4, steps 1–2). The

@@ -159,6 +159,20 @@ reconsider them). The pure scoring is the exported `rankCompetitorSignals()` —
 independently of the DB. `competitors` imports `AeoAuditModule` for the read-only
 `AeoStanceService` (no cycle: aeo-audit does not import competitors).
 
+## Homepage company context (Stage 4 step 3, 2026-09-22)
+
+Each `CompetitorProfile` now carries `companyContext` (JSON `{brand, description,
+category, keywords[], socialProfiles[]}`) + `companyContextStatus`. It is
+extracted by `extractCompetitorCompanyContext()` from the **same homepage HTML +
+JSON-LD** the schema/SEO read already fetched in `buildProfile` — no extra request,
+no vendor spend. It prefers a JSON-LD `Organization`/`LocalBusiness` block
+(`name`/`description`/`sameAs`) and falls back to `og:site_name`/`<title>` and the
+meta description/keywords. `category` is usually `null` **by design**: a homepage
+rarely states a machine-readable category, and the full multi-page Stage-1
+site-context crawl (which would infer one) is deliberately still not run per rival
+(see `SPEC.md`'s D4 note — the user chose the homepage-only variant over a full
+per-competitor crawl).
+
 **The exclusion list is the point.** `EXCLUDED_DOMAINS` is a fixed set of
 registrable domains that are never a competitor even when they legitimately
 rank for the client's queries: directories/marketplaces/review platforms

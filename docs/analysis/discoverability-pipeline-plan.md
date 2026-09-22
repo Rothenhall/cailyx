@@ -213,17 +213,29 @@ section, not new findings):
    audit with two stances → correct absence/co-mention/surface/dimension/avg-position
    counts, then ranked). `tsc` + `nest build` clean. Test data cleaned up.
 3. **DECISION MADE (2026-09-22): build enrichment INSIDE the `competitors` module** —
-   the user chose the more invasive option over the plan's recommendation. This reverses
-   `competitors/SPEC.md`'s explicit D4 "not built" decision: the module will now own
-   full per-competitor company-context enrichment (a real crawl/extract per top-5
-   domain), which means extending its schema (store the enriched context on/next to
-   `CompetitorProfile`) and its API surface. `SPEC.md` must be updated to record the
-   reversal and why. Implementation still pending as of this note — scope it (schema
-   shape, how the Phase-1 crawl is invoked per competitor domain, cost/rate bounds) as
-   its own analysis pass before code, per AGENTS.md. (Original options, for the record:
-   external orchestration via `AeoContextService.build()` per domain — recommended by
-   this plan but **not** chosen; vs. in-module enrichment — **chosen**.)
-   ~~**Recommend the second**~~
+   the user chose in-module over the plan's external-orchestration recommendation, and
+   then chose the **homepage-only** crawl variant when a second fork surfaced (below).
+   ✅ **DONE 2026-09-22 (homepage-only).**
+
+   **Second fork the plan didn't anticipate:** `AeoContextService.build(projectId)` is
+   *project-scoped* (it crawls `project.domain`), so it cannot crawl an arbitrary rival
+   domain — neither in-module nor external enrichment could reuse it without making the
+   site-context engine domain-scoped (an `aeo-audit` schema change). Presented as a
+   sub-decision; the user chose **homepage-only, competitors-only** — no `aeo-audit`
+   change.
+
+   **Built:** `extractCompetitorCompanyContext(html, schemaBlocks)` (pure) pulls the
+   rival's brand / description / `sameAs` social profiles / keywords from the SAME
+   homepage HTML + JSON-LD `buildProfile` already fetched for the schema/SEO read (no
+   extra request, no vendor spend). Stored on `CompetitorProfile.companyContext` (+
+   `companyContextStatus`), added to both schema files and the prod DB (additive ALTER).
+   `SPEC.md` D4 updated to record the partial reversal. **Not** built: the full
+   multi-page Stage-1 crawl per rival (needs their sitemap) — so `category` is usually
+   null here, by design. Verified 12/12: extractor unit tests (JSON-LD + og/meta
+   fallbacks + null on junk) and a prod schema round-trip. `tsc` + `nest build` clean.
+   (Original options for the record: external `AeoContextService.build()` per domain —
+   recommended by the plan, **not chosen**; full in-module crawl — **not chosen**;
+   homepage-only in-module — **chosen**.)
    — call `AeoContextService.build(syntheticProjectId-or-domain-scoped-run, ...)` once
    per top-5 competitor domain from a new orchestration step, store the resulting
    `SiteContext` id on `CompetitorProfile`, and leave `competitors.service.ts`'s own
@@ -329,9 +341,10 @@ Per AGENTS.md's "one module at a time," in priority order:
 5. **Stage 4 steps 1–2** (absence/co-mention aggregation + weighted ranking) — ✅ **DONE
    2026-09-22** (see Stage 4 steps 1–2). `aggregateCompetitorSignals` + `rankCompetitorSignals`
    (§7 weights) + `GET .../competitors/ranking`. Verified 9/9 (pure ranker unit + live prod aggregation).
-6. **Decision point**: Stage 4 step 3 (per-competitor enrichment scope) — ✅ **ANSWERED
-   2026-09-22: build INSIDE the competitors module** (reverses SPEC.md D4). Implementation
-   is the next work item; scope it (schema + per-domain crawl invocation) before code.
+6. **Decision point**: Stage 4 step 3 (per-competitor enrichment scope) — ✅ **ANSWERED +
+   BUILT 2026-09-22.** User chose in-module, then homepage-only (a second sub-fork surfaced
+   because the Phase-1 engine is project-scoped). `CompetitorProfile.companyContext` from
+   the homepage HTML/JSON-LD already fetched; SPEC.md D4 partially reversed. Verified 12/12.
 7. **Brand-voice steps 2–5** (statistical layer, core/register split, validation gate).
 8. **Stage 3 fix #4** (LLM-discovered buckets) — deferred as its own follow-up decision
    given the taxonomy-widening blast radius.
