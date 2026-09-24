@@ -43,9 +43,12 @@ import { ResultsModule } from '../results/results.module';
 import { ApprovalsModule } from '../approvals/approvals.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { DeliveryPlanModule } from '../delivery-plan/delivery-plan.module';
+import { ProgressModule } from '../progress/progress.module';
 
 @Module({
   imports: [
+    // The approved progress page for the audit this report's AEO section is from.
+    ProgressModule,
     ScoringModule,
     StrategyModule,
     FindingsModule,

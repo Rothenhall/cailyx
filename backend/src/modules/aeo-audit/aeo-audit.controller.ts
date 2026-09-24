@@ -14,6 +14,7 @@
  *   POST /audits/full                start + run every stage to a verdict
  *   POST /audits/:auditId/resume     continue a stopped/failed audit
  *   POST /audits/:auditId/stance     judge (or finish judging) the run
+ *   POST /audits/:auditId/narrative  regenerate the customer-facing narrative framing
  *   GET  /audits                     list audits
  *   GET  /audits/:auditId            one audit + its stored verdict
  *   GET  /audits/:auditId/verdict    recompute the verdict from stored rows
@@ -378,6 +379,25 @@ export class AeoAuditController {
     return this.audits.judgeStance(projectId, auditId);
   }
 
+  @Post('audits/:auditId/narrative')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { ttl: 60000, limit: 5 } })
+  @ApiOperation({
+    summary: 'Regenerate customer-facing narrative framing',
+    description:
+      'Rewrites the deterministic headlines into a persuasive-but-grounded customer narrative — ' +
+      'a first audit is framed around the seriousness of real findings, a repeat audit is framed ' +
+      'around the genuine delta since the prior comparable audit. Runs automatically once per ' +
+      'completed audit; this endpoint lets it be regenerated on demand. Degrades to no narrative ' +
+      '(headlines remain the fallback) when no LLM provider is configured or validation fails.',
+  })
+  @ApiResponse({ status: 200, description: 'Narrative block, or null if generation was skipped/failed' })
+  @ApiResponse({ status: 400, description: 'Audit has not completed yet' })
+  @ApiResponse({ status: 404, description: 'Audit not found' })
+  async regenerateNarrative(@Param('auditId') auditId: string) {
+    return this.audits.regenerateNarrative(auditId);
+  }
+
   @Get('audits')
   @ApiOperation({ summary: 'List audits for a project (newest first)' })
   @ApiResponse({ status: 200, description: 'Audit list' })
@@ -420,6 +440,7 @@ export class AeoAuditController {
       reuseContext: body.reuseContext,
       skipStance: body.skipStance,
       skipRefine: body.skipRefine,
+      refreshMatrix: body.refreshMatrix,
     };
   }
 }

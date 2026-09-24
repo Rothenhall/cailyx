@@ -223,6 +223,16 @@ export class RunAuditDto {
   @IsBoolean()
   @IsOptional()
   skipRefine?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Generate a new prompt matrix instead of re-asking the questions of the last completed audit. ' +
+      'A new matrix breaks comparability: this audit cannot then be compared with earlier ones on the progress page.',
+    default: false,
+  })
+  @IsBoolean()
+  @IsOptional()
+  refreshMatrix?: boolean;
 }
 
 /**

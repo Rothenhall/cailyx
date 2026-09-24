@@ -80,6 +80,7 @@ import { PublishingModule } from './modules/publishing/publishing.module';
 import { ContentCalendarModule } from './modules/content-calendar/content-calendar.module';
 import { BudgetsModule } from './modules/budgets/budgets.module';
 import { ResultsModule } from './modules/results/results.module';
+import { ProgressModule } from './modules/progress/progress.module';
 import { OperationsModule } from './modules/operations/operations.module';
 import { ActivityModule } from './modules/activity/activity.module';
 import { BillingModule } from './modules/billing/billing.module';
@@ -242,6 +243,7 @@ import { OrganizationModule } from './modules/organization/organization.module';
     ContentCalendarModule,   // P10 — the one content calendar (§6.4-§6.7)
     BudgetsModule,           // G12
     ResultsModule,           // G13
+    ProgressModule,          // what moved across comparable AEO audits, and the work before it
     OperationsModule,        // G14
     ActivityModule,          // G15
     BillingModule,           // G16

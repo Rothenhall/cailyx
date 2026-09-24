@@ -606,6 +606,12 @@ model Report {
   /// plus each rival's SEO score, at generation time. Null when the project
   /// has no tracked competitors yet.
   competitorsSnapshot String?
+  /// JSON AeoVerdict — the project's latest completed AEO audit (answer-engine
+  /// mention/citation rates, the judged losing-prompt example, and the
+  /// competitors an answer named ahead of the client), at generation time.
+  /// Same frozen-at-publish discipline as the other *Snapshot fields. Null
+  /// when no AEO audit has completed for this project yet.
+  aeoVisibilitySnapshot String?
   branding         String?
   /// G05 — editorial state of the report as a whole. `visibility` above stays
   /// what it always was (public link on/off) and is deliberately NOT reused as
@@ -3701,6 +3707,12 @@ model WorkItem {
   /// never a UI-only toggle.
   clientVisible Boolean   @default(false)
   internalNotes String?
+  /// JSON ProgressTarget[] — what this work is aimed at moving in the AEO
+  /// audit: {kind: dimension|surface|competitor|market, value}. Optional and
+  /// operator-set. The `progress` module grades a result change "targeted"
+  /// only when verified work named that exact slice; untagged work can still
+  /// co-occur with a change but never earns the targeted grade.
+  targets       String?
   createdBy     String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -4667,6 +4679,49 @@ model SavedView {
   updatedAt DateTime @updatedAt
 
   @@index([userId, surface])
+}
+
+// ─── Progress — what moved across a project's audits, and what drove it ──
+
+/// One progress review per completed AEO audit: the deterministic evidence
+/// ledger (comparable result changes joined to the verified work that
+/// preceded them) plus the written page built only from that ledger.
+/// Client-facing only once an operator approves it; a report shows the
+/// approved review for the same audit its AEO section was taken from.
+model ProgressReview {
+  id              String    @id @default(cuid())
+  projectId       String
+  /// The completed AeoAudit this review reads as "now". One review per audit.
+  auditId         String    @unique
+  /// Denormalized so a report can pick the review for the audit it already
+  /// snapshotted (latest audit finished before the report was generated).
+  auditFinishedAt DateTime
+  previousAuditId String?
+  baselineAuditId String?
+  /// draft | approved | rejected | not-applicable
+  status          String    @default("draft")
+  /// Why a review is not-applicable: first audit, no comparable prior audit,
+  /// or no change cleared the materiality floor. Never shown to a client.
+  reason          String?
+  /// compact (one report page) | extended (two pages, long history only)
+  layout          String    @default("compact")
+  /// JSON ProgressLedger — the deterministic evidence.
+  ledger          String    @default("{}")
+  /// JSON ProgressStory — the written page, grounded in `ledger`.
+  story           String?
+  /// llm | template — which writer produced `story`.
+  storySource     String?
+  model           String?
+  costUsd         Float     @default(0)
+  generatedAt     DateTime  @default(now())
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  reviewNote      String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([projectId, status])
+  @@index([projectId, auditFinishedAt])
 }
 
 // ─── G15 — Activity and audit trail ────────────────────────────────

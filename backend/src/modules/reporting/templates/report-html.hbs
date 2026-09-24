@@ -64,9 +64,82 @@
     details{margin-bottom:8px}
     summary{cursor:pointer; font-size:13px; color:var(--accent-deep)}
     footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); font-size:12px; color:var(--ink-60)}
+
+    /* ── Status + charts (mirrors report-pdf-visuals.ts; status steps validated against --paper) ── */
+    :root{ --st-good:#00907A; --st-warning:#D1A52A; --st-critical:#8A2A1C; --stone:#C4BBA8; --track:#E7E0D1 }
+    h3{font-size:14px; margin:20px 0 8px}
+    .status{display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--ink); margin-right:12px; white-space:nowrap}
+    .status i{display:inline-block; flex:none}
+    .status-good i{width:9px; height:9px; border-radius:50%; background:var(--st-good)}
+    .status-warning i{width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-bottom:9px solid var(--st-warning)}
+    .status-critical i{width:8px; height:8px; background:var(--st-critical)}
+    .status-neutral i{width:7px; height:7px; border-radius:50%; border:1.5px solid var(--stone)}
+    .tag{display:inline-block; border:1px solid var(--ink); border-radius:8px; padding:0 7px; font-size:10px; text-transform:uppercase; letter-spacing:.06em; margin-right:10px}
+    .scorecard .row{margin-bottom:16px; break-inside:avoid}
+    .scorecard .head{display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; margin-bottom:6px}
+    .scorecard .name{font-weight:700; margin-right:4px}
+    .scorecard .meta{margin-left:auto; font-size:12px; color:var(--ink-60)}
+    .meter{display:flex; align-items:center; gap:10px}
+    .meter .track{flex:1; height:10px; background:var(--track); border-radius:5px; overflow:hidden}
+    .meter .fill{height:100%; border-radius:5px}
+    .fill-good{background:var(--st-good)} .fill-warning{background:var(--st-warning)} .fill-critical{background:var(--st-critical)} .fill-neutral{background:var(--stone)}
+    .meter .num{font-weight:700; font-variant-numeric:tabular-nums; min-width:56px; text-align:right}
+    .hbars{margin:4px 0 10px}
+    .hbar{display:grid; grid-template-columns:minmax(120px,190px) 1fr minmax(0,150px); align-items:center; gap:10px; margin-bottom:6px}
+    .hbar .lbl{font-size:13px; overflow-wrap:anywhere}
+    /* The lane reserves room for the value label, and bars never flex-shrink:
+       a bar's width must stay its value's share of the scale, whatever the label length. */
+    .hbar .lane{display:flex; align-items:center; gap:6px; min-width:0; padding-right:46px}
+    .hbar .bar{flex:none; height:11px; min-width:2px; background:var(--stone); border-radius:0 5px 5px 0}
+    .hbar .val{flex:none}
+    .hbar.em .bar{background:var(--accent)} .hbar.em .lbl, .hbar.em .val{font-weight:700}
+    .hbar .val{font-size:13px; font-variant-numeric:tabular-nums; white-space:nowrap}
+    .hbar .na{font-size:12px; color:var(--ink-60)}
+    .aeo-hero{display:flex; flex-wrap:wrap; gap:16px 24px; align-items:center; border:1px solid var(--line); border-radius:8px; padding:16px 18px; margin-bottom:8px}
+    .aeo-hero .big{font-size:44px; font-weight:700; line-height:1}
+    .aeo-hero .cap{font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-60)}
+    .aeo-hero .side{flex:1; min-width:220px}
+    .kpis{display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; margin:12px 0 8px}
+    .kpi{background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:12px 14px}
+    .kpi .lbl{font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-60)}
+    .kpi .now{font-size:30px; font-weight:700; line-height:1.15; margin:4px 0}
+    .delta{display:inline-flex; align-items:center; gap:6px; font-weight:700; font-size:14px}
+    .delta i{width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent}
+    .delta.up i{border-bottom:8px solid var(--dc)} .delta.down i{border-top:8px solid var(--dc)}
+    .delta.good{--dc:var(--st-good)} .delta.bad{--dc:var(--st-critical)}
+    .kpi .was{font-size:12px; color:var(--ink-60); margin-top:2px}
+    .db{position:relative; height:14px; margin:10px 6px 2px}
+    .db .rail{position:absolute; left:0; right:0; top:6px; height:2px; background:var(--track)}
+    .db .span{position:absolute; top:5px; height:4px}
+    .db .span.good{background:var(--st-good)} .db .span.bad{background:var(--st-critical)}
+    .db .dot{position:absolute; top:2px; width:10px; height:10px; margin-left:-5px; border-radius:50%; box-shadow:0 0 0 2px var(--paper)}
+    .db .from{background:var(--stone)} .db .to{background:var(--accent)}
+    .headline{font-size:18px; font-weight:700; line-height:1.4; margin:4px 0 6px}
+    .cols{display:flex; align-items:flex-end; height:150px; border-bottom:1px solid var(--line); margin-top:8px}
+    .cols .c{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%}
+    .cols .v{font-size:12px; font-variant-numeric:tabular-nums; margin-bottom:3px}
+    .cols .b{width:26px; min-height:2px; background:var(--stone); border-radius:4px 4px 0 0}
+    .cols .c.em .b{background:var(--accent)} .cols .c.em .v{font-weight:700}
+    .col-labels{display:flex} .col-labels div{flex:1; text-align:center; font-size:12px; padding-top:4px}
+    .col-labels small{display:block; color:var(--ink-60); font-size:11px}
+    .driver{display:flex; gap:12px; margin-bottom:12px; break-inside:avoid}
+    .driver .rule{flex:none; width:3px; border-radius:2px; background:var(--stone)}
+    .driver.A .rule{background:var(--accent)}
+    .driver .kind{font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-60)}
+    .driver .ev{font-size:12px; color:var(--ink-60)}
+    .delivered td{font-size:13px} .delivered td.k{font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-60); width:90px}
+    .delivered td.d{text-align:right; color:var(--ink-60); white-space:nowrap}
+    .focus{display:flex; align-items:center; gap:10px; border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin:10px 0}
+    .focus b{font-size:10px; text-transform:uppercase; letter-spacing:.08em}
+    @media (max-width:560px){
+      .hbar{grid-template-columns:1fr; gap:3px}
+      .scorecard .meta{margin-left:0; width:100%}
+    }
     @media print{
       .wrap{padding:0}
       .score-hero{break-inside:avoid}
+      #section-progress{break-before:page}
+      .kpi, .driver, .aeo-hero{break-inside:avoid}
     }
   </style>
 </head>
@@ -105,20 +178,101 @@
   {{#if_eq document.decisions.scoreBreakdown.mode "body"}}
   <h2 id="section-scoreBreakdown">Score breakdown</h2>
   <p class="note">{{document.score.provenanceNote}}</p>
-  <div class="sub-scores">
+  <div class="scorecard">
     {{#each document.score.subScores}}
-    <div class="sub">
-      <div class="dim">{{dimension}} · {{weightLabel}}</div>
-      <div class="val">{{valueLabel}}</div>
-      <div class="bar"><span style="width:{{barPercent}}%"></span></div>
-      <div class="ev">Contribution: {{contributionLabel}}</div>
-      <div class="ev">{{#each evidence}}- {{this}}
-{{/each}}</div>
+    <div class="row">
+      <div class="head">
+        <span class="name">{{dimension}}</span>
+        {{#if status.label}}<span class="status status-{{status.level}}"><i></i>{{status.label}}</span>{{/if}}
+        {{#if biggestGap}}<span class="tag">Biggest gap</span>{{/if}}
+        <span class="meta">{{weightLabel}} · {{contributionLabel}}</span>
+      </div>
+      <div class="meter">
+        <div class="track">{{#unless partial}}<div class="fill fill-{{status.level}}" style="width:{{barPercent}}%" title="{{dimension}}: {{valueLabel}} of 100"></div>{{/unless}}</div>
+        <span class="num">{{#if partial}}{{valueLabel}}{{else}}{{valueLabel}}/100{{/if}}</span>
+      </div>
+      <div class="ev">{{#if evidence.length}}Evidence: {{#each evidence}}{{this}}{{#unless @last}} · {{/unless}}{{/each}}{{else}}No evidence lines recorded for this dimension.{{/if}}</div>
       {{#if partialNote}}<div class="ev partial">{{partialNote}}</div>{{/if}}
     </div>
     {{/each}}
   </div>
   <p class="note">{{document.score.bandNote}}</p>
+  {{/if_eq}}
+
+  {{! ── Progress since baseline (omitted entirely on a first audit) ── }}
+  {{#if_eq document.decisions.progress.mode "body"}}
+  {{#with document.progress}}
+  <h2 id="section-progress">Progress since your baseline</h2>
+  <p class="headline">{{headline}}</p>
+
+  {{#if tiles.length}}
+  <div class="kpis">
+    {{#each tiles}}
+    <div class="kpi">
+      <div class="lbl">{{label}}</div>
+      <div class="now">{{now}}</div>
+      <span class="delta {{#if rising}}up{{else}}down{{/if}} {{#if improvement}}good{{else}}bad{{/if}}"><i></i>{{delta}}</span>
+      <div class="was">from {{before}} · {{window}}</div>
+      <div class="db" title="{{before}} → {{now}}">
+        <div class="rail"></div>
+        {{#if rising}}
+        <div class="span {{#if improvement}}good{{else}}bad{{/if}}" style="left:{{pct_of meter.from meter.max}}%; right:{{pct_of (sub_of meter.max meter.to) meter.max}}%"></div>
+        {{else}}
+        <div class="span {{#if improvement}}good{{else}}bad{{/if}}" style="left:{{pct_of meter.to meter.max}}%; right:{{pct_of (sub_of meter.max meter.from) meter.max}}%"></div>
+        {{/if}}
+        <div class="dot from" style="left:{{pct_of meter.from meter.max}}%" title="Before: {{before}}"></div>
+        <div class="dot to" style="left:{{pct_of meter.to meter.max}}%" title="Now: {{now}}"></div>
+      </div>
+    </div>
+    {{/each}}
+  </div>
+  {{/if}}
+
+  <h3>Unbranded AI visibility, audit by audit</h3>
+  <div class="cols" role="img" aria-label="Unbranded AI visibility per audit">
+    {{#each checkpoints}}
+    <div class="c{{#if isCurrent}} em{{/if}}">
+      <span class="v">{{unbranded}}</span>
+      <span class="b" style="height:{{pct_of unbrandedValue ../chartMax}}%" title="{{label}}, {{date}}: {{unbranded}} unbranded, {{overall}} overall"></span>
+    </div>
+    {{/each}}
+  </div>
+  <div class="col-labels">{{#each checkpoints}}<div>{{label}}<small>{{date}}</small></div>{{/each}}</div>
+  <table>
+    <thead><tr><th>Audit</th><th>Unbranded</th><th>Overall</th><th>Answers that led with you</th></tr></thead>
+    <tbody>{{#each checkpoints}}<tr><td>{{label}} · {{date}}</td><td>{{unbranded}}</td><td>{{overall}}</td><td>{{led}}</td></tr>{{/each}}</tbody>
+  </table>
+
+  {{#if drivers.length}}
+  <h3>What moved, and the work behind it</h3>
+  {{#each drivers}}
+  <div class="driver {{grade}}">
+    <div class="rule"></div>
+    <div>
+      <div class="kind">{{#if_eq grade "A"}}Targeted work{{else}}Delivered in the same period{{/if_eq}}</div>
+      <div>{{text}}</div>
+      {{#each evidence}}<div class="ev">• {{this}}</div>{{/each}}
+    </div>
+  </div>
+  {{/each}}
+  {{/if}}
+
+  <h3>Delivered since the last audit</h3>
+  {{#if delivered.items.length}}
+  <table class="delivered"><tbody>
+    {{#each delivered.items}}<tr><td class="k">{{kind}}</td><td>{{title}}</td><td class="d">{{date}}</td></tr>{{/each}}
+  </tbody></table>
+  {{else}}
+  <p class="note">No new client-visible work was verified between the last audit and this one.</p>
+  {{/if}}
+  <p class="note">{{#if delivered.moreCount}}+{{delivered.moreCount}} more. {{/if}}{{delivered.sinceBaselineTotal}} pieces of client-visible work verified since the baseline audit.</p>
+
+  {{#each nextFocus}}
+  <div class="focus"><span class="status status-warning"><i></i></span><b>Next focus</b><span>{{this}}</span></div>
+  {{/each}}
+
+  <p class="note">{{provenanceNote}}</p>
+  {{/with}}
   {{/if_eq}}
 
   {{! ── Findings ──────────────────────────────────────────────── }}
@@ -229,24 +383,62 @@
   <p class="note">{{document.decisions.aeoVisibility.note}}</p>
   {{/if_eq}}
   {{#if_eq document.decisions.aeoVisibility.mode "body"}}
-  <div class="sub-scores">
-    <div class="sub"><div class="dim">Questions measured</div><div class="val">{{document.aeoVisibility.questionsMeasured}}</div></div>
-    <div class="sub"><div class="dim">Answers observed</div><div class="val">{{document.aeoVisibility.totalAnswers}}</div></div>
-    <div class="sub"><div class="dim">Unbranded mention rate</div><div class="val">{{document.aeoVisibility.unbrandedMentionRatePercent}}%</div><div class="ev">the honest visibility test</div></div>
-    <div class="sub"><div class="dim">Branded mention rate</div><div class="val">{{document.aeoVisibility.brandedMentionRatePercent}}%</div><div class="ev">trivially high — the name was already given</div></div>
+  {{#with document.aeoVisibility}}
+  <div class="aeo-hero">
+    <div>
+      <div class="cap">Unbranded AI visibility</div>
+      <div class="big">{{unbrandedMentionRatePercent}}%</div>
+      <div class="cap">of answers to questions that never name you</div>
+    </div>
+    <div class="side">
+      {{#if standing.label}}<div><span class="status status-{{standing.level}}"><i></i>{{standing.label}}</span></div>{{/if}}
+      <p class="note">{{questionsMeasured}} questions, {{totalAnswers}} answers on {{surfaceLabel}}. When the question already names you, you appear {{brandedMentionRatePercent}}% of the time — expected, and not the test that matters.</p>
+    </div>
   </div>
-  {{#if document.aeoVisibility.byDimension}}
-  <h3>By question type</h3>
-  <div class="sub-scores">
-    {{#each document.aeoVisibility.byDimension}}
-    <div class="sub">
-      <div class="dim">{{label}}</div>
-      <div class="val">{{mentionRatePercent}}%</div>
-      <div class="bar"><span style="width:{{mentionRatePercent}}%"></span></div>
+
+  {{#if shareOfVoice.[1]}}
+  <h3>Share of voice — you against the brands the answers name</h3>
+  <div class="hbars">
+    {{#each shareOfVoice}}
+    <div class="hbar{{#if isClient}} em{{/if}}">
+      <span class="lbl">{{name}}</span>
+      <span class="lane"><span class="bar" style="width:{{pct_of sharePercent ../shareScaleMax}}%" title="{{name}}: {{sharePercent}}% of brand mentions"></span><span class="val">{{sharePercent}}%</span></span>
+      <span></span>
     </div>
     {{/each}}
   </div>
   {{/if}}
+
+  {{#if engines.length}}
+  <h3>By engine — unbranded questions</h3>
+  <div class="hbars">
+    {{#each engines}}
+    <div class="hbar">
+      <span class="lbl">{{label}}</span>
+      {{#if_eq unbrandedPercent null}}
+      <span class="lane"><span class="na">Not measured on this engine</span></span>
+      {{else}}
+      <span class="lane"><span class="bar" style="width:{{pct_of unbrandedPercent ../engineScaleMax}}%" title="{{label}}: {{unbrandedPercent}}% of {{observations}} answers"></span><span class="val">{{unbrandedPercent}}%</span></span>
+      {{/if_eq}}
+      <span>{{#if status.label}}<span class="status status-{{status.level}}"><i></i>{{status.label}}</span>{{/if}}</span>
+    </div>
+    {{/each}}
+  </div>
+  {{/if}}
+
+  {{#if byDimension.length}}
+  <h3>By question type</h3>
+  <div class="hbars">
+    {{#each byDimension}}
+    <div class="hbar">
+      <span class="lbl">{{label}}</span>
+      <span class="lane"><span class="bar" style="width:{{pct_of mentionRatePercent ../dimensionScaleMax}}%" title="{{label}}: {{mentionRatePercent}}% of {{observations}} answers"></span><span class="val">{{mentionRatePercent}}%</span></span>
+      <span>{{#if status.label}}<span class="status status-{{status.level}}"><i></i>{{status.label}}</span>{{/if}}</span>
+    </div>
+    {{/each}}
+  </div>
+  {{/if}}
+  {{/with}}
   <h3>Where it loses</h3>
   {{#if_eq document.decisions.aeoVisibilityLosing.mode "note"}}
   <p class="note">{{document.decisions.aeoVisibilityLosing.note}}</p>

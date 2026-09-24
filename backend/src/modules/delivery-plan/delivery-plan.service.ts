@@ -75,6 +75,7 @@ import type {
   UpdateCapacityAllocationDto,
   UpdateMilestoneDto,
 } from './dto/capacity.dto';
+import { parseTargets, serializeTargets } from '../progress/progress-targets';
 
 /** Minimal shape of the authenticated caller this service needs — matches
  * `AuthedRequestUser` without importing the auth module for one field set. */
@@ -1014,6 +1015,7 @@ export class DeliveryPlanService {
         dependsOn: JSON.stringify(dependsOn),
         clientVisible: dto.clientVisible ?? false,
         internalNotes: dto.internalNotes,
+        targets: serializeTargets(dto.targets),
         createdBy: actorId,
       },
     });
@@ -1093,6 +1095,7 @@ export class DeliveryPlanService {
         dependsOn: dto.dependsOn ? JSON.stringify(dto.dependsOn) : undefined,
         clientVisible: dto.clientVisible,
         internalNotes: dto.internalNotes,
+        targets: serializeTargets(dto.targets),
       },
     });
 
@@ -1231,14 +1234,15 @@ export class DeliveryPlanService {
       reviewerId: string | null; dueAt: Date | null; estimateHours: number | null; actualHours: number | null;
       sourceType: string | null; sourceId: string | null; dependsOn: string; blockedReason: string | null;
       blockedOn: string | null; clientVisible: boolean; internalNotes: string | null; createdBy: string | null;
-      createdAt: Date; updatedAt: Date;
+      createdAt: Date; updatedAt: Date; targets?: string | null;
     },
     opts: { includeInternal: boolean },
   ) {
-    const { internalNotes, ...rest } = row;
+    const { internalNotes, targets, ...rest } = row;
     return {
       ...rest,
       dependsOn: this.parseJsonArray(row.dependsOn),
+      targets: parseTargets(targets),
       ...(opts.includeInternal ? { internalNotes } : {}),
     };
   }

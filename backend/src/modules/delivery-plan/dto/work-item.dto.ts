@@ -6,6 +6,7 @@
  */
 
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
@@ -17,7 +18,9 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateNested,
 } from 'class-validator';
+import { PROGRESS_TARGET_KINDS } from '../../progress/progress.types';
 import {
   ACCEPTANCE_CHECK_STATUSES,
   VERIFICATION_DECISIONS,
@@ -26,6 +29,23 @@ import {
   WORK_ITEM_STATUSES,
   WORK_PRIORITIES,
 } from '../delivery-plan.types';
+
+const TARGETS_DESCRIPTION =
+  'What this work is aimed at moving in the AEO audit. A result change is credited to the work as "targeted" on the ' +
+  'progress page only when it names that exact slice: a question type (dimension key), an engine (surface key), a ' +
+  'competitor name, or a market (ISO code).';
+
+export class WorkItemTargetDto {
+  @ApiProperty({ enum: PROGRESS_TARGET_KINDS })
+  @IsIn(PROGRESS_TARGET_KINDS as unknown as string[])
+  kind: (typeof PROGRESS_TARGET_KINDS)[number];
+
+  @ApiProperty({ description: 'Dimension key, surface key, competitor name, or ISO market code.' })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  value: string;
+}
 
 export class CreateWorkItemDto {
   @ApiProperty()
@@ -121,9 +141,25 @@ export class CreateWorkItemDto {
   @ArrayMaxSize(50)
   @IsString({ each: true })
   acceptanceChecklist?: string[];
+
+  @ApiPropertyOptional({ type: () => [WorkItemTargetDto], description: TARGETS_DESCRIPTION })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => WorkItemTargetDto)
+  targets?: WorkItemTargetDto[];
 }
 
 export class UpdateWorkItemDto {
+  @ApiPropertyOptional({ type: () => [WorkItemTargetDto], description: `${TARGETS_DESCRIPTION} Send [] to clear.` })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => WorkItemTargetDto)
+  targets?: WorkItemTargetDto[];
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()

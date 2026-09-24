@@ -64,7 +64,25 @@ import type { BacklinksSummaryDto } from '../backlinks/backlinks.types';
 import type { PresenceInventory } from '../digital-presence/presence.types';
 import type { GapResult } from '../competitors/competitors.service';
 import type { AeoVerdict } from '../aeo-audit/aeo-audit.types';
+import { ProgressService } from '../progress/progress.service';
 
+
+// Handlebars helper: {{pct_of value max}} — a 0-100 bar width/height for a
+// value on a 0..max scale. Presentation only; the scale itself is decided by
+// the document builders so the HTML and PDF charts share it.
+Handlebars.registerHelper('pct_of', function (value: unknown, max: unknown) {
+  const v = Number(value);
+  const m = Number(max);
+  if (!Number.isFinite(v) || !Number.isFinite(m) || m <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((v / m) * 1000) / 10));
+});
+
+// Handlebars helper: {{sub_of a b}} — a − b, for positioning a span's right edge.
+Handlebars.registerHelper('sub_of', function (a: unknown, b: unknown) {
+  const x = Number(a);
+  const y = Number(b);
+  return Number.isFinite(x) && Number.isFinite(y) ? x - y : 0;
+});
 
 // Handlebars helper: {{#if_eq a b}}...{{/if_eq}}
 Handlebars.registerHelper('if_eq', function (a: unknown, b: unknown, options: any) {
@@ -138,6 +156,8 @@ export class ReportingService {
     private readonly deliveryPlan: DeliveryPlanService,
     /** AEO audit read: the project's latest completed answer-engine verdict. Never triggers a fresh audit — same discipline as backlinks/growthPlan. */
     private readonly aeoAudit: AeoAuditService,
+    /** The approved progress page for the same audit the AEO section is from. Read-only. */
+    private readonly progress: ProgressService,
   ) {}
 
   /** Best-effort presence inventory for a report — never throws, never blocks generation. */
@@ -742,6 +762,8 @@ export class ReportingService {
       // section", never a live lookup and never a guess.
       digitalPerformance: snapshot.digitalPerformance ?? null,
       planProgress: snapshot.planProgress ?? null,
+      // Frozen at review lock; a snapshot from before the field existed has no page.
+      progress: snapshot.progress ?? null,
     };
   }
 
@@ -813,6 +835,7 @@ export class ReportingService {
       cohortId: record.cohortId,
       digitalPerformance: await this.getDigitalPerformanceSnapshot(record.projectId),
       planProgress: await this.getPlanProgressSnapshot(record.projectId),
+      progress: await this.progress.sectionForReport(record.projectId, record.createdAt, this.aeoSnapshotRef(record)),
       contentCreatedAt: record.createdAt.toISOString(),
       contentUpdatedAt: record.updatedAt.toISOString(),
       snapshotAt: new Date().toISOString(),
@@ -1007,6 +1030,16 @@ export class ReportingService {
     return { scoreRunId: row.scoreRunId, rubricVersion: Number.isFinite(version) ? version : null };
   }
 
+  /**
+   * Which audit this report's AEO section came from — so its progress page is
+   * that audit's review, never a neighbouring one. Null when the report has
+   * no AEO section at all.
+   */
+  private aeoSnapshotRef(record: Report): { auditId?: string } | null {
+    if (!record.aeoVisibilitySnapshot) return null;
+    return { auditId: this.parseJson<AeoVerdict>(record.aeoVisibilitySnapshot)?.auditId };
+  }
+
   private buildSlug(title: string): string {
     const base = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     return base + '-' + Date.now().toString(36);
@@ -1033,6 +1066,9 @@ export class ReportingService {
       presence: record.presenceSnapshot ? this.parseJson<PresenceInventory>(record.presenceSnapshot) : null,
       competitors: record.competitorsSnapshot ? this.parseJson<GapResult>(record.competitorsSnapshot) : null,
       aeoVisibility: record.aeoVisibilitySnapshot ? this.parseJson<AeoVerdict>(record.aeoVisibilitySnapshot) : null,
+      // Live for a draft, like planProgress: approving a review shows up on the
+      // next render. The revision snapshot is what freezes it for the client.
+      progress: await this.progress.sectionForReport(record.projectId, record.createdAt, this.aeoSnapshotRef(record)),
       createdAt: record.createdAt.toISOString(),
       status: record.status as ReportEditorialStatus,
       releasedRevision: record.releasedRevision,

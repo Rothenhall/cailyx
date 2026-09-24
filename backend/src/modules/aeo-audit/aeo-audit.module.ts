@@ -32,12 +32,14 @@ import { AeoContextService } from './aeo-context.service';
 import { AeoLlmService } from './aeo-llm.service';
 import { AeoMatrixService } from './aeo-matrix.service';
 import { AeoStanceService } from './aeo-stance.service';
+import { AeoNarrativeService } from './aeo-narrative.service';
 import { AeoVisibilityService } from './aeo-visibility.service';
+import { ProgressModule } from '../progress/progress.module';
 
 @Module({
-  imports: [DatabaseModule, FetcherModule, MeasurementModule, JobsModule, BusinessProfileModule, SerpIntelligenceModule, DigitalPresenceModule],
+  imports: [DatabaseModule, FetcherModule, MeasurementModule, JobsModule, BusinessProfileModule, SerpIntelligenceModule, DigitalPresenceModule, ProgressModule],
   controllers: [AeoAuditController],
-  providers: [AeoAuditService, AeoContextService, AeoMatrixService, AeoStanceService, AeoLlmService, AeoVisibilityService],
-  exports: [AeoAuditService, AeoContextService, AeoMatrixService, AeoStanceService, AeoLlmService, AeoVisibilityService],
+  providers: [AeoAuditService, AeoContextService, AeoMatrixService, AeoStanceService, AeoNarrativeService, AeoLlmService, AeoVisibilityService],
+  exports: [AeoAuditService, AeoContextService, AeoMatrixService, AeoStanceService, AeoNarrativeService, AeoLlmService, AeoVisibilityService],
 })
 export class AeoAuditModule {}

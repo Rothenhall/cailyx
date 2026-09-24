@@ -34,6 +34,8 @@ import { BusinessProfileService } from '../business-profile/business-profile.ser
 import { AeoContextService, SiteContextRunPausedException } from './aeo-context.service';
 import { AeoMatrixService } from './aeo-matrix.service';
 import { AeoStanceService, type StancePassResult } from './aeo-stance.service';
+import { AeoNarrativeService } from './aeo-narrative.service';
+import { ProgressService } from '../progress/progress.service';
 import {
   AEO_SURFACES,
   DIMENSION_LABELS,
@@ -52,6 +54,7 @@ import type {
   MarketResult,
   MarketSurfaceResult,
   MarketCompetitorStandings,
+  NarrativeBlock,
   PromptDimension,
   PromptMeta,
   SiteContextData,
@@ -98,6 +101,14 @@ export interface RunAuditInput {
   skipStance?: boolean;
   /** Skip the LLM phrasing pass on the matrix. */
   skipRefine?: boolean;
+  /**
+   * Generate a fresh prompt matrix even when the project already has a
+   * tracked one. Off by default: a repeat audit re-asks the questions the
+   * last completed audit asked, because a new matrix is a methodology break
+   * and no result can then be compared across it. Set it deliberately — when
+   * the site's services or markets have genuinely changed.
+   */
+  refreshMatrix?: boolean;
 }
 
 @Injectable()
@@ -110,6 +121,8 @@ export class AeoAuditService {
     private readonly context: AeoContextService,
     private readonly matrix: AeoMatrixService,
     private readonly stance: AeoStanceService,
+    private readonly narrative: AeoNarrativeService,
+    private readonly progress: ProgressService,
     private readonly measurement: MeasurementService,
     private readonly pipelineQueue: PipelineQueueService,
     private readonly cloro: CloroClient,
@@ -246,19 +259,43 @@ export class AeoAuditService {
       ? surfaces.flatMap((surface) => markets.map((market) => ({ surface, market, status: 'pending' })))
       : surfaces.map((surface) => ({ surface, market: null, status: 'pending' }));
 
+    const tier = input.tier ?? this.defaultTier();
+    const tracked = input.refreshMatrix ? null : await this.trackedMatrix(projectId, tier);
+
     return this.prisma.aeoAudit.create({
       data: {
         projectId,
         surface: surfaces[0],
         surfaces: JSON.stringify(surfaces),
         markets: JSON.stringify(markets),
-        tier: input.tier ?? this.defaultTier(),
+        tier,
         runCount,
         status: 'pending',
+        // resume() skips matrix generation when a question set is already set.
+        ...(tracked ? { querySetId: tracked.querySetId, promptCount: tracked.promptCount } : {}),
         surfaceRuns: { create: surfaceRunRows },
       },
       include: { surfaceRuns: true },
     });
+  }
+
+  /**
+   * The question set the project's last completed audit asked, when it can be
+   * asked again unchanged: still active (measurement refuses anything else)
+   * and the same size tier (a different tier is a different question set by
+   * request). Null means "generate a new matrix", which is a comparability
+   * break the progress page will respect.
+   */
+  private async trackedMatrix(projectId: string, tier: string): Promise<{ querySetId: string; promptCount: number } | null> {
+    const last = await this.prisma.aeoAudit.findFirst({
+      where: { projectId, status: 'completed', querySetId: { not: null } },
+      orderBy: { finishedAt: 'desc' },
+      select: { querySetId: true },
+    });
+    if (!last?.querySetId) return null;
+    const summary = await this.matrix.summary(last.querySetId).catch(() => null);
+    if (!summary || summary.status !== 'active' || summary.tier !== tier || summary.promptCount === 0) return null;
+    return { querySetId: summary.querySetId, promptCount: summary.promptCount };
   }
 
   /** Uppercase, dedupe, drop anything not shaped like an ISO-3166 alpha-2 code. */
@@ -732,6 +769,23 @@ export class AeoAuditService {
           `(unbranded ${(verdict.counted.unbranded.mentionRate * 100).toFixed(1)}%)`,
       );
 
+      // ── 6. Narrative framing (best-effort, never fails the audit) ───────
+      // Runs once per completed audit — NOT on every verdict() read, unlike
+      // buildVerdict. Fire-and-forget with try/catch: a narrative failure
+      // must never surface as an audit failure; verdict.headlines is always
+      // the fallback. Not awaited, so the response below does not include it
+      // on first completion — a subsequent GET picks it up once it lands.
+      this.narrative.generate(auditId).catch((err) => {
+        this.logger.warn(`Narrative pass failed for audit ${auditId}: ${(err as Error).message}`);
+      });
+
+      // ── 7. Progress review (best-effort, same rules as 6) ──────────────
+      // A first audit records itself as the baseline; a later comparable one
+      // gets a draft progress page for an operator to approve.
+      this.progress.generateForAudit(auditId, { preserveReviewed: true }).catch((err) => {
+        this.logger.warn(`Progress review failed for audit ${auditId}: ${(err as Error).message}`);
+      });
+
       return { ...finished, verdict };
     } catch (err) {
       const message = (err as Error).message;
@@ -897,7 +951,43 @@ export class AeoAuditService {
       },
     });
 
+    // `buildVerdict` never carries forward a previously-generated `narrative`
+    // block (it isn't in its inputs), so the write above silently drops one if
+    // this audit already had it — judgeStance is documented as re-callable on
+    // an already-completed audit (re-judging after a partial pass), which is
+    // exactly the case that would lose it. Regenerating here (a no-op no-throw
+    // skip if the audit isn't `completed` yet) both restores it and refreshes
+    // it against the just-updated judged block, same fire-and-forget pattern
+    // as resume()'s own completion step.
+    this.narrative.generate(auditId).catch((err) => {
+      this.logger.warn(`Narrative pass failed for audit ${auditId}: ${(err as Error).message}`);
+    });
+    // Re-judging changes the "led the answer" counts the progress page quotes.
+    // A page an operator already approved or rejected is left alone — they regenerate it explicitly.
+    if (audit.status === 'completed') {
+      this.progress.generateForAudit(auditId, { preserveReviewed: true }).catch((err) => {
+        this.logger.warn(`Progress review refresh failed for audit ${auditId}: ${(err as Error).message}`);
+      });
+    }
+
     return total;
+  }
+
+  /**
+   * Regenerate the narrative framing for a completed audit on demand.
+   * Analogous to judgeStance — an explicit, separately-triggered pass, not
+   * something verdict() ever calls implicitly.
+   *
+   * @throws NotFoundException when the audit does not exist.
+   * @throws BadRequestException when the audit has not completed yet.
+   */
+  async regenerateNarrative(auditId: string): Promise<{ narrative: NarrativeBlock | null }> {
+    const audit = await this.prisma.aeoAudit.findUnique({ where: { id: auditId } });
+    if (!audit) throw new NotFoundException('Audit not found: ' + auditId);
+    if (audit.status !== 'completed') {
+      throw new BadRequestException('Audit ' + auditId + ' has not completed yet — no verdict to frame');
+    }
+    return { narrative: await this.narrative.generate(auditId) };
   }
 
   // ─── Verdict computation ───────────────────────────────────────────────
@@ -1042,6 +1132,7 @@ export class AeoAuditService {
         status: surfaceRunStatus(surface),
         ...this.metrics(slice),
         unbrandedMentionRate: this.metrics(unbrandedSlice).mentionRate,
+        unbrandedObservations: unbrandedSlice.length,
         stanceCounts: counts,
         // Counted: answers on this engine that named a rival and not the client.
         rivalsAheadCount: slice.filter((r) => !r.mentioned && r.competitors.length > 0).length,
@@ -1163,6 +1254,7 @@ export class AeoAuditService {
       }));
 
     const verdict: AeoVerdict = {
+      auditId,
       surface: audit.surface,
       surfaceRuns: surfaceRunResults,
       runCount: audit.runCount,

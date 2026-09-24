@@ -47,6 +47,8 @@ import type { BacklinksSummaryDto } from '../backlinks/backlinks.types';
 import type { PresenceInventory } from '../digital-presence/presence.types';
 import type { GapResult } from '../competitors/competitors.service';
 import type { AeoVerdict } from '../aeo-audit/aeo-audit.types';
+import type { ReportProgressSection } from '../progress/progress.types';
+import { niceMax } from '../progress/progress-format';
 
 // ─── Views and sections ─────────────────────────────────────────
 
@@ -76,6 +78,7 @@ export type ReportAudience = 'operator' | 'client-facing';
 
 export type ReportSectionId =
   | 'scoreBreakdown'
+  | 'progress'
   | 'findings'
   | 'roadmap'
   | 'presence'
@@ -99,6 +102,7 @@ export type ReportSectionId =
  */
 export interface ReportDecisions {
   scoreBreakdown: ReportDecision;
+  progress: ReportDecision;
   findings: ReportDecision;
   findingsTable: ReportDecision;
   roadmap: ReportDecision;
@@ -166,6 +170,18 @@ export interface ReportSectionRef {
 export type Tone = 'default' | 'good' | 'bad' | 'warn' | 'muted' | 'accent';
 
 /**
+ * Where a reading sits — what lets a client see at a glance what is fine and
+ * where the problem is. Always drawn as an icon plus `label`, never colour
+ * alone; `neutral` means "no judgement" (unmeasured, or context only).
+ */
+export type StatusLevel = 'good' | 'warning' | 'critical' | 'neutral';
+
+export interface StatusView {
+  level: StatusLevel;
+  label: string;
+}
+
+/**
  * One labelled figure with its unit.
  *
  * `measured` is false when the provider returned no value. §6.3 forbids
@@ -195,6 +211,10 @@ export interface SubScoreView {
   partial: boolean;
   partialNote: string | null;
   evidence: string[];
+  /** The rubric's own cut points (0-40 / 41-60 / 61-80 / 81-100) read as a state. */
+  status: StatusView;
+  /** The measured dimension with the lowest value — where the score loses most. */
+  biggestGap: boolean;
 }
 
 export interface FindingView {
@@ -269,6 +289,24 @@ export interface AeoDimensionView {
   label: string;
   mentionRatePercent: number;
   observations: number;
+  /** Flags the weakest question type and any the client is never named in; `neutral` otherwise. */
+  status: StatusView;
+}
+
+/** One engine's unbranded visibility — the per-engine comparison the audit exists to make. */
+export interface AeoEngineView {
+  label: string;
+  /** Null when this engine was not measured — never drawn as 0. */
+  unbrandedPercent: number | null;
+  observations: number;
+  status: StatusView;
+}
+
+/** One brand's share of all brand mentions in the answers; the client is always included. */
+export interface AeoShareView {
+  name: string;
+  sharePercent: number;
+  isClient: boolean;
 }
 
 /**
@@ -297,6 +335,20 @@ export interface AeoVisibilityView {
   unbrandedMentionRatePercent: number;
   brandedMentionRatePercent: number;
   byDimension: AeoDimensionView[];
+  /** Where the client stands against the brands the answers named — from share of voice. */
+  standing: StatusView;
+  engines: AeoEngineView[];
+  /** Client plus the top rivals by share, remainder folded into "Others". */
+  shareOfVoice: AeoShareView[];
+  /** The largest share shown — the shared scale top for both renderers' share-of-voice bars. */
+  shareScaleMax: number;
+  /**
+   * Zero-based scale tops for the engine and question-type bars: a round
+   * number just above the largest value, so a 9% vs 28% difference is visible.
+   * Every bar is labelled with its value, so length is never read alone.
+   */
+  engineScaleMax: number;
+  dimensionScaleMax: number;
   losingExample: AeoLosingExampleView | null;
   competitors: AeoCompetitorView[];
   /** §6.4 — scope/date of the measurement, so a reader knows what is being compared. */
@@ -427,6 +479,8 @@ export interface ReportDocument {
   sections: ReportSectionRef[];
   decisions: ReportDecisions;
   score: ScoreView;
+  /** Resolved and page-capped by the progress module; drawn as-is. Null on a first audit or until a review is approved. */
+  progress: ReportProgressSection | null;
   findings: FindingView[];
   roadmap: RoadmapItemView[];
   presence: PresenceView | null;
@@ -533,6 +587,7 @@ export function buildReportDocument(
     sections,
     decisions,
     score: buildScore(data),
+    progress: data.progress ?? null,
     findings: (data.findings ?? []).map(toFindingView),
     roadmap: (data.roadmap ?? []).map(toRoadmapView),
     presence: data.presence ? toPresenceView(data.presence) : null,
@@ -560,11 +615,12 @@ function resolveNoindex(data: ReportData, forced?: boolean): boolean {
 /** The reading order of each view (§6.1). The only place a view names a section. */
 const SECTIONS_BY_VIEW: Record<ReportView, ReportSectionId[]> = {
   executive: ['scoreBreakdown'],
-  detailed: ['scoreBreakdown', 'findings', 'roadmap', 'presence', 'aeoVisibility', 'competitors', 'growthPlan', 'backlinks'],
+  detailed: ['scoreBreakdown', 'progress', 'findings', 'roadmap', 'presence', 'aeoVisibility', 'competitors', 'growthPlan', 'backlinks'],
 };
 
 const SECTION_TITLES: Record<ReportSectionId, string> = {
   scoreBreakdown: 'Score breakdown',
+  progress: 'Progress since your baseline',
   findings: 'Findings',
   roadmap: 'Roadmap',
   presence: 'Social & Directory Presence',
@@ -599,6 +655,12 @@ function buildDecisions(data: ReportData, detailed: boolean): ReportDecisions {
     // The score breakdown is the one section every view draws: it is the
     // report's headline claim and the thing a reader checks first.
     scoreBreakdown: decision(true, null),
+
+    // Deliberately `omit`, not an absence note, when there is no page: a first
+    // audit has nothing to compare yet, and "no progress" printed in a client's
+    // first report would misstate that. The page appears only from a later,
+    // comparable audit whose progress review an operator approved.
+    progress: detailed && data.progress ? decision(true, null) : outOfView,
 
     findings: detailed ? decision(true, null) : outOfView,
     findingsTable: !detailed
@@ -699,7 +761,9 @@ function buildDecisions(data: ReportData, detailed: boolean): ReportDecisions {
 
 /** Section refs, derived from the same decisions the renderers read. */
 function buildSectionRefs(decisions: ReportDecisions, detailed: boolean): ReportSectionRef[] {
-  const ids = SECTIONS_BY_VIEW[detailed ? 'detailed' : 'executive'];
+  // An `omit` section is not part of this document at all (only progress can
+  // be omitted inside a view), so the contents must not list it as missing.
+  const ids = SECTIONS_BY_VIEW[detailed ? 'detailed' : 'executive'].filter((id) => decisions[id].mode !== 'omit');
   return ids.map((id) => ({
     id,
     title: SECTION_TITLES[id],
@@ -755,7 +819,7 @@ function buildScore(data: ReportData): ScoreView {
     total: data.scoreTotal,
     band: data.scoreBand,
     bandNote: BAND_NOTE,
-    subScores: (data.subScores ?? []).map(toSubScoreView),
+    subScores: flagBiggestGap((data.subScores ?? []).map(toSubScoreView)),
     rubricVersion: data.rubricVersion ?? null,
     scoreRunId: data.scoreRunId ?? null,
     provenanceNote,
@@ -786,7 +850,30 @@ function toSubScoreView(sub: SubScore): SubScoreView {
       ? `Unmeasured; contributes 0 under this rubric.${sub.partialReason ? ` ${sub.partialReason}` : ''}`
       : null,
     evidence: sub.evidence ?? [],
+    status: partial ? { level: 'neutral', label: NOT_MEASURED } : rubricStatus(sub.value),
+    biggestGap: false,
   };
+}
+
+/**
+ * The rubric's band cut points (BAND_NOTE: 0-40 / 41-60 / 61-80 / 81-100)
+ * read as a state for one dimension. Same boundaries the total's band uses,
+ * so a dimension and the total can never be judged on different scales.
+ */
+function rubricStatus(value: number): StatusView {
+  if (value <= 40) return { level: 'critical', label: 'Critical gap' };
+  if (value <= 60) return { level: 'warning', label: 'Needs work' };
+  if (value <= 80) return { level: 'good', label: 'Solid' };
+  return { level: 'good', label: 'Strong' };
+}
+
+/** Mark the lowest measured dimension — unless it is already fine, where "gap" would overstate it. */
+function flagBiggestGap(subs: SubScoreView[]): SubScoreView[] {
+  const measured = subs.filter((s) => !s.partial);
+  if (measured.length < 2) return subs;
+  const lowest = measured.reduce((a, b) => (b.barPercent < a.barPercent ? b : a));
+  if (lowest.status.level === 'good') return subs;
+  return subs.map((s) => (s === lowest ? { ...s, biggestGap: true } : s));
 }
 
 // ─── Findings / roadmap ─────────────────────────────────────────
@@ -873,6 +960,9 @@ function toAeoVisibilityView(verdict: AeoVerdict): AeoVisibilityView {
   }
 
   const firstLosing = verdict.judged.losingPrompts[0] ?? null;
+  const dims = dimensionViews(verdict);
+  const engines = engineViews(verdict);
+  const share = shareViews(verdict);
 
   return {
     surfaceLabel,
@@ -880,11 +970,13 @@ function toAeoVisibilityView(verdict: AeoVerdict): AeoVisibilityView {
     totalAnswers: verdict.counted.overall.observations,
     unbrandedMentionRatePercent: round(verdict.counted.unbranded.mentionRate * 100),
     brandedMentionRatePercent: round(verdict.counted.branded.mentionRate * 100),
-    byDimension: verdict.counted.byDimension.map((d) => ({
-      label: d.label,
-      mentionRatePercent: round(d.mentionRate * 100),
-      observations: d.observations,
-    })),
+    byDimension: dims,
+    standing: standingOf(verdict),
+    engines,
+    shareOfVoice: share,
+    shareScaleMax: Math.max(1, ...share.map((r) => r.sharePercent)),
+    engineScaleMax: niceMax(Math.max(0, ...engines.map((e) => e.unbrandedPercent ?? 0))),
+    dimensionScaleMax: niceMax(Math.max(0, ...dims.map((d) => d.mentionRatePercent))),
     losingExample: firstLosing
       ? { prompt: firstLosing.prompt, losesTo: firstLosing.losesTo, evidenceQuote: firstLosing.evidenceQuote }
       : null,
@@ -894,6 +986,85 @@ function toAeoVisibilityView(verdict: AeoVerdict): AeoVisibilityView {
       'Mention rate is the share of answers naming the client; the unbranded rate — the honest visibility test — ' +
       'counts only questions that did not already name the client.',
   };
+}
+
+const NO_STATUS: StatusView = { level: 'neutral', label: '' };
+
+/** Smallest slice a status may be read from — below it one answer swings the rate by several points. */
+const AEO_STATUS_MIN_ANSWERS = 5;
+
+/** Spread between engines that counts as uneven — the same 5-point threshold `headlines()` uses. */
+const ENGINE_SPREAD = 5;
+
+/**
+ * "Never named" is critical on its own terms. "Weakest" is relative, so — the
+ * same rule the engines use — it is only said when the question types really
+ * differ (a spread of at least ENGINE_SPREAD points), and as a warning: the
+ * lowest of 72% / 80% / 85% is not a problem to flag.
+ */
+function dimensionViews(verdict: AeoVerdict): AeoDimensionView[] {
+  const dims = verdict.counted.byDimension;
+  const judged = dims.filter((d) => d.observations >= AEO_STATUS_MIN_ANSWERS);
+  const pcts = judged.map((d) => round(d.mentionRate * 100));
+  const uneven = judged.length > 1 && Math.max(...pcts) - Math.min(...pcts) >= ENGINE_SPREAD;
+  const weakest = uneven ? judged.reduce((a, b) => (b.mentionRate < a.mentionRate ? b : a)) : null;
+  return dims.map((d) => {
+    let status = NO_STATUS;
+    if (d.observations >= AEO_STATUS_MIN_ANSWERS && d.mentionRate === 0) status = { level: 'critical', label: 'Never named' };
+    else if (d === weakest) status = { level: 'warning', label: 'Weakest' };
+    return { label: d.label, mentionRatePercent: round(d.mentionRate * 100), observations: d.observations, status };
+  });
+}
+
+function engineViews(verdict: AeoVerdict): AeoEngineView[] {
+  const measured = verdict.counted.bySurface.filter((s) => s.status === 'completed' && s.observations > 0);
+  const pcts = measured.map((s) => round(s.unbrandedMentionRate * 100));
+  const hi = pcts.length ? Math.max(...pcts) : 0;
+  const lo = pcts.length ? Math.min(...pcts) : 0;
+  const uneven = measured.length > 1 && hi - lo >= ENGINE_SPREAD;
+  return verdict.counted.bySurface.map((s) => {
+    if (s.status !== 'completed' || s.observations === 0) {
+      return { label: s.label, unbrandedPercent: null, observations: s.observations, status: { level: 'neutral', label: NOT_MEASURED } };
+    }
+    const pct = round(s.unbrandedMentionRate * 100);
+    let status = NO_STATUS;
+    if (pct === 0) status = { level: 'critical', label: 'Invisible' };
+    else if (uneven && pct === lo) status = { level: 'warning', label: 'Weakest engine' };
+    else if (uneven && pct === hi) status = { level: 'good', label: 'Strongest engine' };
+    return { label: s.label, unbrandedPercent: pct, observations: s.observations, status };
+  });
+}
+
+/**
+ * Client plus the five largest rivals; everything else folds into one
+ * "Others" bar. Each share is a fraction of *all* brand mentions (measurement
+ * divides by the full total before it trims the list to ten), so "Others" is
+ * exactly what the shown bars leave — not just the trimmed list's tail.
+ */
+function shareViews(verdict: AeoVerdict): AeoShareView[] {
+  const [client, ...rivals] = verdict.counted.shareOfVoice;
+  if (!client) return [];
+  const top = rivals.slice(0, 5);
+  const shown = client.share + top.reduce((sum, r) => sum + r.share, 0);
+  const rest = Math.max(0, 1 - shown);
+  return [
+    { name: client.name, sharePercent: round(client.share * 100), isClient: true },
+    ...top.map((r) => ({ name: r.name, sharePercent: round(r.share * 100), isClient: false })),
+    ...(round(rest * 100) > 0 ? [{ name: 'Others', sharePercent: round(rest * 100), isClient: false }] : []),
+  ];
+}
+
+/** Where the client stands among the brands the answers named — relative, so it needs no invented benchmark. */
+function standingOf(verdict: AeoVerdict): StatusView {
+  const [client, ...rivals] = verdict.counted.shareOfVoice;
+  if (!client || (client.share === 0 && rivals.length === 0)) return { level: 'neutral', label: 'No brands named yet' };
+  if (rivals.length === 0 || rivals.every((r) => r.share <= client.share)) {
+    return client.share > 0 ? { level: 'good', label: 'You lead share of voice' } : { level: 'critical', label: 'Not named in any answer' };
+  }
+  const leader = rivals.reduce((a, b) => (b.share > a.share ? b : a));
+  const ahead = rivals.filter((r) => r.share > client.share).length;
+  if (client.share < leader.share / 2) return { level: 'critical', label: `Far behind ${leader.name}` };
+  return { level: 'warning', label: `${ahead} rival${ahead === 1 ? '' : 's'} named more often` };
 }
 
 // ─── Competitors ────────────────────────────────────────────────

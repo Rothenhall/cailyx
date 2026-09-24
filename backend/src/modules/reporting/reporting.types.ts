@@ -12,6 +12,7 @@ import type { BacklinksSummaryDto } from '../backlinks/backlinks.types';
 import type { PresenceInventory } from '../digital-presence/presence.types';
 import type { GapResult } from '../competitors/competitors.service';
 import type { AeoVerdict } from '../aeo-audit/aeo-audit.types';
+import type { ReportProgressSection } from '../progress/progress.types';
 
 // ─── PRD §8 Score rubric ───────────────────────────────────────
 
@@ -66,6 +67,13 @@ export interface ReportData {
   competitors: GapResult | null;
   /** AEO visibility: the project's latest completed answer-engine audit (mention/citation rates, the judged losing-prompt example, competitors named ahead of the client). Null when no AEO audit has completed yet. Read-only, same discipline as backlinks/growthPlan — report generation never triggers a fresh audit. */
   aeoVisibility: AeoVerdict | null;
+  /**
+   * The approved progress page for the audit `aeoVisibility` came from. Live
+   * for a draft (read at render, like `planProgress`), frozen into the
+   * revision snapshot at review lock. Absent/null on a first audit or while
+   * the review is unapproved — the section is then omitted, not noted.
+   */
+  progress?: ReportProgressSection | null;
   createdAt: string;
 
   // ─── G05 — editorial lifecycle ────────────────────────────────
@@ -421,6 +429,8 @@ export interface ReportRevisionSnapshot {
   digitalPerformance?: ReportDigitalPerformanceSection | null;
   /** P15 / §14.5 item 8 — the 30-day plan's progress, frozen the same way. */
   planProgress?: ReportPlanProgressSection | null;
+  /** The approved progress page, frozen at review lock. Absent in snapshots written before it existed. */
+  progress?: ReportProgressSection | null;
   /** `Report.createdAt`/`updatedAt` at lock time: when the *content* was last written by generation. */
   contentCreatedAt: string;
   contentUpdatedAt: string;

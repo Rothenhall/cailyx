@@ -34,7 +34,11 @@ import * as React from 'react';
 import { Document, Page, Text, View, StyleSheet, Font, renderToStream } from '@react-pdf/renderer';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ReportDocument, ReportSectionRef, ReportView, MetricView, Tone, AeoDimensionView } from './report-document';
+import type { ReportDocument, ReportSectionRef, ReportView, MetricView, Tone } from './report-document';
+import { columnChart, deltaChip, dumbbell, hbarChart, statusBadge, statusColor, statusIcon, vc } from './report-pdf-visuals';
+
+/** Content width inside the page's horizontal padding (A4 595pt − 2 × 40pt). */
+const CONTENT_WIDTH = 515;
 
 /** `React.createElement`, under a name short enough to read a tree through. */
 const h = React.createElement;
@@ -222,8 +226,6 @@ const s = StyleSheet.create({
   td: { fontSize: 8.5, lineHeight: 1.4 },
   tdSub: { fontSize: 7.5, lineHeight: 1.4, color: color.ink60 },
 
-  bar: { height: 4, backgroundColor: color.line, borderRadius: 2, marginTop: 3 },
-  barFill: { height: 4, backgroundColor: color.accent, borderRadius: 2 },
   evidence: { fontSize: 7.5, lineHeight: 1.4, color: color.ink60, marginTop: 2 },
 
   pill: {
@@ -239,12 +241,6 @@ const s = StyleSheet.create({
   pillBad: { borderColor: color.bad },
   pillVerified: { backgroundColor: color.ink, borderColor: color.ink },
   pillVerifiedText: { color: color.paper },
-
-  dimRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 5 },
-  dimLabel: { width: 110, fontSize: 8.5, lineHeight: 1.3 },
-  dimTrack: { flex: 1, height: 5, backgroundColor: color.line, borderRadius: 2.5, marginHorizontal: 6 },
-  dimFill: { height: 5, backgroundColor: color.accent, borderRadius: 2.5 },
-  dimPct: { width: 32, fontSize: 8.5, lineHeight: 1.3, textAlign: 'right' },
 
   quote: {
     backgroundColor: color.paper,
@@ -447,6 +443,8 @@ function sectionBody(doc: ReportDocument, ref: ReportSectionRef): React.ReactEle
   switch (ref.id) {
     case 'scoreBreakdown':
       return scoreSection(doc);
+    case 'progress':
+      return progressSection(doc);
     case 'findings':
       return findingsSection(doc);
     case 'roadmap':
@@ -468,45 +466,189 @@ function sectionBody(doc: ReportDocument, ref: ReportSectionRef): React.ReactEle
 
 // ─── Score breakdown ────────────────────────────────────────────
 
+/**
+ * One scorecard row per dimension: name, its state on the rubric's own cut
+ * points, the bar (in the state's colour — here the bar *means* good or bad),
+ * what it weighs and adds, then the evidence. The weakest measured dimension
+ * is tagged so "where is the problem" is answered without reading numbers.
+ */
 function scoreSection(doc: ReportDocument): React.ReactElement {
-  const rows = doc.score.subScores.map((sub) =>
-    [
-      cell(sub.dimension),
-      cell(sub.valueLabel, { tone: sub.partial ? 'accent' : 'default' }),
-      cell(sub.weightLabel),
-      cell(sub.contributionLabel),
-    ] as React.ReactNode[],
-  );
-
+  const trackWidth = CONTENT_WIDTH - 60;
   return h(
     View,
     null,
-    tableElement(
-      [
-        { header: 'Dimension', width: '30%' },
-        { header: 'Value (0-100)', width: '16%' },
-        { header: 'Weight', width: '20%' },
-        { header: 'Contribution', width: '34%' },
-      ],
-      rows,
-    ),
     ...doc.score.subScores.map((sub, i) =>
       h(
         View,
-        { key: `sub${i}`, style: { marginBottom: 5 } },
-        h(Text, { style: s.note }, `${sub.dimension} — ${sub.valueLabel} of 100`),
-        h(View, { style: s.bar }, h(View, { style: [s.barFill, { width: sub.barPercent * 5.15 }] })),
+        { key: `sub${i}`, wrap: false, style: { marginBottom: 9 } },
+        h(
+          View,
+          { style: { flexDirection: 'row', alignItems: 'center', marginBottom: 3 } },
+          h(Text, { style: { fontSize: 9.5, lineHeight: 1.3, fontWeight: 'bold', marginRight: 8 } }, sub.dimension),
+          statusBadge(sub.status),
+          sub.biggestGap ? tag('Biggest gap') : null,
+          h(View, { style: { flexGrow: 1 } }),
+          h(Text, { style: s.tdSub }, `${sub.weightLabel} · ${sub.contributionLabel}`),
+        ),
+        h(
+          View,
+          { style: { flexDirection: 'row', alignItems: 'center' } },
+          h(
+            View,
+            { style: { width: trackWidth, height: 8, backgroundColor: vc.track, borderRadius: 4 } },
+            sub.partial
+              ? null
+              : h(View, {
+                  style: {
+                    width: Math.max(3, (sub.barPercent / 100) * trackWidth),
+                    height: 8,
+                    borderRadius: 4,
+                    backgroundColor: statusColor[sub.status.level],
+                  },
+                }),
+          ),
+          h(Text, { style: { fontSize: 9, lineHeight: 1.3, marginLeft: 8, fontWeight: 'bold' } }, sub.partial ? sub.valueLabel : `${sub.valueLabel}/100`),
+        ),
         h(
           Text,
           { style: s.evidence },
-          sub.evidence.length > 0
-            ? `Evidence: ${sub.evidence.join(' · ')}`
-            : 'No evidence lines recorded for this dimension.',
+          sub.evidence.length > 0 ? `Evidence: ${sub.evidence.join(' · ')}` : 'No evidence lines recorded for this dimension.',
         ),
         sub.partialNote ? h(Text, { style: [s.evidence, { color: color.accentDeep }] }, sub.partialNote) : null,
       ),
     ),
     h(Text, { style: s.note }, doc.score.bandNote),
+  );
+}
+
+/** A small outlined text tag — for labels that are not a status (e.g. "Biggest gap"). */
+function tag(text: string): React.ReactElement {
+  return h(
+    View,
+    { style: { borderWidth: 1, borderColor: vc.ink, borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1, marginRight: 8 } },
+    h(Text, { style: { fontSize: 7, lineHeight: 1.3, textTransform: 'uppercase', letterSpacing: 0.5 } }, text),
+  );
+}
+
+// ─── Progress ───────────────────────────────────────────────────
+
+/**
+ * The progress page. Everything is already capped by the progress module to
+ * one page (two for a long history) — this only draws it: KPI tiles with a
+ * before→after mark, the audit-by-audit columns, the work behind each change,
+ * what was delivered, and the one thing to watch next.
+ */
+function progressSection(doc: ReportDocument): React.ReactElement | null {
+  const p = doc.progress;
+  if (!p) return null;
+
+  const gap = 8;
+  const n = p.tiles.length;
+  const tileWidth = n > 0 ? (CONTENT_WIDTH - gap * (n - 1)) / n : CONTENT_WIDTH;
+
+  return h(
+    View,
+    null,
+    h(Text, { style: { fontSize: 12, lineHeight: 1.35, fontWeight: 'bold', marginBottom: 10 } }, p.headline),
+
+    n > 0
+      ? h(
+          View,
+          { style: { flexDirection: 'row', marginBottom: 8 } },
+          ...p.tiles.map((t, i) =>
+            h(
+              View,
+              {
+                key: `pt${i}`,
+                wrap: false,
+                style: {
+                  width: tileWidth,
+                  marginRight: i < n - 1 ? gap : 0,
+                  backgroundColor: color.paper,
+                  borderWidth: 1,
+                  borderColor: color.line,
+                  borderRadius: 4,
+                  padding: 8,
+                },
+              },
+              h(Text, { style: s.tileLabel }, t.label),
+              h(Text, { style: { fontSize: 20, lineHeight: 1.2, marginBottom: 3 } }, t.now),
+              deltaChip(t.delta, t.rising, t.improvement),
+              h(Text, { style: s.tileUnit }, `from ${t.before} · ${t.window}`),
+              h(View, { style: { marginTop: 5 } }, dumbbell(t.meter.from, t.meter.to, t.meter.max, t.improvement, tileWidth - 18)),
+            ),
+          ),
+        )
+      : null,
+
+    h(Text, { style: s.h3 }, 'Unbranded AI visibility, audit by audit'),
+    columnChart(
+      p.checkpoints.map((c) => ({ value: c.unbrandedValue, valueText: c.unbranded, label: c.label, sub: c.date, emphasis: c.isCurrent })),
+      { width: CONTENT_WIDTH, height: 52, max: p.chartMax },
+    ),
+    h(
+      Text,
+      { style: s.evidence },
+      `Overall mention rate: ${p.checkpoints.map((c) => c.overall).join(' → ')}    Answers that led with you: ${p.checkpoints.map((c) => c.led).join(' → ')}`,
+    ),
+
+    p.drivers.length > 0 ? h(Text, { style: s.h3 }, 'What moved, and the work behind it') : null,
+    ...p.drivers.map((d, i) =>
+      h(
+        View,
+        { key: `pd${i}`, wrap: false, style: { flexDirection: 'row', marginBottom: 6 } },
+        h(View, { style: { width: 3, backgroundColor: d.grade === 'A' ? vc.accent : vc.stone, borderRadius: 1.5, marginRight: 8 } }),
+        h(
+          View,
+          { style: { flex: 1 } },
+          h(
+            Text,
+            { style: { fontSize: 7, lineHeight: 1.3, letterSpacing: 0.6, textTransform: 'uppercase', color: color.ink60, marginBottom: 1 } },
+            d.grade === 'A' ? 'Targeted work' : 'Delivered in the same period',
+          ),
+          h(Text, { style: { fontSize: 9, lineHeight: 1.4 } }, d.text),
+          ...d.evidence.map((e, j) => h(Text, { key: `pe${j}`, style: s.evidence }, `• ${e}`)),
+        ),
+      ),
+    ),
+
+    h(Text, { style: s.h3 }, 'Delivered since the last audit'),
+    p.delivered.items.length === 0
+      ? h(Text, { style: s.note }, 'No new client-visible work was verified between the last audit and this one.')
+      : h(
+          View,
+          null,
+          ...p.delivered.items.map((w, i) =>
+            h(
+              View,
+              { key: `dl${i}`, style: { flexDirection: 'row', alignItems: 'center', paddingVertical: 2.5, borderBottomWidth: 1, borderBottomColor: color.line } },
+              h(Text, { style: { width: 70, fontSize: 7, lineHeight: 1.3, textTransform: 'uppercase', letterSpacing: 0.5, color: color.ink60 } }, w.kind),
+              h(Text, { style: { flex: 1, fontSize: 8.5, lineHeight: 1.35 } }, w.title),
+              h(Text, { style: { width: 70, fontSize: 8, lineHeight: 1.35, textAlign: 'right', color: color.ink60 } }, w.date),
+            ),
+          ),
+        ),
+    h(
+      Text,
+      { style: [s.evidence, { marginBottom: 6 }] },
+      `${p.delivered.moreCount > 0 ? `+${p.delivered.moreCount} more. ` : ''}${p.delivered.sinceBaselineTotal} pieces of client-visible work verified since the baseline audit.`,
+    ),
+
+    ...p.nextFocus.map((f, i) =>
+      h(
+        View,
+        {
+          key: `nf${i}`,
+          wrap: false,
+          style: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: color.line, borderRadius: 4, padding: 6, marginBottom: 6 },
+        },
+        statusIcon('warning', 8),
+        h(Text, { style: { fontSize: 7, lineHeight: 1.3, textTransform: 'uppercase', letterSpacing: 0.5, marginLeft: 5, marginRight: 6 } }, 'Next focus'),
+        h(Text, { style: { flex: 1, fontSize: 9, lineHeight: 1.35 } }, f),
+      ),
+    ),
+
+    h(Text, { style: s.note }, p.provenanceNote),
   );
 }
 
@@ -632,21 +774,80 @@ function aeoVisibilitySection(doc: ReportDocument): React.ReactElement {
   const d = doc.decisions;
   if (!aeo) return h(Text, { style: s.note }, d.aeoVisibility.note ?? '');
 
+  const measuredEngines = aeo.engines.filter((e) => e.unbrandedPercent !== null).length;
+
   return h(
     View,
     null,
-    tilesElement([
-      { label: 'Questions measured', value: String(aeo.questionsMeasured), unit: null, measured: true },
-      { label: 'Answers observed', value: String(aeo.totalAnswers), unit: null, measured: true },
-      { label: 'Unbranded mention rate', value: `${aeo.unbrandedMentionRatePercent}%`, unit: 'the honest visibility test', measured: true },
-      { label: 'Branded mention rate', value: `${aeo.brandedMentionRatePercent}%`, unit: 'trivially high — the name was already given', measured: true },
-    ]),
+    // The one number this section leads with, and what it means competitively.
+    h(
+      View,
+      { wrap: false, style: { flexDirection: 'row', alignItems: 'center', marginBottom: 10, padding: 10, borderWidth: 1, borderColor: color.line, borderRadius: 4 } },
+      h(
+        View,
+        { style: { width: 170 } },
+        h(Text, { style: s.tileLabel }, 'Unbranded AI visibility'),
+        h(Text, { style: { fontSize: 30, lineHeight: 1.1 } }, `${aeo.unbrandedMentionRatePercent}%`),
+        h(Text, { style: s.tileUnit }, 'of answers to questions that never name you'),
+      ),
+      h(
+        View,
+        { style: { flex: 1, paddingLeft: 12 } },
+        h(View, { style: { flexDirection: 'row', marginBottom: 4 } }, statusBadge(aeo.standing)),
+        h(
+          Text,
+          { style: s.note },
+          `${aeo.questionsMeasured} questions, ${aeo.totalAnswers} answers on ${aeo.surfaceLabel}. When the question already names you, ` +
+            `you appear ${aeo.brandedMentionRatePercent}% of the time — expected, and not the test that matters.`,
+        ),
+      ),
+    ),
+
+    aeo.shareOfVoice.length > 1
+      ? h(
+          View,
+          { wrap: false },
+          h(Text, { style: s.h3 }, 'Share of voice — you against the brands the answers name'),
+          hbarChart(
+            aeo.shareOfVoice.map((r) => ({ label: r.name, value: r.sharePercent, valueText: `${r.sharePercent}%`, emphasis: r.isClient })),
+            { width: CONTENT_WIDTH, max: aeo.shareScaleMax, labelWidth: 150 },
+          ),
+        )
+      : null,
+
+    measuredEngines > 0
+      ? h(
+          View,
+          { wrap: false },
+          h(Text, { style: s.h3 }, 'By engine — unbranded questions'),
+          hbarChart(
+            aeo.engines.map((e) => ({
+              label: e.label,
+              value: e.unbrandedPercent,
+              valueText: e.unbrandedPercent === null ? 'Not measured on this engine' : `${e.unbrandedPercent}%`,
+              emphasis: false,
+              status: e.status,
+            })),
+            { width: CONTENT_WIDTH, max: aeo.engineScaleMax, labelWidth: 150, badgeWidth: 110 },
+          ),
+        )
+      : null,
+
     aeo.byDimension.length > 0
       ? h(
           View,
-          { style: { marginTop: 4, marginBottom: 8 } },
+          { wrap: false },
           h(Text, { style: s.h3 }, 'By question type'),
-          ...aeo.byDimension.map((dim: AeoDimensionView, i: number) => dimensionRow(dim, i)),
+          hbarChart(
+            aeo.byDimension.map((d) => ({
+              label: d.label,
+              value: d.mentionRatePercent,
+              valueText: `${d.mentionRatePercent}%`,
+              emphasis: false,
+              status: d.status,
+            })),
+            { width: CONTENT_WIDTH, max: aeo.dimensionScaleMax, labelWidth: 150, badgeWidth: 110 },
+          ),
         )
       : null,
     h(Text, { style: s.h3 }, 'Where it loses'),
@@ -684,16 +885,6 @@ function aeoVisibilitySection(doc: ReportDocument): React.ReactElement {
         )
       : null,
     h(Text, { style: s.note }, aeo.provenanceNote),
-  );
-}
-
-function dimensionRow(dim: AeoDimensionView, i: number): React.ReactElement {
-  return h(
-    View,
-    { key: `dim${i}`, style: s.dimRow },
-    h(Text, { style: s.dimLabel }, dim.label),
-    h(View, { style: s.dimTrack }, h(View, { style: [s.dimFill, { width: `${dim.mentionRatePercent}%` }] })),
-    h(Text, { style: s.dimPct }, `${dim.mentionRatePercent}%`),
   );
 }
 
