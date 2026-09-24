@@ -600,6 +600,12 @@ model Report {
   /// plus each rival's SEO score, at generation time. Null when the project
   /// has no tracked competitors yet.
   competitorsSnapshot String?
+  /// JSON AeoVerdict — the project's latest completed AEO audit (answer-engine
+  /// mention/citation rates, the judged losing-prompt example, and the
+  /// competitors an answer named ahead of the client), at generation time.
+  /// Same frozen-at-publish discipline as the other *Snapshot fields. Null
+  /// when no AEO audit has completed for this project yet.
+  aeoVisibilitySnapshot String?
   branding         String?
   /// G05 — editorial state of the report as a whole. `visibility` above stays
   /// what it always was (public link on/off) and is deliberately NOT reused as
@@ -2276,7 +2282,7 @@ model SiteContextRun {
   projectId String
   domain    String
 
-  // pending | discovering | inspecting | selecting | extracting | reconciling | validating | consolidating | completed | failed
+  // pending | discovering | inspecting | selecting | extracting | reconciling | validating | discovering-social | enriching-external | consolidating | researching-gaps | verifying | completed | failed
   status String  @default("pending")
   // last stage fully persisted — what a resume reads to know where to continue
   stage  String?
@@ -2298,6 +2304,18 @@ model SiteContextRun {
   elapsedMs     Int @default(0)
 
   refine Boolean @default(true) // whether the extract stage may call the LLM
+
+  // site-context-v2 Phase 2 — opt-in only (never triggered by a plain build()/
+  // resume() call), since these stages spend real DataForSEO search credits.
+  // Set at creation; a resumed run keeps whatever it was created with.
+  externalEnrichment Boolean @default(false) // spec §17 — search for HQ/founded/leadership/etc. when missing
+  socialDiscovery    Boolean @default(false) // spec §15-16 — trigger digital-presence's existing SERP fallback for missing platforms
+  gapResearch        Boolean @default(false) // spec §19 — bounded search pass over ONLY the fields consolidation flagged missing
+  // Real spend from externalEnrichment (and, later, the gap-research agent) —
+  // tracked separately from the LLM costUsd on SiteContext, since this is a
+  // different budget (DataForSEO, not OpenRouter/Anthropic).
+  searchesUsed   Int   @default(0)
+  searchCostUsd  Float @default(0)
 
   // JSON: purpose-category coverage plan produced by the select stage, e.g.
   // {"homepage":{"target":1,"filled":1},"pricing":{"target":1,"filled":0},...}
@@ -2396,6 +2414,12 @@ model SiteContextFact {
   // 0-1, computed from factType + page-type authority + cross-source agreement —
   // never the LLM's bare self-report alone (step 13's own rule).
   confidence Float  @default(0.7)
+
+  // first-party | external (site-context-v2 Phase 2, spec §17) — first-party
+  // for everything the subject's own site produced; external for a fact found
+  // via a search off-site. Consolidation must never blend the two into one
+  // undifferentiated claim without knowing which is which.
+  source String @default("first-party")
 
   run SiteContextRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 

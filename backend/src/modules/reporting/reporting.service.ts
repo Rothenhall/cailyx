@@ -36,6 +36,7 @@ import { FindingsService } from '../findings/findings.service';
 import { BacklinksService } from '../backlinks/backlinks.service';
 import { PresenceService } from '../digital-presence/presence.service';
 import { CompetitorsService } from '../competitors/competitors.service';
+import { AeoAuditService } from '../aeo-audit/aeo-audit.service';
 import { EvidenceService } from '../results/evidence.service';
 import { PeriodService } from '../results/period.service';
 import { buildReportDocument } from './report-document';
@@ -62,6 +63,7 @@ import type {
 import type { BacklinksSummaryDto } from '../backlinks/backlinks.types';
 import type { PresenceInventory } from '../digital-presence/presence.types';
 import type { GapResult } from '../competitors/competitors.service';
+import type { AeoVerdict } from '../aeo-audit/aeo-audit.types';
 
 
 // Handlebars helper: {{#if_eq a b}}...{{/if_eq}}
@@ -134,6 +136,8 @@ export class ReportingService {
     private readonly digitalPerformance: DigitalPerformanceService,
     /** P15 — the 30-day plan's progress, from the module that owns commitments. */
     private readonly deliveryPlan: DeliveryPlanService,
+    /** AEO audit read: the project's latest completed answer-engine verdict. Never triggers a fresh audit — same discipline as backlinks/growthPlan. */
+    private readonly aeoAudit: AeoAuditService,
   ) {}
 
   /** Best-effort presence inventory for a report — never throws, never blocks generation. */
@@ -152,6 +156,24 @@ export class ReportingService {
       return await this.competitorsService.gap(projectId);
     } catch (err) {
       this.logger.warn(`Report: competitor gap unavailable for ${projectId} — continuing without it: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Best-effort AEO verdict for a report — the project's latest *completed*
+   * audit, recomputed from its stored observations/stances (cheap, no fresh
+   * measurement). No completed audit yet is normal, not an error; a failure
+   * to read one must not block report generation.
+   */
+  private async getAeoVisibilitySnapshot(projectId: string): Promise<AeoVerdict | null> {
+    try {
+      const audits = await this.aeoAudit.list(projectId);
+      const latest = audits.find((a) => a.status === 'completed');
+      if (!latest) return null;
+      return await this.aeoAudit.verdict(latest.id);
+    } catch (err) {
+      this.logger.warn(`Report: AEO verdict unavailable for ${projectId} — continuing without it: ${(err as Error).message}`);
       return null;
     }
   }
@@ -186,6 +208,7 @@ export class ReportingService {
     const backlinks = await this.backlinksService.latest(projectId);
     const presence = await this.getPresenceSnapshot(projectId);
     const competitors = await this.getCompetitorsSnapshot(projectId);
+    const aeoVisibility = await this.getAeoVisibilitySnapshot(projectId);
     // §8 scoring moved into the versioned-rubric scoring module (FR-8.1–8.4):
     // real measurement inputs, evidence-linked sub-scores, rubric version recorded.
     const scoreResult = await this.scoring.scoreProject(projectId);
@@ -228,6 +251,7 @@ export class ReportingService {
         backlinksSnapshot: backlinks ? JSON.stringify(backlinks) : null,
         presenceSnapshot: presence ? JSON.stringify(presence) : null,
         competitorsSnapshot: competitors ? JSON.stringify(competitors) : null,
+        aeoVisibilitySnapshot: aeoVisibility ? JSON.stringify(aeoVisibility) : null,
         branding: JSON.stringify(this.defaultBranding),
         periodId: pinning.periodId ?? null,
         cohortId: pinning.cohortId ?? null,
@@ -702,6 +726,7 @@ export class ReportingService {
       backlinks: snapshot.backlinks,
       presence: snapshot.presence,
       competitors: snapshot.competitors,
+      aeoVisibility: snapshot.aeoVisibility,
       createdAt: snapshot.contentCreatedAt || report.createdAt.toISOString(),
       status: 'released',
       releasedRevision: revision.revision,
@@ -779,6 +804,7 @@ export class ReportingService {
       backlinks: record.backlinksSnapshot ? this.parseJson<BacklinksSummaryDto>(record.backlinksSnapshot) : null,
       presence: record.presenceSnapshot ? this.parseJson<PresenceInventory>(record.presenceSnapshot) : null,
       competitors: record.competitorsSnapshot ? this.parseJson<GapResult>(record.competitorsSnapshot) : null,
+      aeoVisibility: record.aeoVisibilitySnapshot ? this.parseJson<AeoVerdict>(record.aeoVisibilitySnapshot) : null,
       branding: record.branding ? this.parseJson<BrandingConfig>(record.branding) : null,
       rubricVersion: manifest?.rubricVersion ?? null,
       scoreRunId: manifest?.scoreRunId ?? null,
@@ -939,6 +965,7 @@ export class ReportingService {
       backlinks: null,
       presence: null,
       competitors: null,
+      aeoVisibility: null,
       branding: null,
       rubricVersion: null,
       scoreRunId: null,
@@ -1005,6 +1032,7 @@ export class ReportingService {
       backlinks: record.backlinksSnapshot ? this.parseJson<BacklinksSummaryDto>(record.backlinksSnapshot) : null,
       presence: record.presenceSnapshot ? this.parseJson<PresenceInventory>(record.presenceSnapshot) : null,
       competitors: record.competitorsSnapshot ? this.parseJson<GapResult>(record.competitorsSnapshot) : null,
+      aeoVisibility: record.aeoVisibilitySnapshot ? this.parseJson<AeoVerdict>(record.aeoVisibilitySnapshot) : null,
       createdAt: record.createdAt.toISOString(),
       status: record.status as ReportEditorialStatus,
       releasedRevision: record.releasedRevision,

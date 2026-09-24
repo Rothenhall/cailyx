@@ -22,10 +22,95 @@
 
 import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
+import { FetcherService } from '../fetcher/fetcher.service';
 import { AeoLlmService } from './aeo-llm.service';
 import { STANCES } from './aeo-audit.types';
 import type { PromptDimension, Stance, StanceVerdict } from './aeo-audit.types';
 import { PROMPT_DIMENSIONS } from './aeo-audit.types';
+
+/**
+ * Names an AI answer surfaces that are never themselves a competitor, no
+ * matter how often they're mentioned: the LLM platforms doing the answering,
+ * review/rating sites cited as a source rather than a recommended vendor, and
+ * general-purpose tool/job/directory sites the answer name-drops in passing.
+ * Mirrors the "drop non-competitors caught by extraction" step every
+ * mention-mining workflow this codebase implements calls for (review sites,
+ * analyst firms, category-hosting platforms — never a rival).
+ * Matched case-insensitively against the exact rival name; deliberately not a
+ * substring match, so a real company whose name happens to contain one of
+ * these words is never swept up by mistake.
+ */
+const NON_COMPETITOR_NAMES = new Set([
+  'chatgpt', 'gpt', 'openai', 'gemini', 'google gemini', 'claude', 'anthropic',
+  'perplexity', 'copilot', 'microsoft copilot', 'bing', 'bing ai', 'grok',
+  'meta ai', 'llama',
+  'g2', 'g2.com', 'capterra', 'trustpilot', 'trustradius', 'getapp',
+  'software advice', 'producthunt', 'product hunt',
+  'indeed', 'linkedin', 'glassdoor', 'ziprecruiter',
+  'reddit', 'quora', 'wikipedia', 'youtube',
+  'google play', 'app store', 'apple app store', 'play store', 'appbrain', 'sensor tower', 'app annie',
+]);
+
+/** True when `name` is a platform/review-site/job-board an answer name-drops, never an actual competitor. */
+function isNonCompetitorName(name: string): boolean {
+  return NON_COMPETITOR_NAMES.has(name.trim().toLowerCase());
+}
+
+/** kebab-slug of a name/path-segment, so "Amazon Prime" and "amazon-prime" compare equal. */
+function slugify(s: string): string {
+  return s.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+/**
+ * A legal name minus its entity-type suffix and punctuation — "Taladhwaja
+ * Global Ventures (OPC) Pvt Ltd" and an AI answer's "...Private Limited"
+ * both reduce to "taladhwajaglobalventures", so the two forms compare equal
+ * even though neither string literally contains the other.
+ */
+function coreLegalName(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\((opc|pvt|private)\)/gi, '')
+    .replace(/\b(opc|pvt\.?|private|ltd\.?|limited|llc|inc\.?|corp\.?|co\.?|company)\b/gi, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function normalizeForCompare(s: string): string {
+  return s.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Classic edit distance — small strings only, used for near-duplicate brand-name detection. */
+function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[] = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    let prevDiag = dp[0];
+    dp[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const tmp = dp[j];
+      dp[j] = a[i - 1] === b[j - 1] ? prevDiag : 1 + Math.min(prevDiag, dp[j], dp[j - 1]);
+      prevDiag = tmp;
+    }
+  }
+  return dp[n];
+}
+
+/**
+ * A short LLM-hallucinated misspelling of the client's own brand ("Fydo",
+ * "Fayda", "Fahdu" for "Faydo") is not a competitor, it's the model
+ * stumbling over its own name. Caught by edit distance rather than exact
+ * match, since the exact-match `excluded` set only drops perfect spellings.
+ */
+function isSelfNameVariant(name: string, subjectName: string): boolean {
+  const a = normalizeForCompare(name);
+  const b = normalizeForCompare(subjectName);
+  if (!a || !b || a === b) return a === b;
+  if (Math.abs(a.length - b.length) > 2) return false;
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen > 12) return false; // long names need an exact match, not fuzzy — avoids false positives
+  return levenshtein(a, b) <= 2;
+}
 
 /** Answer text handed to the judge, capped so one long answer cannot blow the budget. */
 const MAX_ANSWER_CHARS = 12_000;
@@ -68,6 +153,7 @@ export class AeoStanceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly llm: AeoLlmService,
+    private readonly fetcher: FetcherService,
   ) {}
 
   /** Is the judge configured? Callers use this to report honestly, not to guess. */
@@ -188,7 +274,7 @@ export class AeoStanceService {
     );
 
     if (newNames.size > 0) {
-      await this.captureCandidates(projectId, subject.name, competitors, [...newNames]);
+      await this.captureCandidates(projectId, subject, competitors, [...newNames]);
     }
 
     return { judged, skipped, failed, costUsd: Number(costUsd.toFixed(6)), judgeModel };
@@ -205,7 +291,7 @@ export class AeoStanceService {
    */
   private async captureCandidates(
     projectId: string,
-    subjectName: string,
+    subject: { name: string; domain: string },
     knownCompetitors: string[],
     names: string[],
   ): Promise<void> {
@@ -215,13 +301,24 @@ export class AeoStanceService {
         select: { name: true },
       });
       const existingLower = new Set(existing.map((c) => c.name.toLowerCase()));
+      const ownLegalNames = await this.ownLegalNames(projectId);
       const excluded = new Set(
-        [subjectName, ...knownCompetitors].map((n) => n.toLowerCase()),
+        [subject.name, ...knownCompetitors, ...ownLegalNames].map((n) => n.toLowerCase()),
       );
+      const catalog = await this.ownCatalogSlugs(subject.domain);
+      const subjectWord = new RegExp(`(^|[^a-z0-9])${subject.name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'i');
+      const ownLegalCores = new Set(ownLegalNames.map(coreLegalName).filter(Boolean));
 
       for (const name of names) {
         const key = name.toLowerCase();
-        if (existingLower.has(key) || excluded.has(key)) continue;
+        if (existingLower.has(key) || excluded.has(key) || isNonCompetitorName(name)) continue;
+        if (isSelfNameVariant(name, subject.name)) continue;
+        if (catalog.has(slugify(name))) continue;
+        // "Faydo Connect", "Faydo for Business" — a name that carries the
+        // client's own brand as a whole word is a sub-product/line extension,
+        // not a rival, even though it's not an exact match of the brand alone.
+        if (name.toLowerCase() !== subject.name.toLowerCase() && subjectWord.test(name)) continue;
+        if (ownLegalCores.has(coreLegalName(name))) continue;
         try {
           await this.prisma.competitor.create({
             data: { projectId, name, source: 'aeo-answer', status: 'candidate' },
@@ -235,6 +332,91 @@ export class AeoStanceService {
     } catch (err) {
       this.logger.warn(`Candidate capture failed for project ${projectId}: ${(err as Error).message}`);
     }
+  }
+
+  /**
+   * The client's own operating company, as extracted into site context (§9's
+   * `legalName`/`alternateName` facts) — an AI answer explaining who runs the
+   * site ("Faydo is brought to you by Taladhwaja Global Ventures...") gets
+   * its own operator named alongside it, which is not a competitor.
+   */
+  private async ownLegalNames(projectId: string): Promise<string[]> {
+    try {
+      const facts = await this.prisma.siteContextFact.findMany({
+        where: { run: { projectId }, field: { in: ['legalName', 'alternateName'] } },
+        select: { value: true },
+      });
+      return facts.map((f) => f.value);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Highest `<loc>`-listed sitemap files to read while hunting for a catalog. */
+  private static readonly MAX_CATALOG_SITEMAP_FILES = 15;
+
+  /**
+   * A marketplace/reseller client's sitemap is its own product list — "Amazon
+   * Prime", "Myntra", "Swiggy" as `/brand/<slug>` pages on a gift-card
+   * discount site are the client's own catalog, not rivals, even though an AI
+   * answer describing the client will naturally name them. Reads the site's
+   * sitemap fresh (cheap, plain XML — no browser render) and returns every
+   * last URL path segment, slugified, as the set of "things this site sells."
+   * Best-effort and capped: a client with no real catalog (most sites) simply
+   * gets an empty set back and every candidate is judged on the other checks.
+   */
+  private async ownCatalogSlugs(domain: string): Promise<Set<string>> {
+    const slugs = new Set<string>();
+    try {
+      const origin = 'https://' + domain;
+      const readXml = async (url: string): Promise<string[]> => {
+        try {
+          const res = await this.fetcher.fetch({ url, timeout: 15000 }, 'aeo-stance-catalog');
+          if (res.status !== 200 || !res.body) return [];
+          return [...res.body.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/gi)].map((m) => m[1]);
+        } catch {
+          return [];
+        }
+      };
+
+      const robots = await readXml(origin + '/robots.txt').catch(() => []);
+      // robots.txt isn't XML, so pull `Sitemap:` lines the same way `sitemapCandidates` does.
+      const robotsBody = await this.fetcher
+        .fetch({ url: origin + '/robots.txt', timeout: 15000 }, 'aeo-stance-catalog')
+        .then((r) => (r.status === 200 ? r.body : ''))
+        .catch(() => '');
+      const fromRobots = [...robotsBody.matchAll(/^\s*Sitemap:\s*(\S+)/gim)].map((m) => m[1].trim());
+      const entryPoints = fromRobots.length > 0 ? fromRobots : [origin + '/sitemap.xml', origin + '/sitemap-index.xml'];
+      void robots;
+
+      let top: string[] = [];
+      for (const entry of entryPoints) {
+        top = await readXml(entry);
+        if (top.length > 0) break;
+      }
+
+      const isXml = (u: string) => /\.xml(\.gz)?$/i.test(u);
+      const flat = top.filter((u) => !isXml(u));
+      let frontier = top.filter(isXml);
+      let filesRead = 0;
+      while (frontier.length > 0 && filesRead < AeoStanceService.MAX_CATALOG_SITEMAP_FILES) {
+        const child = frontier.shift()!;
+        filesRead++;
+        const entries = await readXml(child);
+        flat.push(...entries.filter((u) => !isXml(u)));
+        frontier.push(...entries.filter(isXml));
+      }
+
+      for (const u of flat) {
+        if (!u.startsWith(origin)) continue;
+        const path = u.slice(origin.length).split(/[?#]/)[0].replace(/\/$/, '');
+        const lastSegment = path.split('/').filter(Boolean).pop();
+        if (lastSegment) slugs.add(slugify(lastSegment));
+      }
+    } catch (err) {
+      this.logger.debug(`Catalog lookup skipped for ${domain}: ${(err as Error).message}`);
+    }
+    return slugs;
   }
 
   /** Every stored stance for an audit, typed. */
@@ -284,7 +466,7 @@ export class AeoStanceService {
       const clientAbsent = v.stance === 'absent';
       for (const rawName of v.otherNamesSeen) {
         const name = rawName.trim();
-        if (!name) continue;
+        if (!name || isNonCompetitorName(name)) continue;
         const key = name.toLowerCase();
         let bucket = acc.get(key);
         if (!bucket) {

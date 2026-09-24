@@ -34,7 +34,7 @@
  * @module cloro.adapter
  */
 
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { SurfaceAdapter, SurfaceAnswer } from '../measurement.types';
 
@@ -103,6 +103,14 @@ interface CloroStatusResponse {
 
 const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 120_000;
+/**
+ * Per-HTTP-call timeout. `fetch` has no default one, and Cloro's task-status
+ * endpoints are supposed to answer immediately (the actual work happens async
+ * on their side) — a call that hangs past this is a stuck connection, not
+ * slow work, so it's aborted and surfaced as a normal CloroAdapterError
+ * instead of blocking the poll loop (and the whole request) indefinitely.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
 
 /**
  * Thin HTTP client for Cloro's API — auth, base URL, submit/poll/credits.
@@ -112,32 +120,83 @@ const POLL_TIMEOUT_MS = 120_000;
  */
 @Injectable()
 export class CloroClient {
+  private readonly logger = new Logger(CloroClient.name);
+
   constructor(private readonly config: ConfigService) {}
 
-  private key(): string {
-    const key = this.config.get<string>('CLORO_API_KEY');
-    if (!key) {
+  /** Highest `CLORO_API_KEY<N>` suffix checked — generous enough for any real account count. */
+  private static readonly MAX_KEY_SUFFIX = 20;
+
+  /**
+   * Multi-account fallback: `CLORO_API_KEY` is tried first, then
+   * `CLORO_API_KEY1`, `CLORO_API_KEY2`, `CLORO_API_KEY3`, ... — separate Cloro
+   * accounts, not one account's rotated secrets, so exhausting one's credits
+   * doesn't stop a run. Unset entries are skipped, so this degrades cleanly to
+   * however many keys are actually configured, and a new account can be added
+   * by just setting the next `CLORO_API_KEY<N>` — no code change needed.
+   */
+  private keys(): string[] {
+    const names = ['CLORO_API_KEY', ...Array.from({ length: CloroClient.MAX_KEY_SUFFIX }, (_, i) => `CLORO_API_KEY${i + 1}`)];
+    return names.map((name) => this.config.get<string>(name)).filter((k): k is string => !!k);
+  }
+
+  /**
+   * Which configured key new task submissions start from. Advances (and
+   * stays advanced) once a key is found exhausted/rejected, so a run with
+   * many tasks doesn't re-try a dead key on every single one — see
+   * `submitAndPoll`'s create-call retry loop, the only place this moves.
+   */
+  private activeKeyIndex = 0;
+
+  private requireKeys(): string[] {
+    const keys = this.keys();
+    if (keys.length === 0) {
       throw new CloroAdapterError(
         'cloro-disabled',
         'cloro',
         'CLORO_API_KEY is not set — sign up at cloro.dev and add the key to run this surface.',
       );
     }
-    return key;
+    return keys;
   }
 
+  private headersFor(key: string): Record<string, string> {
+    return { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
+  }
+
+  /** Headers for the currently active key — used by calls that aren't part of the create-call fallback loop (credit checks, polling an already-created task). */
   private headers(): Record<string, string> {
-    return { Authorization: `Bearer ${this.key()}`, 'Content-Type': 'application/json' };
+    const keys = this.requireKeys();
+    return this.headersFor(keys[Math.min(this.activeKeyIndex, keys.length - 1)]);
   }
 
-  /** `GET /v1/credits` — the pre-flight balance check. */
+  /**
+   * `GET /v1/credits` — the pre-flight balance check, summed across every
+   * configured key. These are separate Cloro accounts (see {@link keys}), and
+   * `submitAndPoll` already rotates through all of them at task-submission
+   * time — a run isn't actually blocked by one account's balance. Checking
+   * only the active key here made the budget guard reject runs the adapter
+   * would in fact have completed by falling through to key #2/#3, so every
+   * configured key's balance is queried and added together. One key failing
+   * this check (bad key, suspended account) counts as 0 for that key rather
+   * than aborting the whole estimate — a dead key should reduce the total,
+   * not make the total unknowable.
+   */
   async getRemainingCredits(): Promise<number> {
-    const res = await fetch(`${CLORO_BASE_URL}/v1/credits`, { headers: this.headers() });
-    if (!res.ok) {
-      throw new CloroAdapterError('cloro-api-error', 'cloro', `GET /v1/credits returned HTTP ${res.status}`);
-    }
-    const body = (await res.json()) as { remaining: number };
-    return body.remaining;
+    const keys = this.requireKeys();
+    const balances = await Promise.all(
+      keys.map(async (key) => {
+        try {
+          const res = await fetch(`${CLORO_BASE_URL}/v1/credits`, { headers: this.headersFor(key) });
+          if (!res.ok) return 0;
+          const body = (await res.json()) as { remaining: number };
+          return Number.isFinite(body.remaining) ? body.remaining : 0;
+        } catch {
+          return 0;
+        }
+      }),
+    );
+    return balances.reduce((sum, n) => sum + n, 0);
   }
 
   /**
@@ -194,21 +253,57 @@ export class CloroClient {
     payload: Record<string, unknown>,
   ): Promise<CloroStatusResponse> {
     const started = Date.now();
-    const createRes = await fetch(`${CLORO_BASE_URL}/v1/async/task`, {
-      method: 'POST',
-      headers: this.headers(),
-      body: JSON.stringify({ taskType, payload }),
-    });
-    if (!createRes.ok) {
-      const body = await createRes.text();
-      throw new CloroAdapterError('cloro-api-error', surface, `POST /v1/async/task returned HTTP ${createRes.status}: ${body.slice(0, 300)}`);
+    const keys = this.requireKeys();
+
+    let createRes: Response | null = null;
+    let usedKeyIndex = this.activeKeyIndex;
+    let lastErr: Error | null = null;
+    for (let i = Math.min(this.activeKeyIndex, keys.length - 1); i < keys.length; i++) {
+      try {
+        const res = await fetch(`${CLORO_BASE_URL}/v1/async/task`, {
+          method: 'POST',
+          headers: this.headersFor(keys[i]),
+          body: JSON.stringify({ taskType, payload }),
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+        if (!res.ok) {
+          const body = await res.text();
+          lastErr = new Error(`POST /v1/async/task returned HTTP ${res.status}: ${body.slice(0, 300)}`);
+          // A failure here (typically 401/402/403 — invalid key or out of
+          // credits) means THIS key is done, not that the task itself is bad
+          // — try the next configured one rather than failing the whole run.
+          continue;
+        }
+        createRes = res;
+        usedKeyIndex = i;
+        break;
+      } catch (err) {
+        lastErr = new Error(`POST /v1/async/task did not respond within ${REQUEST_TIMEOUT_MS}ms: ${(err as Error).message}`);
+      }
     }
+    if (!createRes) {
+      throw new CloroAdapterError('cloro-api-error', surface, lastErr?.message ?? 'All configured Cloro keys failed.');
+    }
+    if (usedKeyIndex !== this.activeKeyIndex) {
+      this.logger.warn(`Cloro: key #${this.activeKeyIndex + 1} exhausted/rejected, switched to key #${usedKeyIndex + 1}.`);
+      this.activeKeyIndex = usedKeyIndex;
+    }
+    const activeKey = keys[usedKeyIndex];
+
     const created = (await createRes.json()) as CloroCreateResponse;
     const taskId = created.task.id;
 
     while (Date.now() - started < POLL_TIMEOUT_MS) {
       await this.sleep(POLL_INTERVAL_MS);
-      const pollRes = await fetch(`${CLORO_BASE_URL}/v1/async/task/${taskId}`, { headers: this.headers() });
+      let pollRes: Response;
+      try {
+        pollRes = await fetch(`${CLORO_BASE_URL}/v1/async/task/${taskId}`, {
+          headers: this.headersFor(activeKey),
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+      } catch (err) {
+        throw new CloroAdapterError('cloro-api-error', surface, `GET /v1/async/task/${taskId} did not respond within ${REQUEST_TIMEOUT_MS}ms: ${(err as Error).message}`);
+      }
       if (!pollRes.ok) {
         throw new CloroAdapterError('cloro-api-error', surface, `GET /v1/async/task/${taskId} returned HTTP ${pollRes.status}`);
       }

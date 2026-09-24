@@ -33,6 +33,7 @@ import { findPageIssues, scorePage } from '../technical-audit/checks/seo-rubric'
 import { parseCompetitors, hostOf } from '../../common/utils/subject-match';
 import { BusinessProfileService } from '../business-profile/business-profile.service';
 import { SerpIntelligenceService } from '../serp-intelligence/serp-intelligence.service';
+import { DataForSeoSerpService } from '../serp-intelligence/dataforseo-serp.service';
 import type { CompetitorInputDto, DiscoverByMarketDto, DiscoverCompetitorsDto } from './dto/competitors.dto';
 
 /**
@@ -582,6 +583,7 @@ export class CompetitorsService {
     private readonly businessProfile: BusinessProfileService,
     private readonly serpIntelligence: SerpIntelligenceService,
     private readonly aeoStance: AeoStanceService,
+    private readonly dataForSeoSerp: DataForSeoSerpService,
   ) {}
 
   private async requireProject(projectId: string): Promise<{ id: string; domain: string; competitors: string | null }> {
@@ -1170,6 +1172,67 @@ export class CompetitorsService {
           ? `The ${MIN_PLATFORM_COVERAGE}-platform floor was relaxed to 1 — too few rivals cleared it.`
           : `Only rivals seen on ≥${ranking.minPlatformCoverage} platform(s) are ranked.`),
     };
+  }
+
+  /**
+   * Closes the gap between `rankCompetitorsByStance` (real rival NAMES, mined
+   * from what an AEO audit's answers actually said, but no domain — that
+   * ranking is a pure read over stored stances) and a usable `Competitor`
+   * row (needs a domain to profile anything). Without this, a ranked name
+   * never becomes part of the client's actual competitor set unless someone
+   * manually looks up its domain and calls `discover()` themselves — exactly
+   * the manual step this method exists to remove.
+   *
+   * For each of the top `topN` ranked names (default 3) not already a
+   * tracked `Competitor`, runs one bounded search for its official site,
+   * takes the first result whose domain isn't in `EXCLUDED_DOMAINS` (a
+   * review/directory/social host, never a competitor's own site), and
+   * promotes the resolved {name, domain} pairs through the same `discover()`
+   * path an operator's explicit list would use — so the result gets the same
+   * tech-stack/schema profile as any other tracked competitor.
+   */
+  async resolveRankedCompetitors(projectId: string, opts: { topN?: number } = {}): Promise<DiscoverResult & { resolved: Array<{ name: string; domain: string | null }> }> {
+    const topN = opts.topN ?? 3;
+    const ranking = await this.rankCompetitorsByStance(projectId, { topN });
+
+    const alreadyTracked = new Set(
+      (await this.prisma.competitor.findMany({ where: { projectId }, select: { name: true } })).map((c) => nameKey(c.name)),
+    );
+
+    const resolved: Array<{ name: string; domain: string | null }> = [];
+    for (const candidate of ranking.rankedTop.slice(0, topN)) {
+      if (alreadyTracked.has(nameKey(candidate.name))) continue;
+      const lookup = await this.serpSearchWithSpendGuard(`"${candidate.name}" official website`);
+      const domain = lookup.links
+        .map((l) => hostOf(l.url))
+        .find((h): h is string => !!h && !EXCLUDED_DOMAINS.has(h)) ?? null;
+      resolved.push({ name: candidate.name, domain });
+    }
+
+    if (resolved.length === 0) {
+      return {
+        projectId,
+        totalCompetitors: 0,
+        promoted: 0,
+        competitors: [],
+        resolved: [],
+      } as unknown as DiscoverResult & { resolved: Array<{ name: string; domain: string | null }> };
+    }
+
+    const discovered = await this.discover(projectId, {
+      competitors: resolved.map((r) => ({ name: r.name, domain: r.domain ?? undefined })),
+    });
+    return { ...discovered, resolved };
+  }
+
+  /** Thin wrapper so a domain-resolution search failure degrades to "not found" rather than aborting the whole batch. */
+  private async serpSearchWithSpendGuard(query: string): Promise<{ links: Array<{ url: string }> }> {
+    try {
+      return await this.dataForSeoSerp.search(query);
+    } catch (err) {
+      this.logger.warn(`resolveRankedCompetitors: search failed for "${query}": ${(err as Error).message}`);
+      return { links: [] };
+    }
   }
 
   /**

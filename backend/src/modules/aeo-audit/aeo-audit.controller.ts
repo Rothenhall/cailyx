@@ -50,6 +50,7 @@ import {
 } from './dto/aeo-audit.dto';
 import { AEO_SURFACES, TIER_SIZES } from './aeo-audit.types';
 import type { AeoSurface, MatrixTier, PromptDimension } from './aeo-audit.types';
+import { PipelineQueueService } from '../jobs/pipeline-queue.service';
 
 @ApiTags('AEO Audit')
 @ApiBearerAuth()
@@ -60,6 +61,7 @@ export class AeoAuditController {
     private readonly context: AeoContextService,
     private readonly matrix: AeoMatrixService,
     private readonly visibility: AeoVisibilityService,
+    private readonly pipelineQueue: PipelineQueueService,
   ) {}
 
   // ─── AI visibility (merged read composition, §8) ───────────────────────
@@ -118,7 +120,7 @@ export class AeoAuditController {
   // ─── Context ───────────────────────────────────────────────────────────
 
   @Post('context')
-  @HttpCode(HttpStatus.CREATED)
+  @HttpCode(HttpStatus.ACCEPTED)
   @Throttle({ default: { ttl: 60000, limit: 5 } })
   @ApiOperation({
     summary: 'Build site context',
@@ -126,32 +128,43 @@ export class AeoAuditController {
       "Crawls the client's own site (homepage + sitemap-guided service/solution/pricing pages) and " +
       'extracts what they sell, who buys it, the pains buyers arrive with and the outcomes they want. ' +
       'With ANTHROPIC_API_KEY set, one constrained LLM pass organises the fetched text; without it the ' +
-      'deterministic extraction stands and `extraction` reports "deterministic".',
+      'deterministic extraction stands and `extraction` reports "deterministic".\n\n' +
+      'Queued on the background pipeline, not run inline — a full build (plus any Phase 2 stages requested) ' +
+      'can take 20-30+ minutes, which a background worker can self-resume through as many times as it takes ' +
+      'without ever blocking this request. Returns immediately with a jobId; poll GET context/jobs/:jobId.',
   })
   @ApiBody({ type: BuildContextDto })
-  @ApiResponse({
-    status: 201,
-    description:
-      'The run row was created. A completed run returns the stored context; a run that hit its elapsed-time budget ' +
-      'returns `{ paused: true, runId, reachedStage, message }` instead — resume it with POST /context/runs/:runId/resume. ' +
-      'Both are 201 because the run itself was created either way; the payload distinguishes them.',
-  })
+  @ApiResponse({ status: 202, description: '{ jobId, projectId, status: "queued" }' })
   @ApiResponse({ status: 404, description: 'Project not found' })
   async buildContext(@Param('projectId') projectId: string, @Body() body: BuildContextDto) {
-    try {
-      return await this.context.build(projectId, {
-        maxPages: body.maxPages,
-        refine: body.refine,
-        maxRequests: body.maxRequests,
-        maxChars: body.maxChars,
-        maxElapsedMs: body.maxElapsedMs,
-      });
-    } catch (err) {
-      if (err instanceof SiteContextRunPausedException) {
-        return { paused: true, runId: err.runId, reachedStage: err.reachedStage, message: err.message };
-      }
-      throw err;
+    const opts = {
+      maxPages: body.maxPages,
+      refine: body.refine,
+      maxRequests: body.maxRequests,
+      maxChars: body.maxChars,
+      maxElapsedMs: body.maxElapsedMs,
+      externalEnrichment: body.externalEnrichment,
+      socialDiscovery: body.socialDiscovery,
+      gapResearch: body.gapResearch,
+    };
+    const { jobId } = await this.pipelineQueue.enqueue(
+      'site-context-build',
+      { projectId, opts },
+      { attempts: 2, backoff: { type: 'exponential', delay: 30000 } },
+    );
+    return { jobId, projectId, status: 'queued' };
+  }
+
+  @Get('context/jobs/:jobId')
+  @ApiOperation({ summary: 'Get the status of a queued site-context build job' })
+  @ApiResponse({ status: 200, description: 'Job status — waiting/active/completed/failed, with result or error' })
+  @ApiResponse({ status: 404, description: 'Job does not exist, or belongs to a different project' })
+  async getContextJob(@Param('projectId') projectId: string, @Param('jobId') jobId: string) {
+    const status = await this.pipelineQueue.getStatus(jobId);
+    if (status.status === 'not_found' || (status.projectId && status.projectId !== projectId)) {
+      throw new NotFoundException(`Site-context build job ${jobId} not found for project ${projectId}`);
     }
+    return status;
   }
 
   @Get('context')

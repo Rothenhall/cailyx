@@ -44,6 +44,10 @@ import { ConfigService } from '@nestjs/config';
 import * as cheerio from 'cheerio';
 import { PrismaService } from '../database/prisma.service';
 import { FetcherService } from '../fetcher/fetcher.service';
+import { DataForSeoSerpService } from '../serp-intelligence/dataforseo-serp.service';
+import { PresenceService } from '../digital-presence/presence.service';
+import { EXPECTED_PLATFORMS } from '../digital-presence/presence.types';
+import { PipelineQueueService } from '../jobs/pipeline-queue.service';
 import { AeoLlmService } from './aeo-llm.service';
 import type { SiteContextData } from './aeo-audit.types';
 
@@ -61,9 +65,11 @@ const HIGH_SIGNAL_PATHS = [
   '/use-cases',
 ];
 
-/** Same idea, but matched against sitemap URLs we actually found. */
+/** Same idea, but matched against sitemap URLs we actually found. Broad on
+ *  purpose — this only ranks candidates, it no longer excludes anything, so
+ *  it can afford to cover consumer/e-commerce sites too, not just B2B/SaaS. */
 const HIGH_SIGNAL_PATTERNS =
-  /\/(services?|solutions?|products?|pricing|plans|industr(y|ies)|use-cases?|what-we-do|who-we-serve|capabilities|expertise|sectors?|about)(\/|$)/i;
+  /\/(services?|solutions?|products?|pricing|plans|industr(y|ies)|use-cases?|what-we-do|who-we-serve|capabilities|expertise|sectors?|about|faq|how-it-works|reviews?|testimonials?)(\/|$)/i;
 
 /** Nav/footer noise that is never a service name. */
 const NAV_NOISE =
@@ -75,6 +81,15 @@ const NAV_NOISE =
  */
 const TIER_AND_STEP_WORDS =
   /^(starter|basic|standard|premium|pro|plus|growth|scale|enterprise|business|free|trial|custom|lite|advanced|essential|team|agency|diagnose|discover|build|operate|compound|deliver|launch|plan|design|measure|optimi[sz]e|onboard|scoping?|audit|strategy|execution|results?|process|approach|method|phase|step|one|two|three)$/i;
+
+/**
+ * E-commerce/catalog browse-and-merchandising section headers — "Shop by
+ * Category", "Trending Brands", "New Arrivals" are how a storefront organizes
+ * its own catalog, never a thing a buyer asks "who provides X" about. Without
+ * this, every consumer/retail site's nav chrome gets read as a services list.
+ */
+const MERCHANDISING_NOISE =
+  /^(shop by|browse (by|all)|explore (by|all)|trending|popular|featured|curated|new arrivals?|newly added|best[- ]?sellers?|top[- ]?(picks|rated|sellers?)|recommended( for you)?|see all|view all|all (brands?|products?|categories))\b/i;
 
 /** Page-type patterns for stage 2/3 classification. */
 const CART_PATTERN = /\/(cart|checkout)(\/|$)/i;
@@ -98,6 +113,20 @@ export type PageType =
   | 'homepage' | 'service' | 'about' | 'pricing' | 'industries' | 'location'
   | 'case-study' | 'blog' | 'login' | 'cart' | 'policy'
   | 'leadership' | 'security' | 'press' | 'careers' | 'partner' | 'other';
+
+/** Pages whose content is about the company internally — recruiting, investor
+ *  relations, channel partners — never what it sells. Blindly grabbing headings
+ *  off a careers page ("Paid Opportunities", "Marketing Intern") produced fake
+ *  "services"; these page types are excluded from the deterministic heading
+ *  grab below and flagged to the LLM pass as off-limits for customer-facing fields. */
+const ORG_ONLY_PAGE_TYPES = new Set<PageType>(['careers', 'press', 'partner', 'leadership']);
+
+/** Page types where a heading is actually likely to name a paid offering. */
+const SERVICE_HEADING_PAGE_TYPES = new Set<PageType>(['homepage', 'service', 'pricing', 'industries', 'case-study']);
+
+/** Page types where an H1/hero line is actually likely to be a marketing tagline,
+ *  not just the page's navigational title ("FAQ", "About Us", "Careers"). */
+const VALUE_PROP_HEADING_PAGE_TYPES = new Set<PageType>(['homepage', 'service', 'pricing']);
 
 /** Purpose categories the select stage reserves coverage capacity for. `null` = never selected. */
 export type PurposeCategory =
@@ -211,6 +240,11 @@ type RunRow = {
   charsSpent: number;
   elapsedMs: number;
   refine: boolean;
+  externalEnrichment: boolean;
+  socialDiscovery: boolean;
+  gapResearch: boolean;
+  searchesUsed: number;
+  searchCostUsd: number;
   coveragePlan: string;
   notes: string;
   startedAt: Date | null;
@@ -249,6 +283,31 @@ export interface BuildOpts {
   maxRequests?: number;
   maxChars?: number;
   maxElapsedMs?: number;
+  /**
+   * Phase 2, spec §17 — search for a bounded set of high-value fields (HQ,
+   * founding year, leadership, certifications, awards) when first-party
+   * extraction found none. Off by default: this spends real DataForSEO
+   * search credits, so it is only ever on when the caller explicitly asks.
+   */
+  externalEnrichment?: boolean;
+  /**
+   * Phase 2, spec §15–16 — when a platform this brand should plausibly have
+   * has no confirmed `PresenceAccount`, trigger the digital-presence
+   * module's own existing SERP-fallback discovery (`PresenceService.discover
+   * (projectId, searchWeb: true)`) for it, rather than reimplementing search-
+   * based social discovery here. Off by default — same real-spend gate as
+   * `externalEnrichment`.
+   */
+  socialDiscovery?: boolean;
+  /**
+   * Phase 2, spec §19 — after consolidation, run one bounded search pass over
+   * *only* the fields consolidation's own `missingFields` flagged, then
+   * refresh the category summaries that changed. Never a general "find
+   * everything" pass — the field list, search count and page count are all
+   * capped, per the spec's own "give the research agent... a stopping
+   * condition" rule. Off by default — real DataForSEO spend.
+   */
+  gapResearch?: boolean;
 }
 
 @Injectable()
@@ -260,7 +319,56 @@ export class AeoContextService {
     private readonly config: ConfigService,
     private readonly fetcher: FetcherService,
     private readonly llm: AeoLlmService,
-  ) {}
+    private readonly dataForSeoSerp: DataForSeoSerpService,
+    private readonly presence: PresenceService,
+    private readonly pipelineQueue: PipelineQueueService,
+  ) {
+    // `build()` runs a real crawl + several LLM/search stages and can
+    // legitimately take 20-30+ minutes end to end (this module's own §9.4
+    // budgets pause it every 5 minutes of elapsed work so no single HTTP
+    // request blocks that long) — so a plain synchronous call needs an
+    // external resume() call every few minutes to ever finish. Queuing it
+    // (same pattern `technical-audit` already uses) moves that "keep calling
+    // resume()" loop into a background worker, which isn't bound by an HTTP
+    // timeout and CAN just loop until genuinely done — see `buildUntilDone`.
+    this.pipelineQueue.registerHandler('site-context-build', (data: { projectId: string; opts: BuildOpts }) =>
+      this.buildUntilDone(data.projectId, data.opts),
+    );
+  }
+
+  private static readonly BUILD_LOOP_CEILING_MS = 45 * 60 * 1000;
+
+  /**
+   * Drives `build()` to completion in the background: a
+   * `SiteContextRunPausedException` just means "call resume() again," not a
+   * failure, so this loops on it (no backoff — it's a self-imposed budget,
+   * not a transient error) until the run finishes or the wall-clock ceiling
+   * is hit. A genuine error still propagates immediately.
+   */
+  async buildUntilDone(projectId: string, opts: BuildOpts = {}): Promise<SiteContextData & { id: string }> {
+    const deadline = Date.now() + AeoContextService.BUILD_LOOP_CEILING_MS;
+    try {
+      return await this.build(projectId, opts);
+    } catch (err) {
+      if (!(err instanceof SiteContextRunPausedException)) throw err;
+      let runId = err.runId;
+      for (;;) {
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `Site context build for project ${projectId} still not complete after ${AeoContextService.BUILD_LOOP_CEILING_MS / 60000} ` +
+              `minutes of self-resuming (last pause: run ${runId}) — giving up rather than looping forever.`,
+          );
+        }
+        try {
+          return await this.resume(runId);
+        } catch (resumeErr) {
+          if (!(resumeErr instanceof SiteContextRunPausedException)) throw resumeErr;
+          runId = resumeErr.runId;
+          this.logger.log(`Site context build ${runId}: paused after "${resumeErr.reachedStage}", self-resuming immediately.`);
+        }
+      }
+    }
+  }
 
   // ─── Public API ─────────────────────────────────────────────────────────
 
@@ -276,6 +384,23 @@ export class AeoContextService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found: ' + projectId);
 
+    // A run that paused on its elapsed-time budget never reaches `completed`
+    // or `failed` — it just stops mid-stage with its progress (pages already
+    // fetched/extracted) intact. A caller re-invoking build() shortly after a
+    // pause (e.g. AeoAuditService.resume() retrying) would otherwise discard
+    // that progress and re-crawl from scratch every time. Pick up that run
+    // instead, as long as it's recent enough to still be the same request —
+    // an old abandoned run from a prior day is not silently resumed here.
+    const resumable = await this.prisma.siteContextRun.findFirst({
+      where: {
+        projectId,
+        status: { notIn: ['completed', 'failed'] },
+        startedAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (resumable) return this.resume(resumable.id, { maxElapsedMs: opts.maxElapsedMs });
+
     const domain = this.normalizeDomain(project.domain);
     const run = await this.prisma.siteContextRun.create({
       data: {
@@ -286,6 +411,9 @@ export class AeoContextService {
         maxChars: opts.maxChars ?? Number(this.config.get<string>('AEO_CONTEXT_MAX_CHARS', '24000')),
         maxElapsedMs: opts.maxElapsedMs ?? Number(this.config.get<string>('AEO_CONTEXT_MAX_ELAPSED_MS', '300000')),
         refine: opts.refine !== false,
+        externalEnrichment: opts.externalEnrichment === true,
+        socialDiscovery: opts.socialDiscovery === true,
+        gapResearch: opts.gapResearch === true,
       },
     });
     return this.drive(run.id);
@@ -405,7 +533,7 @@ export class AeoContextService {
 
     try {
       const completed = (s: string): boolean => {
-        const order = ['discover', 'inspect', 'select', 'extract', 'reconcile', 'validate', 'consolidate'];
+        const order = ['discover', 'inspect', 'select', 'extract', 'reconcile', 'validate', 'social-discovery', 'external-enrich', 'consolidate', 'gap-research', 'verify'];
         return run.stage !== null && order.indexOf(run.stage) >= order.indexOf(s);
       };
 
@@ -431,11 +559,27 @@ export class AeoContextService {
       }
       if (!completed('validate')) {
         await this.stageValidate(run);
-        await checkpoint('validate', 'consolidating');
+        await checkpoint('validate', 'discovering-social');
+      }
+      if (!completed('social-discovery')) {
+        await this.stageSocialDiscovery(run);
+        await checkpoint('social-discovery', 'enriching-external');
+      }
+      if (!completed('external-enrich')) {
+        await this.stageExternalEnrichment(run);
+        await checkpoint('external-enrich', 'consolidating');
       }
       if (!completed('consolidate')) {
         await this.stageConsolidate(run);
-        await checkpoint('consolidate', 'completed');
+        await checkpoint('consolidate', 'researching-gaps');
+      }
+      if (!completed('gap-research')) {
+        await this.stageGapResearch(run);
+        await checkpoint('gap-research', 'verifying');
+      }
+      if (!completed('verify')) {
+        await this.stageVerify(run);
+        await checkpoint('verify', 'completed');
       }
 
       const project = await this.prisma.project.findUnique({ where: { id: run.projectId } });
@@ -467,8 +611,21 @@ export class AeoContextService {
       seen.add(key);
       requestsSpent++;
       try {
+        // The headless-browser render path has no real HTTP status on its result type,
+        // so a plain fetch first is what actually tells a live page from a dead link —
+        // including soft-404s that return 200 with an "not found"-shaped body.
+        const statusCheck = await this.fetcher.fetch({ url, timeout: 15000 }, 'aeo-context-check', run.id).catch(() => null);
+        if (statusCheck && (statusCheck.status < 200 || statusCheck.status >= 400)) {
+          this.logger.debug(`Context discover skipped ${url}: HTTP ${statusCheck.status}`);
+          return;
+        }
+
         const res = await this.fetcher.render({ url, jsDisabled: false, timeout: 30000 }, 'aeo-context', run.id);
         if (!res.html) return;
+        if (this.looksLike404(res.title, res.text)) {
+          this.logger.debug(`Context discover skipped ${url}: looks like a 404/error page ("${res.title}")`);
+          return;
+        }
         const fp = this.fingerprint(res.text || res.html);
         if (fingerprints.has(fp)) {
           this.logger.debug('Context discover skipped ' + url + ': same content as a page already read');
@@ -478,21 +635,33 @@ export class AeoContextService {
         pagesSpent++;
         await this.prisma.siteContextRunPage.create({
           data: {
-            runId: run.id, url, discoverySource: source, fetched: true, statusCode: 200, fetchedAt: new Date(),
+            runId: run.id, url, discoverySource: source, fetched: true, statusCode: statusCheck?.status ?? 200, fetchedAt: new Date(),
             html: this.truncate(res.html, MAX_CACHED_HTML), text: this.truncate(res.text || '', MAX_CACHED_TEXT),
             title: res.title || null, contentHash: fp,
           },
         });
       } catch (err) {
-        this.logger.debug('Context discover fetch failed ' + url + ': ' + (err as Error).message);
+        this.logger.warn('Context discover fetch failed ' + url + ' (source: ' + source + '): ' + (err as Error).message);
       }
     };
 
-    if (!seen.has(this.urlKey(origin + '/'))) await visit(origin + '/', 'homepage');
+    let homeHtml: string | null = null;
+    if (!seen.has(this.urlKey(origin + '/'))) {
+      await visit(origin + '/', 'homepage');
+      const homeRow = await this.prisma.siteContextRunPage.findFirst({ where: { runId: run.id, url: origin + '/' } });
+      homeHtml = homeRow?.html ?? null;
+      if (!homeHtml) {
+        await this.addNote(run.id, `Homepage fetch failed for ${origin}/ — nav-link discovery and homepage content are unavailable this run.`);
+      }
+    } else {
+      homeHtml = existing.find((p) => this.urlKey(p.url) === this.urlKey(origin + '/'))?.html ?? null;
+    }
 
+    // §1 — sitemap + robots.txt is the source of truth for real URLs on the site.
+    let fromSitemap: string[] = [];
     if (budgetLeft()) {
       const requestCounter = { n: requestsSpent };
-      const fromSitemap = await this.sitemapCandidates(origin, run.id, requestCounter, run.maxRequests);
+      fromSitemap = await this.sitemapCandidates(origin, run.id, requestCounter, run.maxRequests);
       requestsSpent = requestCounter.n;
       for (const url of fromSitemap) {
         if (!budgetLeft()) break;
@@ -500,14 +669,19 @@ export class AeoContextService {
       }
     }
 
-    if (budgetLeft()) {
-      const homeRow = existing.find((p) => this.urlKey(p.url) === this.urlKey(origin + '/'));
-      const homeHtml = homeRow?.html ?? (await this.prisma.siteContextRunPage.findFirst({ where: { runId: run.id, url: origin + '/' } }))?.html;
+    // §2 — only when the site has no usable sitemap do we fall back to whatever
+    // links the homepage itself points at (nav/header first, then anywhere on
+    // the page). A fixed guessed-path list is the last resort of all, and only
+    // fires when even the homepage gave us nothing to follow.
+    if (budgetLeft() && fromSitemap.length === 0) {
       const navLinks = homeHtml ? this.internalNavLinks(homeHtml, origin) : [];
-      const guesses = [...HIGH_SIGNAL_PATHS.map((p) => origin + p), ...navLinks];
-      for (const url of guesses) {
+      const bodyLinks = homeHtml ? this.allInternalLinks(homeHtml, origin) : [];
+      const homeLinks = navLinks.length > 0 ? navLinks : bodyLinks;
+      const fallback = homeLinks.length > 0 ? homeLinks : HIGH_SIGNAL_PATHS.map((p) => origin + p);
+      const source = homeLinks.length > 0 ? 'homepage-links' : 'guess';
+      for (const url of fallback) {
         if (!budgetLeft()) break;
-        await visit(url, 'guess');
+        await visit(url, source);
       }
     }
 
@@ -523,15 +697,25 @@ export class AeoContextService {
     }
   }
 
+  /** Cheap heuristic for a soft-404 (HTTP 200 with an error-page body) or a rendered error page. */
+  private looksLike404(title: string, text: string): boolean {
+    const t = (title || '').trim();
+    if (/^\s*404\b/i.test(t) || /\bnot found\b/i.test(t)) return true;
+    const body = (text || '').trim();
+    return body.length > 0 && body.length < 120 && /\bnot found\b/i.test(body);
+  }
+
   /** Site-context-v2 §3 — sitemap paths tried when `robots.txt` names none. */
   private static readonly FALLBACK_SITEMAP_PATHS = [
     '/sitemap.xml', '/sitemap_index.xml', '/sitemap-index.xml', '/wp-sitemap.xml', '/sitemap/sitemap.xml',
   ];
 
   /**
-   * Pull high-signal URLs out of the sitemap (§3: robots.txt `Sitemap:` directives first,
-   * then common fallback paths; index-aware, one level deep), counting requests against
-   * the shared budget.
+   * Pull URLs out of the sitemap (§3: robots.txt `Sitemap:` directives first, then common
+   * fallback paths). Index-aware to a bounded depth — a sitemap index can point at many
+   * child sitemaps, and a child can itself be another index, so the whole tree is walked
+   * (capped at MAX_SITEMAP_FILES/MAX_SITEMAP_DEPTH) rather than just the first few files —
+   * counting every read against the shared request budget.
    */
   private async sitemapCandidates(origin: string, runId: string, counter: { n: number }, maxRequests: number): Promise<string[]> {
     const urls: string[] = [];
@@ -565,27 +749,76 @@ export class AeoContextService {
       top.push(...(await readSitemap(entry)));
       if (top.length > 0) break; // first entry point that yields anything wins — avoid re-reading every fallback path
     }
-    const nested = top.filter((u) => /\.xml(\.gz)?$/i.test(u)).slice(0, 3);
-    const flat = top.filter((u) => !/\.xml(\.gz)?$/i.test(u));
-    for (const child of nested) {
-      if (counter.n >= maxRequests) break;
-      flat.push(...(await readSitemap(child)).filter((u) => !/\.xml(\.gz)?$/i.test(u)));
+
+    // A sitemap index can point at any number of child sitemaps (large sites
+    // often split by type: pages, products, blog, ...), and a child can itself
+    // be another index. Walk the whole tree within the request budget instead
+    // of only reading the first few — otherwise most of the site's real URLs
+    // never even get considered.
+    const isSitemapFile = (u: string) => /\.xml(\.gz)?$/i.test(u);
+    const MAX_SITEMAP_FILES = 50;
+    const MAX_SITEMAP_DEPTH = 4;
+    const flat: string[] = top.filter((u) => !isSitemapFile(u));
+    let frontier = top.filter(isSitemapFile);
+    let filesRead = 0;
+    for (let depth = 0; depth < MAX_SITEMAP_DEPTH && frontier.length > 0 && filesRead < MAX_SITEMAP_FILES; depth++) {
+      const nextFrontier: string[] = [];
+      for (const child of frontier) {
+        if (counter.n >= maxRequests || filesRead >= MAX_SITEMAP_FILES) break;
+        filesRead++;
+        const entries = await readSitemap(child);
+        flat.push(...entries.filter((u) => !isSitemapFile(u)));
+        nextFrontier.push(...entries.filter(isSitemapFile));
+      }
+      frontier = nextFrontier;
     }
 
-    for (const u of flat) {
-      if (!u.startsWith(origin)) continue; // own host only
-      if (HIGH_SIGNAL_PATTERNS.test(u)) urls.push(u);
+    const sameOrigin = flat.filter((u) => u.startsWith(origin)); // own host only
+
+    // A real sitemap can be almost entirely one repeating pattern (a product
+    // catalog, a blog archive) — keeping every URL would crowd the page
+    // budget with near-duplicates and starve everything else. Group by path
+    // template (parent path, so /brand/<slug> and /brand/<slug2> collapse to
+    // the same group) and keep only a few samples per group.
+    const SAMPLES_PER_TEMPLATE = 2;
+    const byTemplate = new Map<string, string[]>();
+    for (const u of sameOrigin) {
+      const path = u.slice(origin.length).split(/[?#]/)[0];
+      const segments = path.split('/').filter(Boolean);
+      const template = segments.length >= 2 ? segments.slice(0, -1).join('/') : path;
+      const group = byTemplate.get(template) ?? [];
+      if (group.length < SAMPLES_PER_TEMPLATE) group.push(u);
+      byTemplate.set(template, group);
     }
-    urls.sort((a, b) => a.split('/').length - b.split('/').length || a.length - b.length);
+    for (const group of byTemplate.values()) urls.push(...group);
+
+    // High-signal keyword matches (about, pricing, faq, ...) lead; everything
+    // else — the site's real structure, whatever shape that takes — fills the
+    // rest of the budget rather than being discarded outright.
+    urls.sort((a, b) => {
+      const aSignal = HIGH_SIGNAL_PATTERNS.test(a) ? 0 : 1;
+      const bSignal = HIGH_SIGNAL_PATTERNS.test(b) ? 0 : 1;
+      if (aSignal !== bSignal) return aSignal - bSignal;
+      return a.split('/').length - b.split('/').length || a.length - b.length;
+    });
     return urls.slice(0, 20);
   }
 
   /** Same-origin nav/header links from the homepage, deduped. */
   private internalNavLinks(html: string, origin: string): string[] {
+    return this.internalLinksFrom(html, origin, 'nav a[href], header a[href]', 15);
+  }
+
+  /** Every same-origin link anywhere on the homepage — last-resort fallback when there's no sitemap. */
+  private allInternalLinks(html: string, origin: string): string[] {
+    return this.internalLinksFrom(html, origin, 'a[href]', 40);
+  }
+
+  private internalLinksFrom(html: string, origin: string, selector: string, limit: number): string[] {
     const $ = cheerio.load(html);
     const out: string[] = [];
     const seen = new Set<string>();
-    $('nav a[href], header a[href]').each((_, el) => {
+    $(selector).each((_, el) => {
       const href = $(el).attr('href') || '';
       let abs: string;
       try {
@@ -597,7 +830,7 @@ export class AeoContextService {
       seen.add(abs);
       out.push(abs);
     });
-    return out.slice(0, 15);
+    return out.slice(0, limit);
   }
 
   /**
@@ -940,18 +1173,23 @@ export class AeoContextService {
       out.push({ field, value: text, sourceUrl: page.url, excerpt: text, contentHash: page.contentHash });
     };
 
-    $('h2, h3').each((_, el) => {
-      const text = $(el).text().trim().replace(/\s+/g, ' ');
-      if (this.isCandidatePhrase(text) && !inPersonBlock($(el))) add('services', text);
-    });
-    $('[class*="card"] h4, [class*="service"] h4, [class*="tile"] h4, li > strong').each((_, el) => {
-      const text = $(el).text().trim().replace(/\s+/g, ' ');
-      if (this.isCandidatePhrase(text) && !inPersonBlock($(el))) add('services', text);
-    });
-    $('h1, [class*="hero"] p').each((_, el) => {
-      const text = $(el).text().trim().replace(/\s+/g, ' ');
-      if (text.length > 15 && text.length < 160) add('valueProps', text);
-    });
+    const pageType = page.pageType as PageType | null;
+    if (SERVICE_HEADING_PAGE_TYPES.has(pageType as PageType)) {
+      $('h2, h3').each((_, el) => {
+        const text = $(el).text().trim().replace(/\s+/g, ' ');
+        if (this.isCandidatePhrase(text) && !inPersonBlock($(el))) add('services', text);
+      });
+      $('[class*="card"] h4, [class*="service"] h4, [class*="tile"] h4, li > strong').each((_, el) => {
+        const text = $(el).text().trim().replace(/\s+/g, ' ');
+        if (this.isCandidatePhrase(text) && !inPersonBlock($(el))) add('services', text);
+      });
+    }
+    if (VALUE_PROP_HEADING_PAGE_TYPES.has(pageType as PageType)) {
+      $('h1, [class*="hero"] p').each((_, el) => {
+        const text = $(el).text().trim().replace(/\s+/g, ' ');
+        if (text.length > 15 && text.length < 160) add('valueProps', text);
+      });
+    }
 
     return out;
   }
@@ -961,7 +1199,11 @@ export class AeoContextService {
     const urls = batch.map((p) => p.url);
     let corpus = '';
     for (const page of batch) {
-      corpus += '\n\n--- ' + page.url + ' ---\n' + (page.title ? page.title + '\n' : '') + (page.text || '').replace(/\s+/g, ' ').trim().slice(0, MAX_BATCH_CHARS);
+      const pageType = page.pageType as PageType | null;
+      const tag = pageType && ORG_ONLY_PAGE_TYPES.has(pageType)
+        ? ` [page type: ${pageType} — internal/organizational page, NOT a source for services/valueProps/businessModel/category/description]`
+        : '';
+      corpus += '\n\n--- ' + page.url + tag + ' ---\n' + (page.title ? page.title + '\n' : '') + (page.text || '').replace(/\s+/g, ' ').trim().slice(0, MAX_BATCH_CHARS);
     }
 
     const result = await this.llm.json(
@@ -978,10 +1220,14 @@ export class AeoContextService {
           'omitting the fact instead of using this).\n' +
           '- Before writing a fact, check the sentence for negation ("we do NOT offer X", "unlike other providers ' +
           'we don\'t...") — never emit a fact whose sentence is negated.\n' +
+          '- A page marked "[page type: ... — internal/organizational page, ...]" is about the company\'s own hiring, ' +
+          'investors or partners — e.g. a careers page\'s "paid internship" or "join our team" copy is written for ' +
+          'job applicants, not customers. Never extract services/valueProps/businessModel/category/description from ' +
+          'such a page; it may still supply organizational facts (legalName, headquarters, foundedYear, leadership, contact).\n' +
           '- field is one of: services, icp, valueProps, painPoints, outcomes, markets, category, vertical, ' +
           'description, legalName, alternateName, foundedYear, headquarters, officeLocation, languages, ' +
           'pricingModel, differentiator, leadership, certification, award, partner, technology, businessModel, contact.\n' +
-          '- services: concrete offerings a buyer can pay for, 2-6 words, in the site\'s own words. Exclude pricing tiers, process steps, company values and people\'s names.\n' +
+          '- services: concrete offerings a buyer can pay for, 2-6 words, in the site\'s own words. Exclude pricing tiers, process steps, company values, people\'s names, and a storefront\'s own catalog/browse chrome ("Shop by Category", "Trending Brands", "New Arrivals", "Best Sellers") — those organize an existing catalog, they are not themselves a thing sold.\n' +
           '- icp: who buys — role, company type, or segment.\n' +
           '- markets: geographic markets the company SERVES, as ISO-3166 alpha-2 country codes.\n' +
           '- painPoints: a problem the BUYER has before working with this company — not a problem the company itself faces.\n' +
@@ -1061,6 +1307,7 @@ export class AeoContextService {
   private isCandidatePhrase(text: string): boolean {
     if (text.length < 3 || text.length > 70) return false;
     if (NAV_NOISE.test(text)) return false;
+    if (MERCHANDISING_NOISE.test(text)) return false;
     if (/^\d+[%+]?$/.test(text)) return false;
     if (/[?!]$/.test(text)) return false;
     if (/[.]$/.test(text)) return false;
@@ -1308,6 +1555,443 @@ export class AeoContextService {
         conflicts: strArr(e.conflicts),
         missingFields: strArr(e.missingFields).filter((f) => (CATEGORY_FIELDS[category] as string[]).includes(f)),
         confidence: Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(1, confidenceRaw)) : 0,
+      });
+    }
+    return out;
+  }
+
+  // ─── Stage 7a: Social discovery (Phase 2, spec §15–16) ──────────────────
+
+  /**
+   * Social-discovery fallback + verification (site-context-v2 Phase 2, spec
+   * §15–16) — opt-in (`run.socialDiscovery`), since it spends real DataForSEO
+   * search credits.
+   *
+   * Deliberately does NOT reimplement search-based social discovery or
+   * candidate verification here: `digital-presence/presence.serp.service.ts`
+   * (`PresenceSerpService`, driving `PresenceService.discover(projectId,
+   * searchWeb: true)`) already IS spec §15 — it searches only the platforms a
+   * project's own site crawl didn't already find, using the same DataForSEO
+   * provider, with the same "queries spent only on what's actually missing"
+   * discipline this stage would otherwise duplicate. And every candidate it
+   * finds already lands as `PresenceAccount(state: 'candidate')`, requiring
+   * explicit confirmation before it counts — spec §16's "a missing profile is
+   * better than a false profile" rule, already enforced.
+   *
+   * So this stage's only job is to trigger that existing discovery when this
+   * run has platform gaps, and wait (bounded) for it to finish — Phase 1's
+   * `compile()` already re-reads `confirmedSocialProfiles()` fresh at the end
+   * of the run, so anything this newly confirms is picked up with no further
+   * merge code needed here.
+   */
+  private async stageSocialDiscovery(run: RunRow): Promise<void> {
+    if (!run.socialDiscovery) return;
+
+    const confirmed = await this.confirmedSocialProfiles(run.projectId);
+    const confirmedPlatforms = new Set(confirmed.map((c) => c.platform));
+    const missing = EXPECTED_PLATFORMS.filter((p) => !confirmedPlatforms.has(p));
+    if (missing.length === 0) {
+      await this.addNote(run.id, 'Social discovery: every expected platform already has a confirmed account — nothing to search for.');
+      return;
+    }
+
+    let discoveryRunId: string;
+    try {
+      const started = await this.presence.discover(run.projectId, true);
+      discoveryRunId = started.id;
+    } catch (err) {
+      this.logger.warn(`Social discovery: failed to start for run ${run.id}: ${(err as Error).message}`);
+      return;
+    }
+
+    // Bounded wait, not the SiteContextRun's own pause/resume mechanism —
+    // that budget is for THIS run's own work, not for a different module's
+    // async job. If discovery is still running when the cap is hit, this
+    // stage just moves on without it; whatever it confirms later is picked
+    // up by a future run's `compile()`, not retroactively by this one.
+    const maxWaitMs = 90_000;
+    const pollIntervalMs = 5_000;
+    const waitStarted = Date.now();
+    let finalStatus = 'crawling';
+    let serpQueries = 0;
+    let serpCostUsd = 0;
+    while (Date.now() - waitStarted < maxWaitMs) {
+      await this.sleep(pollIntervalMs);
+      const status = await this.presence.getRun(run.projectId, discoveryRunId).catch(() => null);
+      if (!status) break;
+      finalStatus = status.status;
+      serpQueries = status.serpQueries;
+      serpCostUsd = status.serpCostUsd;
+      if (status.status === 'completed' || status.status === 'failed') break;
+    }
+
+    await this.prisma.siteContextRun.update({
+      where: { id: run.id },
+      data: { searchesUsed: { increment: serpQueries }, searchCostUsd: { increment: serpCostUsd } },
+    });
+
+    await this.addNote(
+      run.id,
+      finalStatus === 'completed'
+        ? `Social discovery: ran for ${missing.length} missing platform(s), ${serpQueries} search(es), $${serpCostUsd.toFixed(4)} — see the project's presence inventory for candidates awaiting confirmation.`
+        : `Social discovery: did not finish within ${maxWaitMs}ms (last status "${finalStatus}") — it continues in the background; re-run site context later to pick up anything it confirms.`,
+    );
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // ─── Stage 7b: External enrichment (Phase 2, spec §17) ──────────────────
+
+  /** Bounded set of fields worth an external search when first-party extraction found none. */
+  private static readonly EXTERNAL_ENRICHMENT_FIELDS: FactField[] = ['headquarters', 'foundedYear', 'leadership', 'certification', 'award'];
+  private static readonly EXTERNAL_MAX_SEARCHES = 2;
+  private static readonly EXTERNAL_MAX_RESULTS_PER_SEARCH = 3;
+
+  /**
+   * Targeted external company enrichment (site-context-v2 Phase 2, spec §17)
+   * — opt-in (`run.externalEnrichment`), since it spends real DataForSEO
+   * search credits. Only searches for fields first-party extraction found
+   * nothing for; never re-searches a field already covered. Facts are kept
+   * as `source: 'external'` and, per the spec's own "keep external facts
+   * separate from first-party claims until consolidation" rule, are never
+   * trusted on the LLM's word alone: each one is only stored if its cited
+   * excerpt is found verbatim in the fetched external page's own text — the
+   * same discipline `stageValidate` applies to first-party facts, just
+   * applied here since these pages aren't in the run's own `pages` table.
+   */
+  private async stageExternalEnrichment(run: RunRow): Promise<void> {
+    if (!run.externalEnrichment || !run.refine || !this.llm.isAvailable()) return;
+
+    const haveField = new Set((await this.prisma.siteContextFact.findMany({ where: { runId: run.id, validated: true }, select: { field: true } })).map((f) => f.field));
+    const missing = AeoContextService.EXTERNAL_ENRICHMENT_FIELDS.filter((f) => !haveField.has(f));
+    if (missing.length === 0) return;
+
+    const project = await this.prisma.project.findUnique({ where: { id: run.projectId } });
+    const brand = project?.name || run.domain;
+    const queries = [`"${brand}" company headquarters founded`, `"${brand}" founder OR leadership OR "about us"`].slice(
+      0,
+      AeoContextService.EXTERNAL_MAX_SEARCHES,
+    );
+
+    await this.runBoundedSearchExtraction(run, {
+      label: 'External enrichment',
+      brand,
+      targetFields: missing,
+      queries,
+      maxResultsPerSearch: AeoContextService.EXTERNAL_MAX_RESULTS_PER_SEARCH,
+    });
+  }
+
+  /**
+   * Shared engine behind `stageExternalEnrichment` (spec §17) and
+   * `stageGapResearch` (spec §19) — both are "run N bounded searches, fetch
+   * what they return, extract only the target fields via one LLM call, keep
+   * only a fact whose excerpt is found verbatim in the page that supposedly
+   * supports it." What differs between the two callers is only which fields
+   * they're after and which queries they run to find them — spec §19's own
+   * constraint list ("exact fields to resolve... maximum searches... a
+   * stopping condition") is exactly this method's parameters.
+   */
+  private async runBoundedSearchExtraction(
+    run: RunRow,
+    opts: { label: string; brand: string; targetFields: FactField[]; queries: string[]; maxResultsPerSearch: number },
+  ): Promise<{ stored: number }> {
+    const { label, brand, targetFields, queries, maxResultsPerSearch } = opts;
+    let searchesUsed = 0;
+    let searchCostUsd = 0;
+    const fetchedByUrl = new Map<string, string>();
+    const corpusParts: string[] = [];
+
+    for (const query of queries) {
+      const lookup = await this.dataForSeoSerp.search(query);
+      searchesUsed++;
+      searchCostUsd += lookup.costUsd;
+      if (lookup.skipped) {
+        await this.addNote(run.id, `${label}: search skipped — ${lookup.skipped}`);
+        continue;
+      }
+      for (const link of lookup.links.slice(0, maxResultsPerSearch)) {
+        if (fetchedByUrl.has(link.url)) continue;
+        try {
+          const page = await this.fetcher.render({ url: link.url, jsDisabled: false, timeout: 20000 }, 'aeo-context-external', run.id);
+          const text = (page.text || '').replace(/\s+/g, ' ').trim().slice(0, MAX_BATCH_CHARS);
+          if (text) {
+            fetchedByUrl.set(link.url, text);
+            corpusParts.push(`\n\n--- ${link.url} ---\n${page.title ? page.title + '\n' : ''}${text}`);
+          }
+        } catch (err) {
+          this.logger.warn(`${label}: fetch failed for ${link.url}: ${(err as Error).message}`);
+        }
+      }
+    }
+
+    await this.prisma.siteContextRun.update({
+      where: { id: run.id },
+      data: { searchesUsed: { increment: searchesUsed }, searchCostUsd: { increment: searchCostUsd } },
+    });
+
+    if (corpusParts.length === 0) {
+      await this.addNote(run.id, `${label}: no fetchable external pages found.`);
+      return { stored: 0 };
+    }
+
+    try {
+      const result = await this.llm.json(
+        {
+          purpose: label.toLowerCase(),
+          maxTokens: 1200,
+          system:
+            `You read pages found via web search about a company — NOT its own site — and extract only facts about "${brand}" ` +
+            'itself, never about a different company the page also mentions in passing. Only extract these fields, and ' +
+            'only if clearly stated: ' + targetFields.join(', ') + '.\n' +
+            '- Every fact MUST cite the exact page URL it came from (sourcePage, must be one of the URLs given) and a ' +
+            'short verbatim excerpt (<=200 chars, copied text, not a paraphrase) that supports it.\n' +
+            '- Return [] for anything not clearly and directly stated — never infer or guess for an external source.\n' +
+            'Respond with ONLY JSON: {"facts":[{"field":string,"value":string,"sourcePage":string,"excerpt":string}]}',
+          user: `Pages found via web search, about "${brand}":` + corpusParts.join(''),
+        },
+        (raw) => this.validateExternalFacts(raw, [...fetchedByUrl.keys()], targetFields),
+      );
+
+      let stored = 0;
+      for (const f of result.data) {
+        const pageText = fetchedByUrl.get(f.sourceUrl);
+        const needle = this.normalizeText(f.excerpt || f.value);
+        const supported = !!pageText && needle.length > 0 && this.normalizeText(pageText).includes(needle);
+        if (!supported) continue; // no benefit of the doubt for an external source — verbatim or dropped
+        await this.prisma.siteContextFact.create({
+          data: {
+            runId: run.id,
+            field: f.field,
+            value: f.value,
+            sourceUrl: f.sourceUrl,
+            excerpt: f.excerpt,
+            factType: 'explicit',
+            confidence: 0.6, // capped below a first-party explicit fact's 0.7 default — single external source, not the subject's own site
+            validated: true,
+            source: 'external',
+          },
+        });
+        stored++;
+      }
+      await this.addNote(
+        run.id,
+        `${label}: ${stored} fact(s) added from ${fetchedByUrl.size} external page(s), ${searchesUsed} search(es), $${searchCostUsd.toFixed(4)}.`,
+      );
+      await this.addNote(run.id, `__cost__:${result.costUsd}:${result.model}`);
+      return { stored };
+    } catch (err) {
+      this.logger.warn(`${label}: extraction failed for run ${run.id}: ${(err as Error).message}`);
+      return { stored: 0 };
+    }
+  }
+
+  private validateExternalFacts(raw: unknown, allowedUrls: string[], allowedFields: FactField[]): DraftFact[] {
+    const obj = (raw ?? {}) as { facts?: unknown };
+    if (!Array.isArray(obj.facts)) return [];
+    const urlSet = new Set(allowedUrls);
+    const fieldSet = new Set(allowedFields);
+    const out: DraftFact[] = [];
+    for (const entry of obj.facts) {
+      if (!entry || typeof entry !== 'object') continue;
+      const e = entry as Record<string, unknown>;
+      const field = typeof e.field === 'string' ? (e.field as FactField) : null;
+      const sourceUrl = typeof e.sourcePage === 'string' ? e.sourcePage : '';
+      const value = typeof e.value === 'string' ? e.value.trim().slice(0, 300) : '';
+      if (!field || !fieldSet.has(field) || !urlSet.has(sourceUrl) || !value) continue;
+      out.push({
+        field,
+        value,
+        sourceUrl,
+        excerpt: typeof e.excerpt === 'string' ? e.excerpt.trim().slice(0, 200) : null,
+        contentHash: null,
+      });
+    }
+    return out.slice(0, 20);
+  }
+
+  // ─── Stage 7c: Gap research (Phase 2, spec §19) ─────────────────────────
+
+  private static readonly GAP_RESEARCH_MAX_FIELDS = 5;
+  private static readonly GAP_RESEARCH_MAX_SEARCHES = 2;
+  private static readonly GAP_RESEARCH_MAX_RESULTS_PER_SEARCH = 3;
+
+  /**
+   * Bounded research agent for gaps only (site-context-v2 Phase 2, spec §19)
+   * — opt-in (`run.gapResearch`), since it spends real DataForSEO search
+   * credits. Runs after consolidation so it has consolidation's own
+   * `missingFields` per category to work from — never a "find everything
+   * about the company" pass, exactly the fields consolidation itself flagged
+   * as unaddressed, capped at `GAP_RESEARCH_MAX_FIELDS`.
+   *
+   * Reuses the same bounded search→fetch→extract→verbatim-validate engine as
+   * `stageExternalEnrichment` (`runBoundedSearchExtraction`) — the two stages
+   * differ only in which fields they target and why. If any fact gets added,
+   * the category summaries are stale (they were built without it), so this
+   * stage clears and re-runs consolidation once more to reflect what gap
+   * research just filled in — the spec's own ordering (§18 consolidation →
+   * §19 gap research → §20 *final* synthesis) expects the synthesis a
+   * consumer sees to already account for whatever gap research found.
+   */
+  private async stageGapResearch(run: RunRow): Promise<void> {
+    if (!run.gapResearch || !run.refine || !this.llm.isAvailable()) return;
+
+    const summaries = await this.prisma.siteContextCategorySummary.findMany({ where: { runId: run.id } });
+    const gapFields = new Set<FactField>();
+    for (const s of summaries) {
+      try {
+        for (const f of JSON.parse(s.missingFields) as string[]) gapFields.add(f as FactField);
+      } catch {
+        // malformed JSON on a row this module itself wrote would be a bug elsewhere — skip, don't crash gap research over it
+      }
+    }
+    const targetFields = [...gapFields].slice(0, AeoContextService.GAP_RESEARCH_MAX_FIELDS);
+    if (targetFields.length === 0) {
+      await this.addNote(run.id, 'Gap research: no missing fields to research — consolidation found no gaps.');
+      return;
+    }
+
+    const project = await this.prisma.project.findUnique({ where: { id: run.projectId } });
+    const brand = project?.name || run.domain;
+    const queries = [`"${brand}" ${targetFields.slice(0, 3).join(' ')}`, `"${brand}" ${targetFields.slice(3).join(' ')}`]
+      .filter((q) => q.trim() !== `"${brand}"`)
+      .slice(0, AeoContextService.GAP_RESEARCH_MAX_SEARCHES);
+
+    const { stored } = await this.runBoundedSearchExtraction(run, {
+      label: 'Gap research',
+      brand,
+      targetFields,
+      queries,
+      maxResultsPerSearch: AeoContextService.GAP_RESEARCH_MAX_RESULTS_PER_SEARCH,
+    });
+
+    if (stored > 0) {
+      await this.prisma.siteContextCategorySummary.deleteMany({ where: { runId: run.id } });
+      await this.stageConsolidate(run);
+      await this.addNote(run.id, `Gap research: category summaries refreshed to include ${stored} newly filled field(s).`);
+    }
+  }
+
+  // ─── Stage 8: Verify (Phase 2, spec §21) ────────────────────────────────
+
+  /**
+   * Independent verification pass (site-context-v2 Phase 2, spec §21) — a
+   * second, separate LLM call over what `stageConsolidate` already produced,
+   * checking the synthesized category summaries against the evidence facts
+   * they were built from rather than re-checking raw per-page extraction
+   * (that's `stageValidate`'s job, one stage earlier, and it already does a
+   * *deterministic* verbatim-excerpt check — stronger than an LLM self-check
+   * for what it covers, so this stage exists to catch what a excerpt-match
+   * can't: a claim that's technically quoted correctly but describes a
+   * customer/partner rather than the subject, mixes current and historical
+   * facts, or was embellished during consolidation's own merge/summarize
+   * pass).
+   *
+   * Per the spec's own allowance ("if only one model is available, use a
+   * separate call with a verifier-specific instruction and treat it as a
+   * secondary review rather than fully independent verification") this runs
+   * as a second OpenRouter call, not a second vendor — same gate as
+   * `stageConsolidate` (`run.refine` + `this.llm.isAvailable()`), and a
+   * no-op when either is false. Unsupported claims are dropped from the
+   * category's `facts` list and its `confidence` is penalized; nothing here
+   * ever adds a claim, only removes or downgrades one.
+   */
+  private async stageVerify(run: RunRow): Promise<void> {
+    const summaries = await this.prisma.siteContextCategorySummary.findMany({ where: { runId: run.id } });
+    const nonEmpty = summaries.filter((s) => {
+      try {
+        return (JSON.parse(s.facts) as unknown[]).length > 0;
+      } catch {
+        return false;
+      }
+    });
+    if (nonEmpty.length === 0 || !run.refine || !this.llm.isAvailable()) return;
+
+    const validFacts = await this.prisma.siteContextFact.findMany({ where: { runId: run.id, validated: true } });
+    const evidenceByCategory = new Map<string, typeof validFacts>();
+    for (const [category, fields] of Object.entries(CATEGORY_FIELDS)) {
+      evidenceByCategory.set(category, validFacts.filter((f) => fields.includes(f.field as FactField)));
+    }
+
+    const payload = nonEmpty.map((s) => ({
+      category: s.category,
+      claims: JSON.parse(s.facts) as string[],
+      summary: s.summary,
+      evidence: (evidenceByCategory.get(s.category) ?? []).map((f) => ({ field: f.field, value: f.value, excerpt: f.excerpt, factType: f.factType })),
+    }));
+
+    try {
+      const result = await this.llm.json(
+        {
+          purpose: 'independent claim verification',
+          maxTokens: 2000,
+          system:
+            'You are an independent verifier reviewing another pass\'s output, not the original extractor — read ' +
+            'skeptically. For each category, you get its synthesized `claims`/`summary` and the raw `evidence` facts ' +
+            '(with excerpts) they were supposedly built from. Check every claim against the evidence and flag:\n' +
+            '- A claim with no evidence fact that actually supports it (fabricated or over-generalized during synthesis).\n' +
+            '- A claim that is really about a customer, partner, or competitor named in the evidence, not the subject company.\n' +
+            '- A claim that blends a current fact with a historical one, or a first-party claim with a third-party one, ' +
+            'as if they were the same statement.\n' +
+            'Never add a new claim. Return only claims/summaries you keep — omit ones you drop. confidencePenalty is 0 ' +
+            'when nothing is wrong, up to 1 when the summary is mostly unsupported.\n' +
+            'Respond with ONLY JSON: {"categories":[{"category":string,"claims":string[],"summary":string|null,' +
+            '"issues":string[],"confidencePenalty":number}]}',
+          user: 'Categories to verify:\n' + JSON.stringify(payload),
+        },
+        (raw) => this.validateVerification(raw),
+      );
+
+      for (const c of result.data) {
+        const original = summaries.find((s) => s.category === c.category);
+        if (!original) continue;
+        const issueNotes = c.issues.map((i) => `Verification: ${i}`);
+        const existingConflicts = (() => {
+          try {
+            return JSON.parse(original.conflicts) as string[];
+          } catch {
+            return [];
+          }
+        })();
+        await this.prisma.siteContextCategorySummary.update({
+          where: { id: original.id },
+          data: {
+            facts: JSON.stringify(c.claims),
+            summary: c.summary ?? original.summary,
+            confidence: Math.max(0, original.confidence - c.confidencePenalty),
+            conflicts: JSON.stringify([...existingConflicts, ...issueNotes]),
+          },
+        });
+      }
+      await this.addNote(run.id, `__cost__:${result.costUsd}:${result.model}`);
+    } catch (err) {
+      this.logger.warn(`Independent verification failed for run ${run.id}: ${(err as Error).message} — category summaries kept as consolidated, unverified.`);
+    }
+  }
+
+  private validateVerification(raw: unknown): Array<{
+    category: string; claims: string[]; summary: string | null; issues: string[]; confidencePenalty: number;
+  }> {
+    const obj = (raw ?? {}) as { categories?: unknown };
+    if (!Array.isArray(obj.categories)) return [];
+    const validCategories = new Set(Object.keys(CATEGORY_FIELDS));
+    const strArr = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').map((s) => s.trim().slice(0, 300)).filter(Boolean).slice(0, 30) : [];
+    const out: Array<{ category: string; claims: string[]; summary: string | null; issues: string[]; confidencePenalty: number }> = [];
+    for (const entry of obj.categories) {
+      if (!entry || typeof entry !== 'object') continue;
+      const e = entry as Record<string, unknown>;
+      const category = typeof e.category === 'string' ? e.category : '';
+      if (!validCategories.has(category)) continue;
+      const penaltyRaw = typeof e.confidencePenalty === 'number' ? e.confidencePenalty : 0;
+      out.push({
+        category,
+        claims: strArr(e.claims),
+        summary: typeof e.summary === 'string' ? e.summary.trim().slice(0, 500) : null,
+        issues: strArr(e.issues),
+        confidencePenalty: Number.isFinite(penaltyRaw) ? Math.max(0, Math.min(1, penaltyRaw)) : 0,
       });
     }
     return out;

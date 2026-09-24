@@ -34,7 +34,7 @@ import * as React from 'react';
 import { Document, Page, Text, View, StyleSheet, Font, renderToStream } from '@react-pdf/renderer';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ReportDocument, ReportSectionRef, ReportView, MetricView, Tone } from './report-document';
+import type { ReportDocument, ReportSectionRef, ReportView, MetricView, Tone, AeoDimensionView } from './report-document';
 
 /** `React.createElement`, under a name short enough to read a tree through. */
 const h = React.createElement;
@@ -51,16 +51,16 @@ export interface ReportPdfArtifact {
 // ─── Palette (mirrors templates/report-html.hbs) ────────────────
 
 const color = {
-  ink: '#1a1712',
-  ink60: '#5c5648',
-  line: '#ddd5c4',
-  paper: '#fbf9f3',
-  accent: '#a85c30',
-  accentDeep: '#8a4a26',
+  ink: '#14120D',
+  ink60: 'rgba(20,18,13,0.62)',
+  line: 'rgba(20,18,13,0.15)',
+  paper: '#F7F3EA',
+  accent: '#B8703F',
+  accentDeep: '#96592F',
   good: '#5f6a42',
-  warn: '#b79a6b',
-  bad: '#c0392b',
-  code: '#201c15',
+  warn: '#96592F',
+  bad: '#7A2E1F',
+  code: '#14120D',
 } as const;
 
 /** The same four rubric bands the HTML page colours. */
@@ -237,6 +237,24 @@ const s = StyleSheet.create({
     marginBottom: 3,
   },
   pillBad: { borderColor: color.bad },
+  pillVerified: { backgroundColor: color.ink, borderColor: color.ink },
+  pillVerifiedText: { color: color.paper },
+
+  dimRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 5 },
+  dimLabel: { width: 110, fontSize: 8.5, lineHeight: 1.3 },
+  dimTrack: { flex: 1, height: 5, backgroundColor: color.line, borderRadius: 2.5, marginHorizontal: 6 },
+  dimFill: { height: 5, backgroundColor: color.accent, borderRadius: 2.5 },
+  dimPct: { width: 32, fontSize: 8.5, lineHeight: 1.3, textAlign: 'right' },
+
+  quote: {
+    backgroundColor: color.paper,
+    borderLeftWidth: 2,
+    borderLeftColor: color.accent,
+    padding: 8,
+    marginBottom: 6,
+  },
+  quoteText: { fontSize: 9, lineHeight: 1.4, fontStyle: 'italic' },
+  quoteSrc: { fontSize: 7.5, lineHeight: 1.4, color: color.ink60, marginTop: 3 },
   pillText: { fontSize: 8, lineHeight: 1.35 },
 
   code: {
@@ -435,6 +453,8 @@ function sectionBody(doc: ReportDocument, ref: ReportSectionRef): React.ReactEle
       return roadmapSection(doc);
     case 'presence':
       return presenceSection(doc);
+    case 'aeoVisibility':
+      return aeoVisibilitySection(doc);
     case 'competitors':
       return competitorsSection(doc);
     case 'growthPlan':
@@ -602,6 +622,78 @@ function presenceSection(doc: ReportDocument): React.ReactElement {
             ),
           ),
         ),
+  );
+}
+
+// ─── AEO Visibility ─────────────────────────────────────────────
+
+function aeoVisibilitySection(doc: ReportDocument): React.ReactElement {
+  const aeo = doc.aeoVisibility;
+  const d = doc.decisions;
+  if (!aeo) return h(Text, { style: s.note }, d.aeoVisibility.note ?? '');
+
+  return h(
+    View,
+    null,
+    tilesElement([
+      { label: 'Questions measured', value: String(aeo.questionsMeasured), unit: null, measured: true },
+      { label: 'Answers observed', value: String(aeo.totalAnswers), unit: null, measured: true },
+      { label: 'Unbranded mention rate', value: `${aeo.unbrandedMentionRatePercent}%`, unit: 'the honest visibility test', measured: true },
+      { label: 'Branded mention rate', value: `${aeo.brandedMentionRatePercent}%`, unit: 'trivially high — the name was already given', measured: true },
+    ]),
+    aeo.byDimension.length > 0
+      ? h(
+          View,
+          { style: { marginTop: 4, marginBottom: 8 } },
+          h(Text, { style: s.h3 }, 'By question type'),
+          ...aeo.byDimension.map((dim: AeoDimensionView, i: number) => dimensionRow(dim, i)),
+        )
+      : null,
+    h(Text, { style: s.h3 }, 'Where it loses'),
+    !d.aeoVisibilityLosing.present
+      ? h(Text, { style: s.note }, d.aeoVisibilityLosing.note ?? '')
+      : aeo.losingExample
+        ? h(
+            View,
+            { wrap: false },
+            h(Text, { style: s.body }, `The exact question a buyer would type — "${aeo.losingExample.prompt}" — named a competitor instead of the client.`),
+            h(
+              View,
+              { style: s.quote },
+              h(Text, { style: s.quoteText }, aeo.losingExample.evidenceQuote ?? '(no quote recorded)'),
+              h(Text, { style: s.quoteSrc }, `Lost to: ${aeo.losingExample.losesTo.join(', ')}`),
+            ),
+          )
+        : null,
+    aeo.competitors.length > 0
+      ? h(
+          View,
+          { style: { marginTop: 4 } },
+          h(Text, { style: s.body }, 'Competitors a judged answer placed ahead of the client:'),
+          h(
+            View,
+            { style: { flexDirection: 'row', flexWrap: 'wrap' } },
+            ...aeo.competitors.map((c, i) =>
+              h(
+                View,
+                { key: `aeoc${i}`, style: [s.pill, s.pillVerified] },
+                h(Text, { style: [s.pillText, s.pillVerifiedText] }, c.name),
+              ),
+            ),
+          ),
+        )
+      : null,
+    h(Text, { style: s.note }, aeo.provenanceNote),
+  );
+}
+
+function dimensionRow(dim: AeoDimensionView, i: number): React.ReactElement {
+  return h(
+    View,
+    { key: `dim${i}`, style: s.dimRow },
+    h(Text, { style: s.dimLabel }, dim.label),
+    h(View, { style: s.dimTrack }, h(View, { style: [s.dimFill, { width: `${dim.mentionRatePercent}%` }] })),
+    h(Text, { style: s.dimPct }, `${dim.mentionRatePercent}%`),
   );
 }
 

@@ -34,6 +34,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { PresenceService } from '../digital-presence/presence.service';
 import type { PresenceGroup } from '../digital-presence/presence.types';
+import { PLATFORM_LABELS } from '../digital-presence/presence.types';
 import { KeywordResearchService } from '../keyword-research/keyword-research.service';
 import {
   computeQuadrant,
@@ -305,6 +306,7 @@ export class GapAnalysisService {
     await run('page-inventory', () => this.syncPageInventory(analysis.id, projectId, validSourceIds, bump));
     await run('entity-audit', () => this.syncEntityAudit(analysis.id, projectId, validSourceIds, bump));
     await run('digital-presence', () => this.syncDigitalPresence(analysis.id, projectId, validSourceIds, bump));
+    await run('social-activity', () => this.syncSocialActivity(analysis.id, projectId, validSourceIds, bump));
     await run('tech-stack', () => this.syncTechStack(analysis.id, projectId, validSourceIds, bump));
     await run('competitors', () => this.syncCompetitors(analysis.id, projectId, validSourceIds, bump));
     await run('serp-intelligence', () => this.syncSerpIntelligence(analysis.id, projectId, validSourceIds, bump));
@@ -692,6 +694,83 @@ export class GapAnalysisService {
             effort: null,
             title: `Strong rating on ${review.platform} (${review.rating}/5, ${review.reviewCount} reviews)`,
             description: `A ${review.rating}/5 rating from ${review.reviewCount} reviews is a real, checkable trust signal.`,
+            severity: 'low',
+          }),
+        );
+      }
+    }
+  }
+
+  /**
+   * Posting cadence per confirmed social account, from `PresencePost` rows
+   * (`presence/social-activity`'s Apify pull) — a real signal this pipeline
+   * already collected but never read anywhere downstream until now. Only
+   * scoped accounts that have actually been scraped at least once (a post
+   * row on file); an account nobody has pulled yet says nothing about its
+   * cadence, so it is silently skipped rather than treated as "inactive."
+   */
+  private async syncSocialActivity(
+    analysisId: string,
+    projectId: string,
+    validSourceIds: Set<string>,
+    bump: (r: { created: boolean }) => void,
+  ): Promise<void> {
+    const accounts = await this.prisma.presenceAccount.findMany({
+      where: { projectId, state: 'confirmed', entity: { not: 'personal' } },
+    });
+    if (accounts.length === 0) return;
+
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    for (const account of accounts) {
+      const posts = await this.prisma.presencePost.findMany({
+        where: { accountId: account.id, kind: 'post' },
+        orderBy: { postedAt: 'desc' },
+      });
+      if (posts.length === 0) continue; // never scraped — silence, not a claim of inactivity
+
+      const lastPostAt = posts.find((p) => p.postedAt)?.postedAt ?? null;
+      const postsLast30d = posts.filter((p) => p.postedAt && now - p.postedAt.getTime() <= THIRTY_DAYS_MS).length;
+      const label = PLATFORM_LABELS[account.platform as keyof typeof PLATFORM_LABELS] ?? account.platform;
+      const sourceId = `${projectId}:${account.platform}`;
+
+      if (postsLast30d === 0) {
+        const daysSince = lastPostAt ? Math.floor((now - lastPostAt.getTime()) / (24 * 60 * 60 * 1000)) : null;
+        const severity = daysSince === null || daysSince > 90 ? 'high' : daysSince > 30 ? 'medium' : 'low';
+        validSourceIds.add(`social-cadence:${sourceId}`);
+        bump(
+          await this.upsertGap(analysisId, {
+            sourceType: 'social-cadence',
+            sourceId,
+            dimension: 'web-mentions',
+            action: 'build',
+            category: 'issue',
+            recommendationCategory: 'social-strategy',
+            impact: severity === 'high' ? 4 : severity === 'medium' ? 3 : 2,
+            effort: 2,
+            title:
+              daysSince === null
+                ? `No posts found on ${label} in the scraped window`
+                : `No posts on ${label} in the last 30 days (last post ${daysSince} day(s) ago)`,
+            description: `Confirmed account, actively scraped (${posts.length} post(s) on file), but nothing in the last 30 days — a visitor or an AI answer engine reading this profile sees a dormant account.`,
+            severity,
+          }),
+        );
+      } else {
+        validSourceIds.add(`social-cadence-strength:${sourceId}`);
+        bump(
+          await this.upsertGap(analysisId, {
+            sourceType: 'social-cadence-strength',
+            sourceId,
+            dimension: 'web-mentions',
+            action: 'build',
+            category: 'strength',
+            recommendationCategory: null,
+            impact: null,
+            effort: null,
+            title: `Active posting cadence on ${label}: ${postsLast30d} post(s) in the last 30 days`,
+            description: `Confirmed account with recent activity — a visible, current presence rather than an abandoned profile.`,
             severity: 'low',
           }),
         );

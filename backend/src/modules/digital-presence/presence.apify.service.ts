@@ -74,10 +74,20 @@ export const DEFAULT_APIFY_PLATFORMS: readonly ApifyPlatform[] = ['linkedin', 'i
 
 type ActorRole = 'profile' | 'posts';
 
-/** platform:role -> actorId. From D7's actor table, chosen on reliability then price. */
+/**
+ * platform:role -> actorId. From D7's actor table, chosen on reliability then
+ * price.
+ *
+ * `linkedin:posts` was `harvestapi/linkedin-profile-posts` — that actor's own
+ * name and input field (`profileUrls`) are for a PERSON's profile, not a
+ * company page; pointed at faydo.in's company page it silently returned zero
+ * posts (no error — it just had nothing to scrape). Swapped to the sibling
+ * actor built for this: `harvestapi/linkedin-company-posts`, same vendor,
+ * same reliability bar, $2/1k posts.
+ */
 const DEFAULT_ACTORS: Record<string, string> = {
   'linkedin:profile': 'harvestapi/linkedin-company',
-  'linkedin:posts': 'harvestapi/linkedin-profile-posts',
+  'linkedin:posts': 'harvestapi/linkedin-company-posts',
   'instagram:profile': 'apify/instagram-profile-scraper',
   'instagram:posts': 'apify/instagram-post-scraper',
   'facebook:profile': 'apify/facebook-pages-scraper',
@@ -93,7 +103,7 @@ const DEFAULT_ACTORS: Record<string, string> = {
  *  when a run's own `usageTotalUsd` is unavailable — never as the billed figure. */
 const ACTOR_UNIT_COST_USD: Record<string, number> = {
   'harvestapi/linkedin-company': 0.004,
-  'harvestapi/linkedin-profile-posts': 0.002,
+  'harvestapi/linkedin-company-posts': 0.002, // $2/1k posts, per the actor's own pricing page
   'apify/instagram-profile-scraper': 0.0026,
   'apify/instagram-post-scraper': 0.0017,
   'apify/facebook-pages-scraper': 0.012,
@@ -325,7 +335,9 @@ function buildInput(
     case 'linkedin':
       return role === 'profile'
         ? { companies: [url ?? handle] }
-        : { profileUrls: [url ?? handle], postsLimit: postsPerPlatform };
+        // harvestapi/linkedin-company-posts's own input schema: `targetUrls`
+        // (accepts a company page URL directly) + `maxPosts`.
+        : { targetUrls: [url ?? handle], maxPosts: postsPerPlatform };
     case 'instagram':
       return role === 'profile' ? { usernames: [handle ?? url] } : { username: [handle ?? url], resultsLimit: postsPerPlatform };
     case 'facebook':
@@ -333,7 +345,12 @@ function buildInput(
         ? { startUrls: [{ url }] }
         : { startUrls: [{ url }], resultsLimit: postsPerPlatform };
     case 'twitter':
-      return { handles: [handle], maxItems: postsPerPlatform };
+      // xquik/x-tweet-scraper's own input schema: `twitterHandles`, not
+      // `handles` — the wrong field name here previously meant the actor ran
+      // with no real target and silently returned zero tweets (no error).
+      // `within_time` scopes to recent activity rather than the full archive
+      // — social-activity auditing cares about current cadence, not history.
+      return { twitterHandles: [handle], maxItems: postsPerPlatform, within_time: '30d' };
     case 'youtube':
       return { startUrls: [{ url }] };
     case 'tiktok':
@@ -399,6 +416,12 @@ function pickDate(item: Record<string, unknown>, keys: string[]): string | null 
       const ms = v > 1e12 ? v : v * 1000;
       const d = new Date(ms);
       if (!Number.isNaN(d.getTime())) return d.toISOString();
+    }
+    // Some actors (e.g. harvestapi/linkedin-company-posts) nest the date
+    // as { timestamp, date, postedAgoText } instead of a plain scalar.
+    if (v && typeof v === 'object') {
+      const nested = pickDate(v as Record<string, unknown>, ['date', 'timestamp']);
+      if (nested) return nested;
     }
   }
   return null;

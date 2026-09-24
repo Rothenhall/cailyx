@@ -130,15 +130,19 @@ export class PresenceController {
 
   @Post('accounts/:accountId/confirm')
   @ApiOperation({
-    summary: 'Confirm a search candidate',
+    summary: 'Confirm a search candidate, or an unverified page-linked account blocked by a login wall',
     description:
-      "Accepts a SERP-suggested profile as a real account. Search cannot tell the client's account " +
-      "from a similarly named stranger's — a live `site:instagram.com \"HubSpot\"` returns three real " +
-      'HubSpot accounts and one unrelated podcast — so this human yes/no is the only thing that ' +
-      'promotes a candidate. Confirmed rows become operator-supplied and survive re-runs.',
+      "Two different rows, same button. (1) Accepts a SERP-suggested profile as a real account — search " +
+      "cannot tell the client's account from a similarly named stranger's (a live `site:instagram.com " +
+      '"HubSpot"` returns three real HubSpot accounts and one unrelated podcast), so this human yes/no is ' +
+      'the only thing that promotes a `candidate`. (2) Also accepts an `unverified` row whose source is ' +
+      "page-link/json-ld-sameas/manual — genuinely linked from the client's own site, just stuck at " +
+      'unverified because the platform (LinkedIn/Instagram/X/Facebook routinely do this) blocks automated ' +
+      "checks. That path never re-runs the check that already failed — it records the operator's override " +
+      'honestly as one. Either way, confirmed rows become operator-supplied and survive re-runs.',
   })
-  @ApiResponse({ status: 201, description: 'Candidate promoted to an account' })
-  @ApiResponse({ status: 400, description: 'Row is not a candidate' })
+  @ApiResponse({ status: 201, description: 'Row promoted/confirmed to a confirmed account' })
+  @ApiResponse({ status: 400, description: 'Row is neither a candidate nor an unverified page-linked/manual account' })
   @ApiResponse({ status: 404, description: 'Account not found' })
   async confirmCandidate(
     @Param('projectId') projectId: string,

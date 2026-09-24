@@ -141,6 +141,52 @@ export class CreateClientProjectDto {
   runBacklinksRefresh?: boolean;
 }
 
+/** Re-run the Day-1 pipeline for a project that already exists — same stages `CreateClientProjectDto` triggers on creation. */
+export class RerunDayOneDto {
+  @ApiPropertyOptional({
+    description: 'Opt-in: also run a full AEO (answer-engine) audit as part of the pipeline. Costs real Cloro/LLM credits per run — off by default.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  runAeoAudit?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Opt-in: also pull keyword research seeded from the enrichment category. Costs DataForSEO credits — off by default.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  runKeywordResearch?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Opt-in: also generate growth-execution asset briefs from the Strategy stage output. Off by default.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  runGrowthExecution?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Opt-in: also pull a fresh backlinks profile from DataForSEO. Costs DataForSEO credits — off by default.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  runBacklinksRefresh?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'After the pipeline finishes (only meaningful together with runAeoAudit — the resolve step needs a ' +
+      'completed audit to rank against), resolve the AEO-ranked competitor names into real, profiled Competitor ' +
+      'rows (same as POST .../competitors/ranking/resolve). Costs one DataForSEO search per unresolved name.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  resolveCompetitors?: boolean;
+}
+
 export class CreateClientLoginDto {
   @ApiProperty()
   @IsEmail()

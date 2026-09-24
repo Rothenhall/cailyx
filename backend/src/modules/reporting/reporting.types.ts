@@ -11,6 +11,7 @@
 import type { BacklinksSummaryDto } from '../backlinks/backlinks.types';
 import type { PresenceInventory } from '../digital-presence/presence.types';
 import type { GapResult } from '../competitors/competitors.service';
+import type { AeoVerdict } from '../aeo-audit/aeo-audit.types';
 
 // ─── PRD §8 Score rubric ───────────────────────────────────────
 
@@ -63,6 +64,8 @@ export interface ReportData {
   presence: PresenceInventory | null;
   /** Competitor landscape (2026-09-14): tech/schema/presence diffs plus each tracked rival's SEO score and content signals. Null when the project has no tracked competitors yet. Read-only, same discipline as backlinks/growthPlan. */
   competitors: GapResult | null;
+  /** AEO visibility: the project's latest completed answer-engine audit (mention/citation rates, the judged losing-prompt example, competitors named ahead of the client). Null when no AEO audit has completed yet. Read-only, same discipline as backlinks/growthPlan — report generation never triggers a fresh audit. */
+  aeoVisibility: AeoVerdict | null;
   createdAt: string;
 
   // ─── G05 — editorial lifecycle ────────────────────────────────
@@ -393,6 +396,7 @@ export interface ReportRevisionSnapshot {
   backlinks: BacklinksSummaryDto | null;
   presence: PresenceInventory | null;
   competitors: GapResult | null;
+  aeoVisibility: AeoVerdict | null;
   branding: BrandingConfig | null;
   /**
    * §6.2 item 5 / D11 — the rubric and the exact ScoreRun the frozen score

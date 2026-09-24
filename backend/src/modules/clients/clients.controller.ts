@@ -15,6 +15,7 @@ import {
   CreateClientDto,
   UpdateClientDto,
   CreateClientProjectDto,
+  RerunDayOneDto,
   CreateClientLoginDto,
   PostClientMessageDto,
   WaiveOnboardingWizardDto,
@@ -133,6 +134,29 @@ export class ClientsController {
   @ApiResponse({ status: 409, description: 'A project for this domain already exists' })
   async createProject(@Param('clientId') clientId: string, @Body() body: CreateClientProjectDto) {
     return this.clients.createProject(clientId, body);
+  }
+
+  @Post(':clientId/projects/:projectId/day-1/rerun')
+  @Roles('delivery-lead')
+  @Throttle({ default: { ttl: 60000, limit: 5 } })
+  @ApiOperation({
+    summary: 'Re-run the Day-1 pipeline for a project that already exists',
+    description:
+      'The same stage sequence "Add project" runs on creation — enrichment, entity-audit, technical-audit, ' +
+      'digital-presence, tech-stack, competitors, gap-analysis, strategy, findings, report, plus whatever opt-in ' +
+      'stages are requested — for a project that is already there, instead of an operator (or an agent) calling ' +
+      'each of those stages by hand. Additive, not destructive: does not clear prior audits/reports first. Runs ' +
+      'in the background — returns immediately with onboardingStatus "running"; poll GET /clients/:clientId for progress.',
+  })
+  @ApiBody({ type: RerunDayOneDto, required: false })
+  @ApiResponse({ status: 201, description: 'The project (onboardingStatus: "running")' })
+  @ApiResponse({ status: 404, description: 'Client or project not found' })
+  async rerunDayOne(
+    @Param('clientId') clientId: string,
+    @Param('projectId') projectId: string,
+    @Body() body: RerunDayOneDto = {},
+  ) {
+    return this.clients.rerunDayOnePipeline(clientId, projectId, body);
   }
 
   @Get(':clientId/projects/:projectId/onboarding-wizard')

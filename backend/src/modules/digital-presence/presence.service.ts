@@ -424,14 +424,52 @@ export class PresenceService {
    *
    * @throws NotFoundException when the row is not a candidate of this project.
    */
+  /**
+   * A `candidate` row (SERP search guess) and an `unverified` row with strong
+   * first-party evidence (`page-link`/`json-ld-sameas`/`manual` — genuinely
+   * linked from the client's own site, not a search-engine's best guess) are
+   * different problems wearing the same status. The first needs a human to
+   * pick the real account out of same-named strangers; the second usually
+   * already IS the real account — it's stuck at `unverified` only because the
+   * platform's login wall blocks automated confirmation (LinkedIn/Instagram/
+   * X/Facebook all do this routinely), not because of any actual identity
+   * doubt. Re-running the same automated check that already failed would just
+   * reproduce `unverified` forever, so this path skips it and records the
+   * override as what it is — an operator's judgment call, not a
+   * verification — rather than dressing it up as a check that passed.
+   */
+  private isManuallyConfirmableUnverified(row: { state: string; source: string }): boolean {
+    return row.state === 'unverified' && (['page-link', 'json-ld-sameas', 'manual'] as PresenceSource[]).includes(row.source as PresenceSource);
+  }
+
   async confirmCandidate(projectId: string, accountId: string): Promise<PresenceAccountDto> {
     const row = await this.prisma.presenceAccount.findUnique({ where: { id: accountId } });
     if (!row || row.projectId !== projectId) throw new NotFoundException('Account not found');
-    if (row.state !== 'candidate') {
-      throw new BadRequestException('Only a search candidate can be confirmed; this row is already an account.');
-    }
 
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
+
+    if (this.isManuallyConfirmableUnverified(row)) {
+      // Strong first-party evidence, blocked only by a platform login wall —
+      // an operator's override, recorded honestly as one (never re-verified,
+      // since that would just reproduce the same platform block).
+      const updated = await this.prisma.presenceAccount.update({
+        where: { id: accountId },
+        data: {
+          source: 'manual',
+          state: 'confirmed',
+          reason: `Operator-confirmed: linked from the client's own site, but ${row.reason ?? 'the platform blocks automated verification'}.`,
+          verifiedAt: new Date(),
+        },
+      });
+      return this.toAccountDto(updated, project?.clientName ?? project?.name ?? null);
+    }
+
+    if (row.state !== 'candidate') {
+      throw new BadRequestException(
+        'Only a search candidate, or an unverified page-linked/manual account, can be confirmed this way; this row is already an account.',
+      );
+    }
+
     const hit = this.discovery.classifyOne(row.url);
     const verified = hit
       ? await this.discovery.verify(

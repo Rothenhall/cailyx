@@ -46,6 +46,7 @@ import type {
 import type { BacklinksSummaryDto } from '../backlinks/backlinks.types';
 import type { PresenceInventory } from '../digital-presence/presence.types';
 import type { GapResult } from '../competitors/competitors.service';
+import type { AeoVerdict } from '../aeo-audit/aeo-audit.types';
 
 // ─── Views and sections ─────────────────────────────────────────
 
@@ -78,6 +79,7 @@ export type ReportSectionId =
   | 'findings'
   | 'roadmap'
   | 'presence'
+  | 'aeoVisibility'
   | 'competitors'
   | 'growthPlan'
   | 'backlinks';
@@ -104,6 +106,8 @@ export interface ReportDecisions {
   presence: ReportDecision;
   presenceAccounts: ReportDecision;
   presenceGaps: ReportDecision;
+  aeoVisibility: ReportDecision;
+  aeoVisibilityLosing: ReportDecision;
   competitors: ReportDecision;
   competitorsTable: ReportDecision;
   competitorsOnly: ReportDecision;
@@ -260,6 +264,45 @@ export interface CompetitorsView {
   provenanceNote: string;
 }
 
+/** One dimension's mention rate — "Service discovery: 0% of 30 answers". */
+export interface AeoDimensionView {
+  label: string;
+  mentionRatePercent: number;
+  observations: number;
+}
+
+/**
+ * The single clearest piece of evidence a report can carry for this section:
+ * the exact question a buyer would type, where the client was named zero
+ * times and a named rival was recommended instead, with the judge's verbatim
+ * quote. `null` when the audit's stance pass ran but found no such prompt —
+ * a real, good outcome, not a missing one.
+ */
+export interface AeoLosingExampleView {
+  prompt: string;
+  losesTo: string[];
+  evidenceQuote: string | null;
+}
+
+export interface AeoCompetitorView {
+  name: string;
+  /** True when this name was placed above the client in a judged answer (see {@link AeoLosingExampleView}) — the one AEO signal this document treats as confirmed rather than merely mentioned. */
+  verified: boolean;
+}
+
+export interface AeoVisibilityView {
+  surfaceLabel: string;
+  questionsMeasured: number;
+  totalAnswers: number;
+  unbrandedMentionRatePercent: number;
+  brandedMentionRatePercent: number;
+  byDimension: AeoDimensionView[];
+  losingExample: AeoLosingExampleView | null;
+  competitors: AeoCompetitorView[];
+  /** §6.4 — scope/date of the measurement, so a reader knows what is being compared. */
+  provenanceNote: string;
+}
+
 export interface GrowthActionRowView {
   priorityRank: number;
   category: string;
@@ -387,6 +430,7 @@ export interface ReportDocument {
   findings: FindingView[];
   roadmap: RoadmapItemView[];
   presence: PresenceView | null;
+  aeoVisibility: AeoVisibilityView | null;
   competitors: CompetitorsView | null;
   growthPlan: GrowthPlanView | null;
   backlinks: BacklinksView | null;
@@ -409,6 +453,9 @@ const ABSENT = {
   presence: 'No digital-presence discovery run yet for this project.',
   presenceAccounts: 'No accounts discovered yet.',
   presenceGaps: 'No expected platform is missing from a completed discovery run.',
+  aeoVisibility: 'No AEO audit has completed for this project yet — run an answer-engine audit first.',
+  aeoVisibilityLosing:
+    'No prompt in this audit placed a named competitor above the client — either none did, or the stance pass has not run.',
   competitors:
     'No competitor data yet — add competitors to this project and run discovery first.',
   competitorsTable: 'No tracked competitors profiled yet.',
@@ -489,6 +536,7 @@ export function buildReportDocument(
     findings: (data.findings ?? []).map(toFindingView),
     roadmap: (data.roadmap ?? []).map(toRoadmapView),
     presence: data.presence ? toPresenceView(data.presence) : null,
+    aeoVisibility: data.aeoVisibility ? toAeoVisibilityView(data.aeoVisibility) : null,
     competitors: data.competitors ? toCompetitorsView(data.competitors) : null,
     growthPlan: data.growthPlan ? toGrowthPlanView(data.growthPlan) : null,
     backlinks: data.backlinks ? toBacklinksView(data.backlinks) : null,
@@ -512,7 +560,7 @@ function resolveNoindex(data: ReportData, forced?: boolean): boolean {
 /** The reading order of each view (§6.1). The only place a view names a section. */
 const SECTIONS_BY_VIEW: Record<ReportView, ReportSectionId[]> = {
   executive: ['scoreBreakdown'],
-  detailed: ['scoreBreakdown', 'findings', 'roadmap', 'presence', 'competitors', 'growthPlan', 'backlinks'],
+  detailed: ['scoreBreakdown', 'findings', 'roadmap', 'presence', 'aeoVisibility', 'competitors', 'growthPlan', 'backlinks'],
 };
 
 const SECTION_TITLES: Record<ReportSectionId, string> = {
@@ -520,6 +568,7 @@ const SECTION_TITLES: Record<ReportSectionId, string> = {
   findings: 'Findings',
   roadmap: 'Roadmap',
   presence: 'Social & Directory Presence',
+  aeoVisibility: 'AI Visibility (AEO)',
   competitors: 'Competitor Landscape',
   growthPlan: 'Prioritized Growth Roadmap',
   backlinks: 'Backlinks',
@@ -538,6 +587,7 @@ function buildDecisions(data: ReportData, detailed: boolean): ReportDecisions {
   const findings = data.findings ?? [];
   const roadmap = data.roadmap ?? [];
   const presence = data.presence;
+  const aeoVisibility = data.aeoVisibility;
   const competitors = data.competitors;
   const growthPlan = data.growthPlan;
   const backlinks = data.backlinks;
@@ -583,6 +633,17 @@ function buildDecisions(data: ReportData, detailed: boolean): ReportDecisions {
       : has(presence.gaps?.length)
         ? decision(true, null)
         : decision(false, ABSENT.presenceGaps),
+
+    aeoVisibility: !detailed
+      ? outOfView
+      : aeoVisibility
+        ? decision(true, null)
+        : decision(false, ABSENT.aeoVisibility),
+    aeoVisibilityLosing: !detailed || !aeoVisibility
+      ? outOfView
+      : aeoVisibility.judged.available && aeoVisibility.judged.losingPrompts.length > 0
+        ? decision(true, null)
+        : decision(false, ABSENT.aeoVisibilityLosing),
 
     competitors: !detailed
       ? outOfView
@@ -789,6 +850,49 @@ function toPresenceView(inventory: PresenceInventory): PresenceView {
     lastRunNote: inventory.lastRun
       ? `Discovery run ${inventory.lastRun.id} — ${inventory.lastRun.status}. A discovered URL is not proof of account ownership.`
       : null,
+  };
+}
+
+// ─── AEO Visibility ─────────────────────────────────────────────
+
+/**
+ * `judged.losingPrompts[].losesTo` is this document's one AEO "verified
+ * competitor" signal: a name a judged answer explicitly placed above the
+ * client, worst-first. Everything else an answer merely mentioned is a
+ * weaker claim than this document makes as a named competitor — so this is
+ * deliberately the *only* source `competitors` below draws from, not a
+ * broader "every name seen" list.
+ */
+function toAeoVisibilityView(verdict: AeoVerdict): AeoVisibilityView {
+  const measuredSurfaces = verdict.surfaceRuns.filter((s) => s.status === 'completed').map((s) => s.label);
+  const surfaceLabel = measuredSurfaces.length > 0 ? measuredSurfaces.join(', ') : verdict.surface;
+
+  const verifiedNames = new Map<string, boolean>();
+  for (const p of verdict.judged.losingPrompts) {
+    for (const name of p.losesTo) verifiedNames.set(name, true);
+  }
+
+  const firstLosing = verdict.judged.losingPrompts[0] ?? null;
+
+  return {
+    surfaceLabel,
+    questionsMeasured: verdict.counted.overall.prompts,
+    totalAnswers: verdict.counted.overall.observations,
+    unbrandedMentionRatePercent: round(verdict.counted.unbranded.mentionRate * 100),
+    brandedMentionRatePercent: round(verdict.counted.branded.mentionRate * 100),
+    byDimension: verdict.counted.byDimension.map((d) => ({
+      label: d.label,
+      mentionRatePercent: round(d.mentionRate * 100),
+      observations: d.observations,
+    })),
+    losingExample: firstLosing
+      ? { prompt: firstLosing.prompt, losesTo: firstLosing.losesTo, evidenceQuote: firstLosing.evidenceQuote }
+      : null,
+    competitors: [...verifiedNames.keys()].map((name) => ({ name, verified: true })),
+    provenanceNote:
+      `Measured ${verdict.generatedAt} on ${surfaceLabel}, ${verdict.runCount} repeats per question. ` +
+      'Mention rate is the share of answers naming the client; the unbranded rate — the honest visibility test — ' +
+      'counts only questions that did not already name the client.',
   };
 }
 

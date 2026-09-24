@@ -232,6 +232,68 @@ const TEMPLATES: Record<PromptDimension, Template[]> = {
 };
 
 /**
+ * Consumer-facing (B2C) vs. professional-services (B2B) framing. The default
+ * templates above assume a buyer is procuring a service for their business
+ * ("outsource X", "hire a provider", "handles clients our size") — correct
+ * for an agency/SaaS/consultancy, nonsense for a retailer or app a shopper
+ * uses directly ("we're looking to outsource Trending Brands" is not a
+ * question anyone types). Only the dimensions whose default phrasing assumes
+ * B2B procurement get a consumer-framed alternative pool; the rest (category
+ * best-of, competitor-alternatives, head-to-head, brand-direct, problem-framed,
+ * geo-vertical) are neutral enough to read naturally either way.
+ */
+function isConsumerFacing(ctx: SiteContextData): boolean {
+  const CONSUMER_SIGNAL =
+    /\b(consumer|b2c|shopper|shoppers|shopping|retail|e-?commerce|marketplace|storefront|subscription box|d2c|direct[- ]to[- ]consumer|gift cards?|online store)\b/i;
+  const B2B_SIGNAL = /\b(b2b|enterprise|agenc(y|ies)|saas|software vendor|consult(ing|ancy)|professional services|firms?)\b/i;
+  const text = [ctx.category, ctx.description, ...(ctx.facts?.businessModel ?? [])].filter(Boolean).join(' ');
+  if (CONSUMER_SIGNAL.test(text)) return true;
+  if (B2B_SIGNAL.test(text)) return false;
+  // No named buyer segment and no B2B signal is itself a weak consumer signal —
+  // a B2B site almost always names who it sells to; a consumer site rarely does.
+  return ctx.icp.length === 0;
+}
+
+const CONSUMER_TEMPLATES: Partial<Record<PromptDimension, Template[]>> = {
+  'service-discovery': [
+    { id: 'sd1', register: 'terse', build: (v) => `where to get ${v.service}` },
+    { id: 'sd2', register: 'terse', build: (v) => `best place for ${v.service}` },
+    { id: 'sd3', register: 'conversational', build: (v) => `Where can I find ${v.service}?` },
+    { id: 'sd4', register: 'conversational', build: (v) => `I'm looking for ${v.service} — any recommendations?` },
+    { id: 'sd5', register: 'terse', build: (v) => `sites that offer ${v.service}` },
+    { id: 'sd6', register: 'conversational', build: (v) => `What's a good app or site for ${v.service}?` },
+    { id: 'sd7', register: 'terse', build: (v) => `${v.service} near me` },
+  ],
+  'buying-criteria': [
+    { id: 'bc1', register: 'terse', build: (v) => `best ${v.category} for everyday use` },
+    { id: 'bc2', register: 'conversational', build: (v) => `What should I look for in a good ${v.category}?` },
+    { id: 'bc3', register: 'conversational', build: (v) => `Which ${v.category} is worth it if I'm on a budget?` },
+    { id: 'bc4', register: 'terse', build: (v) => `cheapest ${v.service} ${v.geo}` },
+    { id: 'bc5', register: 'conversational', build: (v) => `Is it worth signing up for ${v.service}, or is it a hassle?` },
+  ],
+  'objection-trust': [
+    { id: 'ot1', register: 'terse', branding: 'branded', build: (v) => `is ${v.brand} legit` },
+    { id: 'ot2', register: 'conversational', branding: 'branded', build: (v) => `Are there any complaints about ${v.brand}?` },
+    { id: 'ot3', register: 'conversational', branding: 'branded', build: (v) => `Is ${v.brand} safe to use, or are there horror stories?` },
+    { id: 'ot4', register: 'terse', branding: 'unbranded', build: (v) => `downsides of ${v.category}` },
+    { id: 'ot5', register: 'conversational', branding: 'unbranded', build: (v) => `Is ${v.service} actually worth it, or is it overhyped?` },
+    { id: 'ot6', register: 'conversational', branding: 'unbranded', build: (v) => `What are the risks of using a ${v.category}?` },
+  ],
+  'job-to-be-done': [
+    { id: 'jd1', register: 'conversational', build: (v) => `How do I ${v.outcome} without getting scammed?` },
+    { id: 'jd2', register: 'terse', build: (v) => `how to ${v.outcome}` },
+    { id: 'jd3', register: 'conversational', build: (v) => `What's the easiest way to ${v.outcome}?` },
+    { id: 'jd4', register: 'conversational', build: (v) => `I want to ${v.outcome} — what's the catch, if any?` },
+    { id: 'jd5', register: 'terse', build: (v) => `best way to ${v.outcome} ${v.geo}` },
+  ],
+};
+
+function templatesFor(dimension: PromptDimension, consumer: boolean): Template[] {
+  if (consumer) return CONSUMER_TEMPLATES[dimension] ?? TEMPLATES[dimension];
+  return TEMPLATES[dimension];
+}
+
+/**
  * Fallbacks used only when the site context is thin.
  *
  * There is deliberately **no placeholder for category or service**. Filling a
@@ -339,6 +401,8 @@ export function generateMatrix(
   const demandOrder = demand ? orderServicesByDemand(ctx.services, demand) : null;
   if (demandOrder) ctx = { ...ctx, services: demandOrder.services };
 
+  const consumerFacing = isConsumerFacing(ctx);
+
   const eligible = PROMPT_DIMENSIONS.filter((d) => {
     if (REQUIREMENTS[d](ctx)) return true;
     skipped.push({ dimension: d, reason: missingReason(d, ctx) });
@@ -406,14 +470,14 @@ export function generateMatrix(
   for (const dimension of funded) {
     const want = quota.get(dimension) ?? 0;
     const rng = rngFromSeed(`${projectId}:${dimension}:${tier}`);
-    const templates = TEMPLATES[dimension];
+    const templates = templatesFor(dimension, consumerFacing);
     let produced = 0;
 
     // Walk templates round-robin so both registers are always represented,
     // rotating the interpolated values underneath them.
     for (let i = 0; produced < want && i < want * 6; i++) {
       const template = templates[i % templates.length];
-      const vars = pickVars(ctx, rng, i);
+      const vars = pickVars(ctx, rng, i, consumerFacing);
       const prompt = normalize(template.build(vars));
 
       if (!prompt || prompt.length < 6) continue;
@@ -628,7 +692,7 @@ function withArticle(icp: string): string {
 }
 
 /** Rotate through context values so cells vary without repeating. */
-function pickVars(ctx: SiteContextData, rng: () => number, i: number): Vars {
+function pickVars(ctx: SiteContextData, rng: () => number, i: number, consumerFacing: boolean): Vars {
   const rotate = (pool: string[], fallback: string): string =>
     pool.length > 0 ? pool[i % pool.length] : fallback;
 
@@ -636,7 +700,11 @@ function pickVars(ctx: SiteContextData, rng: () => number, i: number): Vars {
   // nothing — a concrete offering the client actually sells is always a better
   // stand-in for their category than invented filler.
   const category = ctx.category || ctx.services[0] || '';
-  const icp = ctx.icp.length > 0 ? ctx.icp[i % ctx.icp.length] : seededPick([FALLBACK.icp], rng);
+  // "small business" is a phrase B2B buyers really type; a B2C shopper never
+  // says it about themselves, so a consumer-facing site falls back to a
+  // segment phrase that actually reads naturally in "for {icp}"/"for a {icp}".
+  const icpFallback = consumerFacing ? 'everyday shoppers' : FALLBACK.icp;
+  const icp = ctx.icp.length > 0 ? ctx.icp[i % ctx.icp.length] : seededPick([icpFallback], rng);
 
   return {
     brand: ctx.brand,

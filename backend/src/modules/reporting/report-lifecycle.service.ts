@@ -1032,6 +1032,7 @@ const EMPTY_SNAPSHOT: ReportRevisionSnapshot = {
   backlinks: null,
   presence: null,
   competitors: null,
+  aeoVisibility: null,
   branding: null,
   rubricVersion: null,
   scoreRunId: null,

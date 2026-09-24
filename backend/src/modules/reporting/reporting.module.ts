@@ -35,6 +35,7 @@ import { BacklinksModule } from '../backlinks/backlinks.module';
 import { AuthModule } from '../auth/auth.module';
 import { DigitalPresenceModule } from '../digital-presence/digital-presence.module';
 import { CompetitorsModule } from '../competitors/competitors.module';
+import { AeoAuditModule } from '../aeo-audit/aeo-audit.module';
 import { ReportingService } from './reporting.service';
 import { ReportLifecycleService } from './report-lifecycle.service';
 import { ReportMigrationController, ReportingController, SharedReportController } from './reporting.controller';
@@ -52,6 +53,9 @@ import { DeliveryPlanModule } from '../delivery-plan/delivery-plan.module';
     AuthModule,
     DigitalPresenceModule,
     CompetitorsModule,
+    // Read-only AEO verdict access (AeoAuditService.list/verdict) — never
+    // triggers a fresh audit, same discipline as the other snapshot sources.
+    AeoAuditModule,
     // G13 — provides PeriodService (exact/derived window) and EvidenceService
     // (the frozen source manifest a report pins). `forwardRef` because P15's
     // Overview lives in the results module and reads released reports through

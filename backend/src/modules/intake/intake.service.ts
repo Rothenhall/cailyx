@@ -269,6 +269,24 @@ export class IntakeService {
     const rootOf = (h: string) => h.replace(/^www\./, '').split('.').slice(-2).join('.');
     const subjectRoot = subjectDomain ? rootOf(subjectDomain) : '';
 
+    // A company's own campaign/promo microsite (e.g. a "30 Day Challenge"
+    // contest site) often lives on a completely different apex domain, so the
+    // root-domain check above misses it — it isn't a subdomain of the
+    // subject's own site. Catch that case cheaply (no extra fetch) by
+    // matching the brand name/domain label as a PREFIX of the candidate
+    // host's own label: "fello" (from fello.ai / company "Fello") matches
+    // "fello30dc.com" or "fello-promo.io", but not an unrelated brand whose
+    // name happens to contain "fello" mid-string.
+    const brandTokens = new Set<string>();
+    if (subjectDomain) {
+      const label = rootOf(subjectDomain).split('.')[0]?.toLowerCase();
+      if (label && label.length >= 3) brandTokens.add(label);
+    }
+    if (company) {
+      const companyToken = company.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (companyToken.length >= 3) brandTokens.add(companyToken);
+    }
+
     $('a[href^="http"]').each((_, el) => {
       const href = $(el).attr('href') || '';
       const text = $(el).text().trim().replace(/\s+/g, ' ');
@@ -279,6 +297,8 @@ export class IntakeService {
         seen.add(host);
         if (rootOf(host) === subjectRoot) return; // own subdomain / asset host
         if (NON_COMPETITOR_HOSTS.has(host) || NON_COMPETITOR_HOSTS.has(rootOf(host))) return;
+        const hostLabel = rootOf(host).split('.')[0]?.toLowerCase() || '';
+        if (Array.from(brandTokens).some((token) => hostLabel.startsWith(token))) return; // own brand's microsite
         if (!text || text.length < 2 || text.length > 40) return;
         if (GENERIC_ANCHOR.test(text)) return; // "Let's talk", "Careers", …
         if (/\s(us|now|today|more|here)$/i.test(text)) return; // verb-phrase CTAs

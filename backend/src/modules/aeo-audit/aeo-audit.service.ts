@@ -31,7 +31,7 @@ import { MeasurementService, MIN_RUN_COUNT } from '../measurement/measurement.se
 import { CloroAdapterError, CloroClient, CLORO_BASE_CREDITS, type CloroSurface } from '../measurement/adapters/cloro.adapter';
 import { PipelineQueueService } from '../jobs/pipeline-queue.service';
 import { BusinessProfileService } from '../business-profile/business-profile.service';
-import { AeoContextService } from './aeo-context.service';
+import { AeoContextService, SiteContextRunPausedException } from './aeo-context.service';
 import { AeoMatrixService } from './aeo-matrix.service';
 import { AeoStanceService, type StancePassResult } from './aeo-stance.service';
 import {
@@ -116,9 +116,43 @@ export class AeoAuditService {
     private readonly businessProfile: BusinessProfileService,
   ) {
     // Resuming is safe to retry: it skips any stage/surface already completed.
+    //
+    // A `SiteContextRunPausedException` bubbling up from `resume()` (via
+    // `AeoContextService.build()`) is not a failure — it's the context
+    // pipeline's own elapsed-time budget asking to be called again. Treating
+    // it as a normal job failure left this job's `attempts: 3` /
+    // exponential-backoff config as the only thing standing between a queued
+    // audit and actually finishing: a 20–30 minute real audit needs far more
+    // than 3 tries at 5 minutes of context budget each, and each backoff wait
+    // (30s, 60s, 120s...) just adds dead time on top. So: loop here instead,
+    // resuming immediately with no backoff, until the audit genuinely
+    // completes or a real error is thrown (which still goes through BullMQ's
+    // normal attempts/backoff, since that failure mode is what that exists
+    // for) or the wall-clock ceiling is hit.
     this.pipelineQueue.registerHandler('aeo-audit-resume', (data: {
       auditId: string; input: RunAuditInput;
-    }) => this.resume(data.auditId, data.input));
+    }) => this.resumeUntilDone(data.auditId, data.input));
+  }
+
+  private static readonly RESUME_LOOP_CEILING_MS = 45 * 60 * 1000;
+
+  private async resumeUntilDone(auditId: string, input: RunAuditInput) {
+    const deadline = Date.now() + AeoAuditService.RESUME_LOOP_CEILING_MS;
+    for (;;) {
+      try {
+        return await this.resume(auditId, input);
+      } catch (err) {
+        if (!(err instanceof SiteContextRunPausedException)) throw err;
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `Audit ${auditId}: still not complete after ${AeoAuditService.RESUME_LOOP_CEILING_MS / 60000} minutes of ` +
+              `self-resuming (last pause: ${err.message}) — giving up rather than looping forever. Resume it by hand ` +
+              `once whatever is making the context pipeline this slow is understood.`,
+          );
+        }
+        this.logger.log(`Audit ${auditId}: context pipeline paused after "${err.reachedStage}", self-resuming immediately.`);
+      }
+    }
   }
 
   // ─── Orchestration ─────────────────────────────────────────────────────
@@ -701,11 +735,18 @@ export class AeoAuditService {
       return { ...finished, verdict };
     } catch (err) {
       const message = (err as Error).message;
-      await this.prisma.aeoAudit.update({
-        where: { id: auditId },
-        data: { status: 'failed', error: message.slice(0, 500), finishedAt: new Date() },
-      });
-      this.logger.error(`AEO audit ${auditId} failed: ${message}`);
+      // A context-budget pause isn't a failure — `resumeUntilDone`'s caller
+      // (the background job) immediately calls `resume()` again, so leaving
+      // the audit's own status at `'failed'` in between would be actively
+      // wrong, not just imprecise: a reader who checks status mid-loop would
+      // see "failed" for a run that's actually still progressing.
+      if (!(err instanceof SiteContextRunPausedException)) {
+        await this.prisma.aeoAudit.update({
+          where: { id: auditId },
+          data: { status: 'failed', error: message.slice(0, 500), finishedAt: new Date() },
+        });
+        this.logger.error(`AEO audit ${auditId} failed: ${message}`);
+      }
       throw err;
     }
   }

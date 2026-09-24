@@ -67,6 +67,7 @@ import type {
   CreateClientProjectDto,
   CreateClientLoginDto,
   TransferOwnershipDto,
+  RerunDayOneDto,
 } from './dto/clients.dto';
 
 const BCRYPT_ROUNDS = 10;
@@ -395,6 +396,70 @@ export class ClientsService {
       })
       .catch((err) => {
         this.logger.error(`Day-1 pipeline crashed outside its own guard for ${project.id}: ${(err as Error).message}`);
+      });
+
+    return this.toProjectSummary(project);
+  }
+
+  /**
+   * Re-run the Day-1 pipeline for a project that already exists — the same
+   * stage sequence `createProject` fires on creation (enrichment →
+   * entity-audit → technical-audit → digital-presence → tech-stack →
+   * competitors → gap-analysis → strategy → findings → report, plus whatever
+   * opt-in stages are requested), just without creating a new Project row.
+   *
+   * Before this existed, redoing Day-1 for an existing project meant an
+   * operator (or an agent) manually calling each of those ~10 endpoints in
+   * order by hand — this is that same sequence as one call.
+   *
+   * Deliberately additive, not destructive: every stage below already
+   * upserts/reconciles or creates a new historical row on its own (gap
+   * analysis reconciles via created/updated/pruned counts, a technical audit
+   * creates a new row alongside prior ones for trend comparison, etc.) — the
+   * same behavior a real scheduled re-audit already relies on. This method
+   * does not clear prior data first; if a rerun is meant to replace
+   * corrupted/stale data rather than add a fresh pass on top of it, clearing
+   * that data is a separate, explicit decision, not something a "rerun"
+   * silently assumes.
+   */
+  async rerunDayOnePipeline(clientId: string, projectId: string, opts: RerunDayOneDto): Promise<ClientProjectSummaryDto> {
+    await this.requireClient(clientId);
+    const project = await this.requireProjectOfClient(clientId, projectId);
+
+    await this.prisma.project.update({
+      where: { id: projectId },
+      data: { onboardingStatus: 'running', onboardingStep: 'enrichment', onboardingError: null },
+    });
+
+    // Same fire-and-forget contract as createProject: the HTTP response must
+    // not hold open for however long the full pipeline takes, and every
+    // stage inside runDayOnePipeline already catches its own errors and
+    // writes them to the project row rather than throwing into the void.
+    void this
+      .runDayOnePipeline(projectId, {
+        runAeoAudit: opts.runAeoAudit ?? false,
+        runKeywordResearch: opts.runKeywordResearch ?? false,
+        runGrowthExecution: opts.runGrowthExecution ?? false,
+        runBacklinksRefresh: opts.runBacklinksRefresh ?? false,
+      })
+      .then(async () => {
+        if (!opts.resolveCompetitors) return;
+        // Ranks against whatever the newest COMPLETED AEO audit for this
+        // project already is — which may be one from a previous run, not
+        // necessarily one this call just triggered (that audit, if
+        // requested above, runs on its own background job and is very
+        // unlikely to be done yet by the time the rest of the pipeline
+        // finishes). An empty result here just means "no completed audit to
+        // rank against yet" — call POST competitors/ranking/resolve again
+        // once one finishes, same as this option's own API doc says.
+        try {
+          await this.competitors.resolveRankedCompetitors(projectId);
+        } catch (err) {
+          this.logger.warn(`Day-1 rerun ${projectId}: resolveRankedCompetitors failed — ${(err as Error).message}`);
+        }
+      })
+      .catch((err) => {
+        this.logger.error(`Day-1 rerun crashed outside its own guard for ${projectId}: ${(err as Error).message}`);
       });
 
     return this.toProjectSummary(project);

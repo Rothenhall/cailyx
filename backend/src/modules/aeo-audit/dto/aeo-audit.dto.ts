@@ -58,6 +58,37 @@ export class BuildContextDto {
   @Max(900000)
   @IsOptional()
   maxElapsedMs?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'site-context-v2 Phase 2, spec §17 — search for a bounded set of fields (HQ, founding year, leadership, ' +
+      'certifications, awards) when first-party extraction found none. Off by default: this spends real DataForSEO ' +
+      'search credits, so it is only ever on when explicitly requested here.',
+    default: false,
+  })
+  @IsBoolean()
+  @IsOptional()
+  externalEnrichment?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'site-context-v2 Phase 2, spec §15–16 — trigger the digital-presence module\'s existing SERP-fallback ' +
+      'discovery for any expected platform with no confirmed account yet. Off by default: real DataForSEO spend.',
+    default: false,
+  })
+  @IsBoolean()
+  @IsOptional()
+  socialDiscovery?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'site-context-v2 Phase 2, spec §19 — after consolidation, run one bounded search pass over only the fields ' +
+      'consolidation flagged as missing, then refresh the summaries that changed. Off by default: real DataForSEO spend.',
+    default: false,
+  })
+  @IsBoolean()
+  @IsOptional()
+  gapResearch?: boolean;
 }
 
 /** Resume a paused/failed staged context run. */

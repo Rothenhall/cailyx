@@ -162,6 +162,24 @@ export class CompetitorsController {
     return this.competitors.rankCompetitorsByStance(projectId);
   }
 
+  @Post('ranking/resolve')
+  @Throttle({ default: { ttl: 60000, limit: 5 } })
+  @ApiOperation({
+    summary: 'Resolve the ranked rival NAMES into real, profiled Competitor rows',
+    description:
+      "The ranking above has real names but no domain — it's a pure read over stored stances, so there is " +
+      'nothing to look up a domain against. This closes that gap: for each of the top `topN` ranked names not ' +
+      'already tracked, runs one bounded search for its official site, takes the first non-directory/social/review ' +
+      'result, and promotes the resolved {name, domain} pairs through the same discover() path an explicit list ' +
+      'would use — so each gets the same tech-stack/schema profile as any other tracked competitor. Real, ' +
+      'metered DataForSEO spend (one search per unresolved name), so this is an explicit action, never automatic.',
+  })
+  @ApiResponse({ status: 201, description: 'DiscoverResult plus `resolved` — the {name, domain} pairs this call looked up' })
+  @ApiResponse({ status: 404, description: 'Project not found' })
+  async resolveRanking(@Param('projectId') projectId: string, @Body() body: { topN?: number }) {
+    return this.competitors.resolveRankedCompetitors(projectId, { topN: body?.topN });
+  }
+
   /**
    * The gap comparison: what the client's own tech-stack/schema/SERP/AEO
    * profile has versus what its competitors have. A plain diff, not a scored
